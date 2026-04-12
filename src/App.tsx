@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { TripLoader } from "./components/loader/TripLoader";
 import { TripList } from "./components/loader/TripList";
+import { HevcSupportGate } from "./components/video/HevcSupportGate";
 import { PlayerShell } from "./components/video/PlayerShell";
 import { useStore } from "./state/store";
 
@@ -15,6 +16,7 @@ function App() {
   const hasIssues = unmatched.length > 0 || scanErrors.length > 0;
 
   return (
+    <HevcSupportGate>
     <div className="flex h-full">
       <aside className="flex w-72 flex-col border-r border-neutral-800">
         <header className="flex flex-col gap-3 border-b border-neutral-800 p-3">
@@ -92,6 +94,7 @@ function App() {
         <PlayerShell />
       </main>
     </div>
+    </HevcSupportGate>
   );
 }
 
