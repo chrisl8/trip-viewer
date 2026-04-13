@@ -6,10 +6,11 @@ interface Props {
   kind: ChannelKind;
   src: string;
   isMaster: boolean;
+  onClick?: () => void;
 }
 
 export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
-  function ChannelPanel({ kind, src, isMaster }, ref) {
+  function ChannelPanel({ kind, src, isMaster, onClick }, ref) {
     const [error, setError] = useState<string | null>(null);
     const [ready, setReady] = useState(false);
 
@@ -19,7 +20,13 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
     }, [src]);
 
     return (
-      <div className="relative h-full w-full overflow-hidden rounded-md bg-black">
+      <div
+        onClick={onClick}
+        className={clsx(
+          "relative h-full w-full overflow-hidden rounded-md bg-black",
+          onClick && "cursor-pointer",
+        )}
+      >
         <video
           ref={ref}
           src={src}

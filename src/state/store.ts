@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { GpsPoint, ScanError, Trip } from "../types/model";
+import type { ChannelKind, GpsPoint, ScanError, Trip } from "../types/model";
 import type {
   ImportSource,
   ImportPhaseChange,
@@ -29,6 +29,7 @@ export interface PlaybackSlice {
   muted: boolean;
   showDriftHud: boolean;
   drift: { interior: number; rear: number };
+  primaryChannel: ChannelKind;
 }
 
 export type ImportStatus =
@@ -79,6 +80,7 @@ export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice {
   setSpeed: (s: PlaybackSlice["speed"]) => void;
   setDrift: (d: { interior: number; rear: number }) => void;
   toggleDriftHud: () => void;
+  setPrimaryChannel: (kind: ChannelKind) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -97,6 +99,7 @@ export const useStore = create<AppState>((set) => ({
   muted: false,
   showDriftHud: false,
   drift: { interior: 0, rear: 0 },
+  primaryChannel: "front",
 
   importStatus: "idle",
   importSources: [],
@@ -151,12 +154,14 @@ export const useStore = create<AppState>((set) => ({
       activeSegmentId: null,
       currentTime: 0,
       isPlaying: false,
+      primaryChannel: "front",
     }),
   setActiveSegmentId: (activeSegmentId) =>
-    set({ activeSegmentId, currentTime: 0, isPlaying: false }),
+    set({ activeSegmentId, currentTime: 0, isPlaying: false, primaryChannel: "front" }),
   setCurrentTime: (currentTime) => set({ currentTime }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),
   setSpeed: (speed) => set({ speed }),
   setDrift: (drift) => set({ drift }),
   toggleDriftHud: () => set((s) => ({ showDriftHud: !s.showDriftHud })),
+  setPrimaryChannel: (primaryChannel) => set({ primaryChannel }),
 }));
