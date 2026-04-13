@@ -1,8 +1,8 @@
-# DashCam Viewer — Open Source Design Document
+# Trip Viewer — Design Document
 
-## Project Name (TBD)
+An open-source, multi-channel, GPS-aware dashcam viewer with hardware-accelerated playback and integrated SD card import. Built for Wolf Box 3-channel dashcams, designed to be extensible to other manufacturers. MIT licensed.
 
-Working name ideas: `roadlog`, `dashview`, `tripviewer`, `reelroad`
+**Repository:** [github.com/chrisl8/trip-viewer](https://github.com/chrisl8/trip-viewer)
 
 ---
 
@@ -17,181 +17,67 @@ There is **no open-source, multi-channel, GPS-aware dashcam viewer** that uses h
 
 ---
 
-## Feature Inventory
+## Competitive Landscape
 
-### Features from existing software (what people expect)
-
-| Feature                        | Wolf Box    | DCV                 | DVPlayer   | bbplay    |
-| ------------------------------ | ----------- | ------------------- | ---------- | --------- |
-| Multi-channel sync playback    | ✅ (3ch)    | ✅ (2ch PiP)        | ✅ (2-4ch) | ✅ (n-ch) |
-| Live GPS map                   | ✅          | ✅                  | ✅         | ✅        |
-| Speed/heading display          | ✅          | ✅                  | ✅         | ✅        |
-| G-force/accelerometer graphs   | ❌          | ✅                  | ❌         | ✅        |
-| Speed over time graph          | ❌          | ✅ (clickable)      | ❌         | ✅        |
-| Variable playback speed        | ✅ (buried) | ✅                  | ✅         | ✅        |
-| Timeline scrubbing             | ❌          | ✅                  | ✅         | ✅        |
-| Folder/batch loading           | ❌          | ✅ (trip detection) | ✅         | ✅        |
-| Trip segmentation              | ❌          | ✅                  | ❌         | ❌        |
-| Geotagging / markers           | ❌          | ✅ (Plus/Pro)       | ❌         | ❌        |
-| Clip export                    | ❌          | ✅                  | ✅         | ❌        |
-| GPS track export (GPX/KML/CSV) | ❌          | ✅                  | ❌         | ❌        |
-| Audio event detection          | ❌          | ✅                  | ❌         | ❌        |
-| Snapshot capture               | ❌          | ✅                  | ✅         | ❌        |
-| Hardware-accelerated decoding  | ❌          | ✅                  | ✅         | ?         |
-
-### Features Chris specifically wants
-
-1. **All 3 camera views simultaneously** (front, interior, rear)
-2. **Live map showing vehicle position** as video plays
-3. **Easy speed control** — prominent, not buried
-4. **Scrub forward/back** — drag timeline
-5. **Load a folder** of files seamlessly
-6. **Smooth playback** — hardware-accelerated decoding
-
-### Future / stretch features to design for
-
-1. **Automated footage analysis** — scene change detection, object detection, interesting moment flagging
-2. **OCR on frames** — extract speed limit signs, text overlays
-3. **Batch GPS export** — process entire SD card → GPX/KML tracks
-4. **Trip journal / map** — all trips plotted on a map, click to jump to footage
-5. **AI-powered search** — "find the clip where I passed the red barn" (local vision model)
-6. **Plugin/extension system** — camera-specific GPS parsers as plugins
-7. **Timelapse generation** — from full trip footage
-8. **Incident bookmarking** — flag moments for later review
-9. **Speed overlay** — bake GPS speed into exported clips
-10. **OpenStreetMap contribution pipeline** — extract GPS tracks + frames for mappers
-
-### Ideas after MVP that I thought of (may already be listed, but maybe not and are probably more important than the "Future" section)
-
-- Ability to see what view the audio is coming from and select a different view to be the audio source.
-- Ability to flip a camera's view.
-  - Also save that on restarts.
-- Save last folder and open it again on restart.
-- Ability to click a "side" video and have it replace the "main" video as the main, in other words, clicking on a side video rearranges them to make it the "big one"
-- Ability to click on the "main" video and have it fill the ENTIRE screen and go back again for a closer look.
-- Some system to review error files, see what is wrong with them and delete them if desired from the interface.
+| Feature                       | Wolf Box    | DCV              | DVPlayer   | bbplay    | **Trip Viewer** |
+| ----------------------------- | ----------- | ---------------- | ---------- | --------- | --------------- |
+| Multi-channel sync playback   | 3ch         | 2ch PiP          | 2-4ch      | n-ch      | **3ch**         |
+| Live GPS map                  | yes         | yes              | yes        | yes       | **yes**         |
+| Speed/heading display         | yes         | yes              | yes        | yes       | **yes**         |
+| Variable playback speed       | buried      | yes              | yes        | yes       | **yes**         |
+| Timeline scrubbing            | no          | yes              | yes        | yes       | **yes**         |
+| Folder/batch loading          | no          | yes              | yes        | yes       | **yes**         |
+| Trip segmentation             | no          | yes              | no         | no        | **yes**         |
+| Hardware-accelerated decoding | no          | yes              | yes        | ?         | **yes**         |
+| SD card import with verify    | no          | no               | no         | no        | **yes**         |
+| Click-to-swap channels        | no          | no               | no         | no        | **yes**         |
+| Open source                   | no          | no               | no         | no        | **yes**         |
 
 ---
 
-## Architecture Decision: How to Build This
+## Architecture
 
-### Option A: Web-based (Electron/Tauri + HTML5 Video)
+### What we built: Tauri v2 + React + HTML5 `<video>`
 
-**Pros:**
+- **Tauri v2** — Rust backend, web frontend, ~3 MB installer. Uses the system WebView2 runtime (pre-installed on Windows 10/11) instead of bundling Chromium.
+- **React 19 + TypeScript** — frontend with Zustand for state, Tailwind CSS v4 for styling.
+- **3x HTML5 `<video>` elements** — synchronized via `requestVideoFrameCallback` for frame-accurate sync across front/interior/rear channels. Hardware-accelerated decoding via the browser's native HEVC decoder.
+- **Leaflet + OpenStreetMap** — live GPS map with track polyline and interpolated vehicle marker.
+- **Pure Rust container parsing** — `mp4` crate for metadata, custom binary parser for ShenShu GPS format. No ffprobe dependency.
 
-- You know React/Node.js deeply
-- Leaflet/MapLibre for maps is trivial
-- Beautiful UI with full CSS control
-- Tauri is lightweight (~5MB vs Electron's ~100MB)
-- Web `<video>` elements use hardware decoding natively
+### Why this architecture
 
-**Cons:**
+HTML5 `<video>` provides hardware-accelerated HEVC decoding for free via WebView2. Three video elements can be synchronized well enough for dashcam playback (not frame-perfect, but within ~30ms — imperceptible for driving footage). The tradeoff is requiring the Microsoft HEVC Video Extension on Windows, which the app detects and handles with a startup gate.
 
-- HTML5 `<video>` has limited codec support (no HEVC without paid license on some platforms)
-- Synchronizing 3 `<video>` elements is doable but imprecise at frame level
-- Tauri's libmpv plugin exists but is experimental on Linux
+### What was ruled out
 
-**Verdict:** ⭐ **Strong candidate** — especially a Tauri app with React frontend
+- **Option C (Tauri + libmpv)** — `tauri-plugin-libmpv` is broken for multi-instance on Windows (only the first handle renders). Plugin has 9 stars, experimental. Would revisit only if upstream mpv fixes multi-instance.
+- **Electron** — 100 MB runtime vs Tauri's 3 MB. No technical advantage for this use case.
+- **PyQt + mpv** — Distribution is painful (PyInstaller), UI aesthetics harder than web tech.
+- **ffprobe dependency** — Bundling ffprobe.exe adds ~80 MB, triggers Defender heuristics on unsigned builds, and PATH discovery on Windows is unreliable. Pure Rust `mp4` crate does everything needed.
 
-### Option B: mpv-based (Python/Node wrapper around libmpv)
+### Accepted tradeoff: HEVC Extension
 
-**Pros:**
-
-- mpv handles ALL codecs with hardware acceleration
-- `python-mpv` or `node-mpv` libraries exist
-- mpv's `--lavfi-complex` can composite multiple streams into one output
-- IPC (JSON socket) allows full external control
-- Lua scripting built in for extensions
-
-**Cons:**
-
-- Synchronizing multiple mpv instances is tricky (documented in GitHub issues)
-- Embedding mpv in a GUI framework (for the map/graph panels) is non-trivial
-- UI is either mpv's OSD (limited) or you need a separate GUI framework alongside it
-
-**Verdict:** Great for the video engine, but needs a UI layer on top
-
-### Option C: Hybrid — Tauri + libmpv for video, web for everything else
-
-**Pros:**
-
-- Best of both worlds: mpv handles video (hardware accel, any codec), web handles UI
-- `tauri-plugin-libmpv` exists specifically for this
-- React frontend for map (Leaflet), graphs (Recharts/D3), controls
-- Rust backend in Tauri for file scanning, GPS extraction, metadata parsing
-- Small binary size
-
-**Cons:**
-
-- Tauri libmpv plugin is "experimental" on Linux (your primary platform)
-- More moving parts
-- Need to coordinate between mpv rendering and web overlay
-
-**Verdict:** ⭐⭐ **Ideal long-term architecture**, but higher initial complexity
-
-### Option D: Pure Python (PyQt/PySide + mpv + Folium/QtWebEngine for maps)
-
-**Pros:**
-
-- Python ecosystem is great for data processing, GPS parsing, CV
-- PyQt6 + mpv widget embedding is well-documented
-- Can use ffmpeg-python for metadata extraction
-- Prototyping speed is fast
-
-**Cons:**
-
-- Distribution/packaging is painful (PyInstaller, etc.)
-- UI aesthetics harder to nail vs web tech
-- You're less fluent in Qt than React
-
-**Verdict:** Good for prototyping, not ideal for a polished tool
-
-### ⭐ Recommended: Start with Option A (Tauri + React), graduate to C
-
-Start simple:
-
-1. **Phase 1:** Tauri app, 3x HTML5 `<video>` elements, Leaflet map, custom controls. This gets you 80% of the way with tech you already know. Test with your Wolf Box files.
-2. **Phase 2:** If HTML5 video has codec issues or sync problems, swap in mpv via the Tauri plugin or a sidecar process controlled over IPC.
-3. **Phase 3:** Add the analysis pipeline (Python sidecar for CV/AI tasks).
+Wolf Box files are 100% HEVC. Windows WebView2 can play HEVC but only if the Microsoft HEVC Video Extension is installed (paid Store app on most consumer SKUs, free on OEM installs). The app handles this with a `<HevcSupportGate>` component that probes `canPlayType` at startup and deep-links to the Store if missing. Transcoding to H.264 on import was considered and rejected — too slow and storage-heavy.
 
 ---
 
-## Key Libraries & Tools
+## Tech Stack
 
-### Video playback
-
-- **HTML5 `<video>`** — hardware-accelerated, works for H.264 MP4 (most dashcams)
-- **mpv** (fallback) — universal codec support, `tauri-plugin-libmpv` or IPC control
-- **ffprobe / ffmpeg** — metadata extraction, clip export, transcoding
-
-### GPS extraction
-
-- **exiftool** — reads GPS from most MP4 metadata formats
-- **ffprobe** — can detect GPS data streams in MP4 containers
-- **nvtk_mp42gpx** (Python) — extracts GPS from Novatek chipset cameras
-- **piofo** (Python) — extracts GPS from Viofo cameras specifically
-- **gopro2gpx** (Python) — extracts GPS from GoPro's GPMD format
-- **Custom parser needed** — Wolf Box likely uses its own GPS encoding; will need to reverse-engineer from your files
-
-### Maps
-
-- **Leaflet.js** + OpenStreetMap tiles — free, self-hostable, great React bindings (`react-leaflet`)
-- **MapLibre GL JS** — alternative if you want vector tiles / 3D
-
-### UI framework
-
-- **Tauri v2** — Rust backend, web frontend, tiny binaries
-- **React** — your bread and butter
-- **Recharts or D3** — for speed/g-force/altitude graphs
-- **Tailwind CSS** — rapid styling
-
-### Analysis pipeline (Phase 3+)
-
-- **ffmpeg scene detection** — `select='gt(scene,0.3)'` for keyframe extraction
-- **YOLO / Ultralytics** — object detection (vehicles, people, signs)
-- **Tesseract / EasyOCR** — text extraction from frames (speed limit signs)
-- **OpenCV** — motion detection, frame differencing
-- **Local LLM vision** — describe scenes for search (llava, etc.)
+| Layer | Technology |
+| ----- | ---------- |
+| Framework | Tauri v2 (Rust backend, WebView2 frontend) |
+| Frontend | React 19, TypeScript, Tailwind CSS v4 |
+| State | Zustand |
+| Maps | Leaflet + react-leaflet + OpenStreetMap tiles |
+| Video sync | `requestVideoFrameCallback` API |
+| Container parsing | `mp4` crate (pure Rust) |
+| GPS decoding | Custom ShenShu MetaData binary parser (NMEA DDMM.MMMM format) |
+| File hashing | `sha2` crate (SHA-256, optimized in dev builds) |
+| Windows APIs | `windows-sys` (drive enumeration, disk space) |
+| Installer | NSIS via `tauri-action` |
+| Auto-update | `tauri-plugin-updater` with GitHub Releases |
+| CI/CD | GitHub Actions (build on tag push, draft release) |
 
 ---
 
@@ -200,152 +86,95 @@ Start simple:
 ```
 Trip
 ├── id: uuid
-├── start_time: datetime
-├── end_time: datetime
+├── startTime: datetime
 ├── segments: Segment[]
-│
-Segment (one continuous recording period)
+
+Segment
 ├── id: uuid
-├── start_time: datetime
-├── duration: seconds
+├── startTime: datetime
+├── durationS: f64
 ├── channels: Channel[]
-│   ├── type: "front" | "rear" | "interior"
-│   ├── file_path: string
-│   ├── resolution: string
-│   ├── fps: number
+│   ├── kind: "front" | "interior" | "rear"
+│   ├── filePath: string
+│   ├── resolution: { width, height }
+│   ├── fps: f64
 │   └── codec: string
-├── gps_track: GpsPoint[]
-│   ├── timestamp: datetime
-│   ├── lat: float
-│   ├── lon: float
-│   ├── speed_kmh: float
-│   ├── heading: float
-│   └── altitude: float
-├── events: Event[] (bookmarks, detected incidents)
-│   ├── timestamp: datetime
-│   ├── type: "bookmark" | "audio_spike" | "hard_brake" | "scene_change"
-│   └── metadata: json
+
+GpsPoint
+├── timestampS: f64
+├── lat: f64
+├── lon: f64
+├── speedKmh: f64
+├── heading: f64
 ```
+
+File detection uses Wolf Box naming: `YYYY_MM_DD_HHMMSS_EE_C.MP4` where `EE` is event code and `C` is channel (F/I/R). Files are grouped into triplets by fuzzy timestamp matching (3-second window), then merged into trips by time gaps (120-second threshold).
 
 ---
 
-## File Detection Strategy
+## What's Been Built
 
-Since every dashcam manufacturer does naming differently, we need a flexible detection system:
+### Playback
 
-```
-Input: A folder path
-Output: A list of Trips, each containing Segments with matched Channels
+- **3-channel synchronized playback** — front/interior/rear play in lockstep via `requestVideoFrameCallback` with drift correction
+- **Click-to-swap layout** — click a side video to promote it to the main position; videos stay playing during swap (stable DOM, CSS-only repositioning)
+- **Fullscreen main video** — click the main panel to enter fullscreen (browser Fullscreen API), Escape to exit
+- **Transport controls** — play/pause, seek ±5s/±30s, speed (0.5x/1x/2x/4x/8x)
+- **Keyboard shortcuts** — Space, arrows, Shift+arrows, brackets for speed, D for drift HUD
+- **Segment auto-advance** — continuous playback across multi-segment trips
+- **HEVC support gate** — startup check with Store deep-link if HEVC decoder is missing
 
-Algorithm:
-1. Scan folder recursively for video files (.mp4, .mov, .ts, .avi)
-2. For each file, run ffprobe to get:
-   - Duration, resolution, codec, fps
-   - Any embedded GPS data streams
-   - Creation timestamp
-3. Group files by base filename (strip _F, _R, _I, _A, _B, _C, _D suffixes)
-4. Within each group, assign channel types by suffix
-5. Sort groups by timestamp
-6. Merge consecutive groups (gap < configurable threshold) into Trips
-7. Extract GPS tracks (from embedded data, sidecar files, or subtitle streams)
+### GPS & Map
 
-Camera-specific parsers registered as plugins:
-- WolfBoxParser: _F/_R/_I naming, specific GPS format
-- ViofoParser: _F/_R naming, Novatek GPS
-- BlackVueParser: _F/_R naming, subtitle-stream GPS
-- GenericParser: fallback, tries common patterns
-```
+- **Live GPS map** — OpenStreetMap with Leaflet, track polyline drawn as video plays
+- **Interpolated vehicle marker** — smooth position updates between GPS samples
+- **Speed & heading HUD** — real-time readouts overlaid on the map panel
+- **Custom GPS parser** — reverse-engineered ShenShu MetaData binary format from Wolf Box firmware
 
----
+### File Management
 
-## UI Layout (Phase 1)
+- **Folder scanner** — recursive MP4 discovery, Wolf Box filename parsing, fuzzy triplet matching, trip grouping
+- **Remember last folder** — auto-reopens on next launch via localStorage
+- **SD card import** — full pipeline: discover removable drives → stage with SHA-256 verification → wipe source → distribute to Videos/Photos. Duplicate detection, collision handling, unknown file prompts, cancel support, interrupt safety, lock file, logging with 30-day rotation
+- **Import progress UI** — live progress bar with speed, file counter, phase indicators, cancel button
+- **Import summary** — completion dialog with per-source stats and date range of imported footage
 
-```
-┌──────────────────────────────────────────────────────┐
-│  [≡ Menu]          Trip: 2026-04-08 Morning Commute  │
-├──────────────┬──────────────┬────────────────────────┤
-│              │              │                         │
-│   FRONT      │   INTERIOR   │      MAP               │
-│   (large)    │   (medium)   │   (Leaflet, live       │
-│              │              │    vehicle marker,      │
-│              │              │    trail behind)        │
-│              ├──────────────┤                         │
-│              │    REAR      │   Speed: 45 mph        │
-│              │   (medium)   │   Heading: NE           │
-│              │              │                         │
-├──────────────┴──────────────┴────────────────────────┤
-│  ◀◀  ▶  ▶▶  │  0.5x  1x  2x  4x  8x  │  Vol 🔊    │
-├──────────────────────────────────────────────────────┤
-│  ████████████████░░░░░░░░░░░░░░░░░░░░░  12:34/45:00 │
-│  ▲ speed graph overlaid on timeline (clickable)      │
-├──────────────────────────────────────────────────────┤
-│  Trip segments: [seg1] [seg2] [seg3] [seg4] ...      │
-└──────────────────────────────────────────────────────┘
-```
+### Distribution
 
-Key UX decisions:
-
-- **Front camera gets the most screen real estate** (primary view)
-- **Speed control is a prominent row of buttons**, not a menu
-- **Timeline is a large scrub bar** with speed graph overlay so you can see interesting moments
-- **Map updates in real-time** as video plays, with a trail showing where you've been
-- **Trip segments** shown as a filmstrip at the bottom for easy navigation
-- **Keyboard shortcuts**: Space=play/pause, ←→=seek 5s, Shift+←→=seek 30s, [/]=speed
+- **NSIS installer** — ~3 MB Windows setup exe
+- **GitHub Actions CI** — auto-build on version tag, draft release with installer + updater manifest
+- **Auto-updater** — checks GitHub Releases on startup, one-click update and restart
+- **Tauri signing keys** — update artifacts signed for integrity verification
 
 ---
 
-## Phase Plan
+## Future Ideas
 
-### Phase 1: MVP (get your own footage playing nicely)
+### Near-term (would use now)
 
-- [ ] Tauri app scaffolding with React
-- [ ] Folder scanner: detect Wolf Box file naming, group into segments
-- [ ] 3x `<video>` synchronized playback with shared controls
-- [ ] ffprobe-based metadata extraction (Rust sidecar or CLI call)
-- [ ] GPS extraction from your specific Wolf Box format
-- [ ] Leaflet map with moving marker
-- [ ] Timeline scrubber, speed controls, keyboard shortcuts
-- [ ] Basic trip detection (group files by time gaps)
+- **Audio source selection** — see which channel provides audio, switch it to a different channel
+- **Flip camera view** — mirror a video horizontally, persist the preference
+- **Error file review** — inspect files that failed to parse, see what's wrong, delete from the interface
 
-### Phase 2: Polish & generalize
+### Medium-term (polish and generalize)
 
-- [ ] Plugin system for camera-specific parsers
-- [ ] Speed/altitude/g-force graphs (if data available)
-- [ ] Clip export (selected time range → new MP4)
-- [ ] Snapshot capture
-- [ ] GPX/KML export
-- [ ] Bookmarking / event markers on timeline
-- [ ] Settings: preferred map tile source, units (mph/kmh), default speed
+- **Camera plugin system** — camera-specific parsers as plugins (Viofo, BlackVue, GoPro, generic fallback)
+- **Speed/altitude/g-force graphs** — if accelerometer data is available in the GPS stream
+- **Clip export** — select a time range, export to a new MP4
+- **Snapshot capture** — save a frame as an image
+- **GPX/KML export** — export GPS tracks for use in mapping tools
+- **Bookmarking** — flag moments on the timeline for later review
+- **Settings** — preferred map tile source, units (mph/kmh), default playback speed
 
-### Phase 3: Analysis & automation
+### Long-term (analysis and automation)
 
-- [ ] Batch GPS extraction (entire SD card → trip map)
-- [ ] Scene change detection → thumbnail timeline
-- [ ] Audio spike detection (horn, crash sounds)
-- [ ] Object detection pipeline (YOLO on keyframes)
-- [ ] OCR for text in frames (signs, plates)
-- [ ] Search by location ("clips near downtown Wichita")
-
-### Phase 4: Community & ecosystem
-
-- [ ] Public GitHub repo, documentation
-- [ ] Camera compatibility database (community-contributed parsers)
-- [ ] Timelapse generator
-- [ ] OpenStreetMap integration (contribute GPS traces)
-- [ ] Local AI-powered clip search
-
----
-
-## Open Questions
-
-1. **What GPS format does the Wolf Box use?** Need to `ffprobe` an actual file to see if GPS is in a subtitle stream, data stream, or proprietary atom.
-2. **Are the 3 Wolf Box channels separate files or muxed?** The `_F/_I/_R` naming suggests separate files, which is easier.
-3. **What resolution/codec/fps are the files?** Determines if HTML5 `<video>` can handle them without transcoding.
-4. **Cross-platform priority?** Linux-first (your daily driver), but Tauri gives us Windows/Mac for free.
-5. **Project name and license?** MIT? GPL? Something fun for the name?
-
----
-
-## Next Step
-
-**Run `ffprobe -show_streams -show_format` on one of your Wolf Box files** (one from each channel). This tells us everything we need to know about codec, GPS data location, and file structure to make the first real architecture decisions.
+- **Trip journal / map** — all trips plotted on a world map, click to jump to footage
+- **Batch GPS extraction** — process entire folder → trip map overview
+- **Scene change detection** — thumbnail timeline of interesting moments
+- **Audio spike detection** — flag horn honks, crash sounds
+- **Object detection** — YOLO on keyframes (vehicles, people, signs)
+- **OCR** — extract text from frames (speed limit signs, license plates)
+- **AI-powered search** — "find the clip where I passed the red barn" (local vision model)
+- **Timelapse generation** — from full trip footage
+- **Speed overlay** — bake GPS speed into exported clips
+- **OpenStreetMap contribution** — extract GPS traces and frames for mappers
