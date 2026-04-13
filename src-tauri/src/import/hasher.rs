@@ -57,7 +57,6 @@ pub fn hash_hex(hash: &[u8; 32]) -> String {
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::Write as _;
 
     #[test]
     fn test_copy_and_hash_matches_hash_file() {

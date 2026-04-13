@@ -136,7 +136,6 @@ fn run_pipeline(
         given
     };
     let mut results: Vec<SourceResult> = Vec::new();
-    let mut log_path: Option<String> = None;
 
     // Ensure folder structure
     for d in &["Videos", "Photos", ".staging", ".logs"] {
@@ -154,7 +153,7 @@ fn run_pipeline(
 
     logger.info(&format!("Root path: {root_path}"));
     logger.info(&format!("Sources: {}", sources.len()));
-    log_path = Some(logger.path().to_string_lossy().to_string());
+    let log_path = Some(logger.path().to_string_lossy().to_string());
 
     // Rotate old logs
     ImportLogger::rotate(&logs_dir, Duration::from_secs(30 * 24 * 3600));
@@ -353,15 +352,49 @@ fn acquire_lock(path: &Path) -> Result<(), AppError> {
             let _ = write!(f, "{}", std::process::id());
             Ok(())
         }
-        Err(_) => Err(AppError::Internal(format!(
-            "Lock file exists at {} — another import may be running",
-            path.display()
-        ))),
+        Err(_) => {
+            // Lock file exists — check if the owning process is still running.
+            // If it's stale (process died), reclaim it.
+            if let Ok(contents) = fs::read_to_string(path) {
+                if let Ok(pid) = contents.trim().parse::<u32>() {
+                    if !is_process_alive(pid) {
+                        // Stale lock from a crashed process — reclaim it
+                        let _ = fs::remove_file(path);
+                        return acquire_lock(path);
+                    }
+                }
+            }
+            Err(AppError::Internal(format!(
+                "Lock file exists at {} — another import may be running",
+                path.display()
+            )))
+        }
     }
 }
 
+/// Check if a process with the given PID is still running.
+#[cfg(windows)]
+fn is_process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::Foundation::CloseHandle;
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false; // Can't open = not running (or no permission, which means not ours)
+    }
+    unsafe { CloseHandle(handle) };
+    true
+}
+
+#[cfg(not(windows))]
+fn is_process_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
 fn release_lock(path: &Path) {
-    let _ = fs::remove_file(path);
+    if let Err(e) = fs::remove_file(path) {
+        eprintln!("Warning: failed to release lock file {}: {e}", path.display());
+    }
 }
 
 fn error_result(msg: String, log_path: Option<String>) -> ImportResult {

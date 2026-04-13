@@ -255,6 +255,10 @@ pub(crate) fn apply_unknown_decisions(
     for decision in decisions {
         let staged_path = Path::new(&decision.staged_path);
         if !staged_path.exists() {
+            logger.warn(&format!(
+                "Unknown file no longer exists, skipping: {}",
+                decision.staged_path
+            ));
             continue;
         }
 
