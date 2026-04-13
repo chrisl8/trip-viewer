@@ -64,8 +64,8 @@ git tag vX.Y.Z
 If your GitHub remote is named `github`:
 
 ```bash
-git push github main
-git push github vX.Y.Z
+git push
+git push origin vX.Y.Z
 ```
 
 If you use Forgejo push mirroring, the tag may sync automatically — verify at github.com/chrisl8/trip-viewer/actions.
