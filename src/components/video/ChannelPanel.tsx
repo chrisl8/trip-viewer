@@ -25,7 +25,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
         onClick={onClick}
         onDoubleClick={onDoubleClick}
         className={clsx(
-          "relative h-full w-full overflow-hidden rounded-md bg-black",
+          "group relative h-full w-full overflow-hidden rounded-md bg-black",
           (onClick || onDoubleClick) && "cursor-pointer",
         )}
       >
@@ -49,13 +49,25 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           }}
         />
 
-        <div
-          className={clsx(
-            "absolute left-2 top-2 rounded px-2 py-1 text-xs font-medium uppercase tracking-wide backdrop-blur",
-            isMaster ? "bg-blue-500/80 text-white" : "bg-black/60 text-neutral-200",
+        <div className="absolute left-2 top-2 flex flex-col items-start gap-1">
+          <div
+            className={clsx(
+              "rounded px-2 py-1 text-xs font-medium uppercase tracking-wide backdrop-blur",
+              isMaster ? "bg-blue-500/80 text-white" : "bg-black/60 text-neutral-200",
+            )}
+          >
+            {kind}
+          </div>
+          {onClick && (
+            <div className="rounded bg-black/60 px-2 py-0.5 text-[10px] text-neutral-300 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+              Click to enlarge
+            </div>
           )}
-        >
-          {kind}
+          {onDoubleClick && (
+            <div className="rounded bg-black/60 px-2 py-0.5 text-[10px] text-neutral-300 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+              Double-click for fullscreen
+            </div>
+          )}
         </div>
 
         {!ready && !error && (
