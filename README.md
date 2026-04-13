@@ -16,13 +16,23 @@ Built for Wolf Box 3-channel dashcams (front/interior/rear), but designed to be 
 - **Segment auto-advance** — continuous playback across multi-segment trips
 - **Drift debugging** — toggleable HUD showing interior/rear sync drift in milliseconds
 
-## Prerequisites
+## Download
+
+Grab the latest installer from [GitHub Releases](https://github.com/chrisl8/trip-viewer/releases). Run the `.exe` setup — no developer tools required.
+
+**Requirements**: Windows 10/11 with the [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) installed. The app checks for this on startup.
+
+The app auto-checks for updates on launch. See [RELEASING.md](RELEASING.md) for maintainer release instructions.
+
+## Development
+
+### Prerequisites
 
 - **Node.js** 20+
 - **Rust** 1.70+ (via [rustup](https://rustup.rs/))
 - **Microsoft HEVC Video Extension** — required for HEVC playback on Windows. Install from the [Microsoft Store](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) or search "HEVC Video Extensions" in the Store app.
 
-## Getting started
+### Getting started
 
 ```bash
 # Install JS dependencies
