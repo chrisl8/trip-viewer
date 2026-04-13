@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { TripLoader } from "./components/loader/TripLoader";
 import { TripList } from "./components/loader/TripList";
 import { HevcSupportGate } from "./components/video/HevcSupportGate";
 import { PlayerShell } from "./components/video/PlayerShell";
 import { UpdateChecker } from "./components/UpdateChecker";
+import { KeyboardShortcutsHelp } from "./components/KeyboardShortcutsHelp";
 import { ImportButton } from "./components/import/ImportButton";
 import { ImportConfirmDialog } from "./components/import/ImportConfirmDialog";
 import { ImportProgress } from "./components/import/ImportProgress";
@@ -20,6 +22,12 @@ function App() {
   const importError = useStore((s) => s.importError);
   const resetImport = useStore((s) => s.resetImport);
   const [showIssues, setShowIssues] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    getVersion().then(setVersion);
+  }, []);
 
   const hasIssues = unmatched.length > 0 || scanErrors.length > 0;
 
@@ -106,12 +114,24 @@ function App() {
         </header>
         <ImportProgress />
         <TripList />
+        <footer className="flex items-center justify-between border-t border-neutral-800 px-3 py-2.5">
+          <span className="text-xs text-neutral-500">v{version}</span>
+          <button
+            onClick={() => setShowShortcuts(true)}
+            className="text-xs text-neutral-400 hover:text-neutral-200"
+          >
+            Keyboard shortcuts
+          </button>
+        </footer>
       </aside>
 
       <main className="flex flex-1 flex-col">
         <PlayerShell />
       </main>
     </div>
+    {showShortcuts && (
+      <KeyboardShortcutsHelp onClose={() => setShowShortcuts(false)} />
+    )}
     <ImportConfirmDialog />
     <UnknownFilesDialog />
     <ImportSummary />
