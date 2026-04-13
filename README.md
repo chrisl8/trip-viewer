@@ -6,6 +6,8 @@ If you own a multi-channel dashcam (like a Wolf Box, Viofo, or similar), you've 
 
 Trip Viewer changes that. It plays all three of your dashcam channels — front, interior, and rear — perfectly synchronized, with a live GPS map tracking your position as the video plays. It uses your computer's hardware video decoder, so playback is smooth even at high resolution. And it runs as a lightweight native Windows app (~3 MB installer), not a bloated Electron app.
 
+![Trip Viewer screenshot showing 3-channel synchronized playback with GPS map](screenshot.png)
+
 ## How to install
 
 **Trip Viewer runs on Windows 10 and Windows 11.** No developer tools required.
