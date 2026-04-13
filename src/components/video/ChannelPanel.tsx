@@ -7,10 +7,11 @@ interface Props {
   src: string;
   isMaster: boolean;
   onClick?: () => void;
+  onDoubleClick?: () => void;
 }
 
 export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
-  function ChannelPanel({ kind, src, isMaster, onClick }, ref) {
+  function ChannelPanel({ kind, src, isMaster, onClick, onDoubleClick }, ref) {
     const [error, setError] = useState<string | null>(null);
     const [ready, setReady] = useState(false);
 
@@ -22,9 +23,10 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
     return (
       <div
         onClick={onClick}
+        onDoubleClick={onDoubleClick}
         className={clsx(
           "relative h-full w-full overflow-hidden rounded-md bg-black",
-          onClick && "cursor-pointer",
+          (onClick || onDoubleClick) && "cursor-pointer",
         )}
       >
         <video

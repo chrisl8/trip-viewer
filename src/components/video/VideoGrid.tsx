@@ -68,9 +68,13 @@ export function VideoGrid({
   // Track secondary index for grid row assignment
   let secondaryIdx = 0;
 
-  function handleMainClick() {
-    const ref = refForKind(primaryChannel, frontRef, interiorRef, rearRef);
-    ref.current?.requestFullscreen();
+  function handleMainDoubleClick() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      const ref = refForKind(primaryChannel, frontRef, interiorRef, rearRef);
+      ref.current?.requestFullscreen();
+    }
   }
 
   return (
@@ -90,11 +94,8 @@ export function VideoGrid({
               kind={kind}
               src={convertFileSrc(channel.filePath)}
               isMaster={isPrimary}
-              onClick={
-                isPrimary
-                  ? handleMainClick
-                  : () => setPrimaryChannel(kind)
-              }
+              onClick={isPrimary ? undefined : () => setPrimaryChannel(kind)}
+              onDoubleClick={isPrimary ? handleMainDoubleClick : undefined}
             />
           </div>
         );
