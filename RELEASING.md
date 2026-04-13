@@ -27,9 +27,9 @@ Then update the `pubkey` in `src-tauri/tauri.conf.json` and the GitHub secrets.
 
 Go to [github.com/chrisl8/trip-viewer](https://github.com/chrisl8/trip-viewer) > Settings > Secrets and variables > Actions, and set:
 
-| Secret | Value |
-|--------|-------|
-| `TAURI_SIGNING_PRIVATE_KEY` | Contents of `~/.tauri/trip-viewer.key` |
+| Secret                               | Value                                          |
+| ------------------------------------ | ---------------------------------------------- |
+| `TAURI_SIGNING_PRIVATE_KEY`          | Contents of `~/.tauri/trip-viewer.key`         |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The password you chose when generating the key |
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions.
@@ -40,11 +40,11 @@ Go to [github.com/chrisl8/trip-viewer](https://github.com/chrisl8/trip-viewer) >
 
 Update the version string in all three places:
 
-| File | Field |
-|------|-------|
+| File                        | Field                |
+| --------------------------- | -------------------- |
+| `src-tauri/Cargo.toml`      | `version = "X.Y.Z"`  |
 | `src-tauri/tauri.conf.json` | `"version": "X.Y.Z"` |
-| `package.json` | `"version": "X.Y.Z"` |
-| `src-tauri/Cargo.toml` | `version = "X.Y.Z"` |
+| `package.json`              | `"version": "X.Y.Z"` |
 
 ### 2. Commit the version bump
 
@@ -79,6 +79,7 @@ The Action takes ~7-8 minutes. Monitor it at [github.com/chrisl8/trip-viewer/act
 The Action creates a **draft release**. Go to [github.com/chrisl8/trip-viewer/releases](https://github.com/chrisl8/trip-viewer/releases), edit the release notes if desired, and click **Publish release**.
 
 The draft will have these assets attached:
+
 - `tripviewer_X.Y.Z_x64-setup.exe` — the NSIS installer
 - `tripviewer_X.Y.Z_x64-setup.exe.sig` — updater signature
 - `latest.json` — auto-update manifest
@@ -114,6 +115,7 @@ The `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub secret doesn't match the passwor
 ### Action fails during build
 
 Check the Actions log. Common causes:
+
 - Rust compilation errors (test locally with `npm run tauri build` first)
 - Missing GitHub secrets
 - Tag doesn't match a commit that exists on the GitHub mirror

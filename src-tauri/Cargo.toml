@@ -1,42 +1,42 @@
 [package]
-name = "tripviewer"
-version = "0.1.0"
-description = "Multi-channel dashcam viewer with GPS tracking"
 authors = ["chrisl8"]
-license = "MIT"
+description = "Multi-channel dashcam viewer with GPS tracking"
 edition = "2021"
+license = "MIT"
+name = "tripviewer"
+version = "0.1.2"
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "tripviewer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+name = "tripviewer_lib"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = {version = "2", features = []}
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "1"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-walkdir = "2.5.0"
-rayon = "1.11.0"
+chrono = {version = "0.4", features = ["serde"]}
 dunce = "1.0.5"
 mp4 = "0.14.0"
-tauri-plugin-dialog = "2.7.0"
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
+rayon = "1.11.0"
+serde = {version = "1", features = ["derive"]}
+serde_json = "1"
 sha2 = "0.10"
+tauri = {version = "2", features = ["protocol-asset"]}
+tauri-plugin-dialog = "2.7.0"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+thiserror = "1"
+uuid = {version = "1", features = ["v4", "serde"]}
+walkdir = "2.5.0"
 
 [dev-dependencies]
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+windows-sys = {version = "0.59", features = ["Win32_Storage_FileSystem"]}
 
 # Optimize crypto even in dev builds so SD card import speed isn't bottlenecked by hashing
 [profile.dev.package.sha2]
@@ -45,4 +45,3 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.cpufeatures]
 opt-level = 3
-
