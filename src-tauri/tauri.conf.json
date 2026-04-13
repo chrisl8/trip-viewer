@@ -31,13 +31,26 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.comodoca.com"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEyMTk3NUIzNTNGRDU2MkEKUldRcVZ2MVRzM1Vab2hVTDZEa0ZEVUsra01LTDVNM2FkUjJ0UnF3NmtLUlR4ZENrNlBMRi9UbEsK",
+      "endpoints": [
+        "https://github.com/chrisl8/trip-viewer/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

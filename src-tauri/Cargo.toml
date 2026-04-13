@@ -28,4 +28,6 @@ rayon = "1.11.0"
 dunce = "1.0.5"
 mp4 = "0.14.0"
 tauri-plugin-dialog = "2.7.0"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 

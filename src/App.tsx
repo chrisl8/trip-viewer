@@ -3,6 +3,7 @@ import { TripLoader } from "./components/loader/TripLoader";
 import { TripList } from "./components/loader/TripList";
 import { HevcSupportGate } from "./components/video/HevcSupportGate";
 import { PlayerShell } from "./components/video/PlayerShell";
+import { UpdateChecker } from "./components/UpdateChecker";
 import { useStore } from "./state/store";
 
 function App() {
@@ -94,6 +95,7 @@ function App() {
         <PlayerShell />
       </main>
     </div>
+    <UpdateChecker />
     </HevcSupportGate>
   );
 }
