@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useStore } from "../../state/store";
+import { pickFolder } from "../../ipc/dialog";
 import {
   startImport,
   onImportPhase,
@@ -9,6 +10,8 @@ import {
   onImportComplete,
 } from "../../ipc/importer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+
+const LAST_FOLDER_KEY = "tripviewer:lastFolder";
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1 << 30) return (bytes / (1 << 30)).toFixed(1) + " GB";
@@ -66,11 +69,16 @@ export function ImportConfirmDialog() {
   if (importStatus !== "confirming") return null;
 
   async function handleStart() {
-    const rootPath = localStorage.getItem("tripviewer:lastFolder");
+    let rootPath = localStorage.getItem(LAST_FOLDER_KEY);
+
+    // First-time user: no folder open yet — ask where to store files
     if (!rootPath) {
-      setImportError("No folder open. Open a folder first, then import.");
-      return;
+      const chosen = await pickFolder();
+      if (!chosen) return; // User cancelled the picker
+      rootPath = chosen;
     }
+
+    useStore.getState().setImportRootPath(rootPath);
     setImportStatus("running");
     try {
       await startImport(rootPath, sources);

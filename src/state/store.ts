@@ -50,6 +50,7 @@ export interface ImportSlice {
   importUnknowns: UnknownFile[];
   importResult: ImportResult | null;
   importError: string | null;
+  importRootPath: string | null;
 
   setImportStatus: (s: ImportStatus) => void;
   setImportSources: (sources: ImportSource[]) => void;
@@ -59,6 +60,7 @@ export interface ImportSlice {
   setImportUnknowns: (files: UnknownFile[]) => void;
   setImportResult: (result: ImportResult | null) => void;
   setImportError: (e: string | null) => void;
+  setImportRootPath: (path: string | null) => void;
   resetImport: () => void;
 }
 
@@ -109,6 +111,7 @@ export const useStore = create<AppState>((set) => ({
   importUnknowns: [],
   importResult: null,
   importError: null,
+  importRootPath: null,
 
   status: "idle",
   error: null,
@@ -125,6 +128,7 @@ export const useStore = create<AppState>((set) => ({
     set({ importResult, importStatus: importResult ? "complete" : "idle" }),
   setImportError: (importError) =>
     set({ importError, importStatus: importError ? "error" : "idle" }),
+  setImportRootPath: (importRootPath) => set({ importRootPath }),
   resetImport: () =>
     set({
       importStatus: "idle",
@@ -135,6 +139,7 @@ export const useStore = create<AppState>((set) => ({
       importUnknowns: [],
       importResult: null,
       importError: null,
+      importRootPath: null,
     }),
 
   setStatus: (status) => set({ status }),

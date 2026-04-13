@@ -8,20 +8,38 @@ function formatBytes(bytes: number): string {
   return bytes + " B";
 }
 
+const LAST_FOLDER_KEY = "tripviewer:lastFolder";
+
 export function ImportSummary() {
   const importStatus = useStore((s) => s.importStatus);
   const result = useStore((s) => s.importResult);
+  const importRootPath = useStore((s) => s.importRootPath);
   const resetImport = useStore((s) => s.resetImport);
   const setScanResult = useStore((s) => s.setScanResult);
+  const setStatus = useStore((s) => s.setStatus);
 
   if (importStatus !== "complete" || !result) return null;
 
   async function handleClose() {
-    // Auto-rescan the folder so new trips appear
-    const rootPath = localStorage.getItem("tripviewer:lastFolder");
-    if (rootPath) {
+    let videosPath = localStorage.getItem(LAST_FOLDER_KEY);
+
+    // First-time import: no folder was previously open.
+    // Point the app at the Videos subfolder the import created.
+    if (!videosPath && importRootPath) {
+      // The import root might already end in "Videos" (if user picked that),
+      // or the Rust backend goes up one level if it does. Either way, the
+      // actual Videos folder is <importRoot>/Videos or importRoot itself.
+      const root = importRootPath.replace(/[\\/]$/, "");
+      const endsWithVideos = /[\\/]videos$/i.test(root);
+      videosPath = endsWithVideos ? root : root + "\\Videos";
+      localStorage.setItem(LAST_FOLDER_KEY, videosPath);
+    }
+
+    // Rescan so new trips appear
+    if (videosPath) {
+      setStatus("loading");
       try {
-        const scanResult = await scanFolder(rootPath);
+        const scanResult = await scanFolder(videosPath);
         setScanResult(scanResult);
       } catch {
         // Ignore scan errors on close
