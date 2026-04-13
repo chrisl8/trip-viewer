@@ -123,7 +123,18 @@ fn run_pipeline(
     root_path: &str,
     sources: &[ImportSource],
 ) -> ImportResult {
-    let root = PathBuf::from(root_path);
+    // The user opens the Videos folder for playback, but the import root is
+    // one level up (where Videos/, Photos/, .staging/, .logs/ live as siblings).
+    let given = PathBuf::from(root_path);
+    let root = if given
+        .file_name()
+        .map(|n| n.eq_ignore_ascii_case("Videos"))
+        .unwrap_or(false)
+    {
+        given.parent().unwrap_or(&given).to_path_buf()
+    } else {
+        given
+    };
     let mut results: Vec<SourceResult> = Vec::new();
     let mut log_path: Option<String> = None;
 
