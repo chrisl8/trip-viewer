@@ -1,5 +1,13 @@
 import { create } from "zustand";
 import type { GpsPoint, ScanError, Trip } from "../types/model";
+import type {
+  ImportSource,
+  ImportPhaseChange,
+  ImportProgress,
+  ImportWarning,
+  UnknownFile,
+  ImportResult,
+} from "../types/import";
 
 export type AppStatus = "idle" | "loading" | "ready" | "error";
 
@@ -23,7 +31,37 @@ export interface PlaybackSlice {
   drift: { interior: number; rear: number };
 }
 
-export interface AppState extends LibrarySlice, PlaybackSlice {
+export type ImportStatus =
+  | "idle"
+  | "discovering"
+  | "confirming"
+  | "running"
+  | "paused_unknowns"
+  | "complete"
+  | "error";
+
+export interface ImportSlice {
+  importStatus: ImportStatus;
+  importSources: ImportSource[];
+  importPhase: ImportPhaseChange | null;
+  importProgress: ImportProgress | null;
+  importWarnings: ImportWarning[];
+  importUnknowns: UnknownFile[];
+  importResult: ImportResult | null;
+  importError: string | null;
+
+  setImportStatus: (s: ImportStatus) => void;
+  setImportSources: (sources: ImportSource[]) => void;
+  setImportPhase: (phase: ImportPhaseChange | null) => void;
+  setImportProgress: (progress: ImportProgress | null) => void;
+  addImportWarning: (w: ImportWarning) => void;
+  setImportUnknowns: (files: UnknownFile[]) => void;
+  setImportResult: (result: ImportResult | null) => void;
+  setImportError: (e: string | null) => void;
+  resetImport: () => void;
+}
+
+export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice {
   status: AppStatus;
   error: string | null;
 
@@ -60,8 +98,41 @@ export const useStore = create<AppState>((set) => ({
   showDriftHud: false,
   drift: { interior: 0, rear: 0 },
 
+  importStatus: "idle",
+  importSources: [],
+  importPhase: null,
+  importProgress: null,
+  importWarnings: [],
+  importUnknowns: [],
+  importResult: null,
+  importError: null,
+
   status: "idle",
   error: null,
+
+  setImportStatus: (importStatus) => set({ importStatus }),
+  setImportSources: (importSources) => set({ importSources }),
+  setImportPhase: (importPhase) => set({ importPhase }),
+  setImportProgress: (importProgress) => set({ importProgress }),
+  addImportWarning: (w) =>
+    set((s) => ({ importWarnings: [...s.importWarnings, w] })),
+  setImportUnknowns: (importUnknowns) =>
+    set({ importUnknowns, importStatus: "paused_unknowns" }),
+  setImportResult: (importResult) =>
+    set({ importResult, importStatus: importResult ? "complete" : "idle" }),
+  setImportError: (importError) =>
+    set({ importError, importStatus: importError ? "error" : "idle" }),
+  resetImport: () =>
+    set({
+      importStatus: "idle",
+      importSources: [],
+      importPhase: null,
+      importProgress: null,
+      importWarnings: [],
+      importUnknowns: [],
+      importResult: null,
+      importError: null,
+    }),
 
   setStatus: (status) => set({ status }),
   setError: (error) => set({ error, status: error ? "error" : "idle" }),

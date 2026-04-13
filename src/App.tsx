@@ -4,6 +4,11 @@ import { TripList } from "./components/loader/TripList";
 import { HevcSupportGate } from "./components/video/HevcSupportGate";
 import { PlayerShell } from "./components/video/PlayerShell";
 import { UpdateChecker } from "./components/UpdateChecker";
+import { ImportButton } from "./components/import/ImportButton";
+import { ImportConfirmDialog } from "./components/import/ImportConfirmDialog";
+import { ImportProgress } from "./components/import/ImportProgress";
+import { UnknownFilesDialog } from "./components/import/UnknownFilesDialog";
+import { ImportSummary } from "./components/import/ImportSummary";
 import { useStore } from "./state/store";
 
 function App() {
@@ -12,6 +17,8 @@ function App() {
   const scanErrors = useStore((s) => s.scanErrors);
   const status = useStore((s) => s.status);
   const error = useStore((s) => s.error);
+  const importError = useStore((s) => s.importError);
+  const resetImport = useStore((s) => s.resetImport);
   const [showIssues, setShowIssues] = useState(false);
 
   const hasIssues = unmatched.length > 0 || scanErrors.length > 0;
@@ -23,6 +30,15 @@ function App() {
         <header className="flex flex-col gap-3 border-b border-neutral-800 p-3">
           <h1 className="text-sm font-semibold tracking-tight">Trip Viewer</h1>
           <TripLoader />
+          <ImportButton />
+          {importError && (
+            <div className="flex items-start gap-2 rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
+              <span className="flex-1">{importError}</span>
+              <button onClick={resetImport} className="shrink-0 text-red-500 hover:text-red-300">
+                ×
+              </button>
+            </div>
+          )}
           {status === "ready" && trips.length > 0 && (
             <div className="text-xs text-neutral-500">
               {trips.length} trips ·{" "}
@@ -88,6 +104,7 @@ function App() {
             </div>
           )}
         </header>
+        <ImportProgress />
         <TripList />
       </aside>
 
@@ -95,6 +112,9 @@ function App() {
         <PlayerShell />
       </main>
     </div>
+    <ImportConfirmDialog />
+    <UnknownFilesDialog />
+    <ImportSummary />
     <UpdateChecker />
     </HevcSupportGate>
   );

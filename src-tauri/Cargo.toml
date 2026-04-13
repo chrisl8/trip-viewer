@@ -30,4 +30,19 @@ mp4 = "0.14.0"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+
+# Optimize crypto even in dev builds so SD card import speed isn't bottlenecked by hashing
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.cpufeatures]
+opt-level = 3
 

@@ -1,0 +1,204 @@
+use crate::error::AppError;
+use crate::import::types::ImportSource;
+use std::fs;
+use std::path::Path;
+use walkdir::WalkDir;
+
+/// Known Wolfbox dashcam folder names. A removable drive is a dashcam card
+/// if its root contains at least MIN_FOLDER_MATCH of these.
+const DASHCAM_FOLDERS: &[&str] = &[
+    "front_norm",
+    "front_emer",
+    "front_photo",
+    "rear_norm",
+    "rear_emer",
+    "rear_photo",
+    "extra_norm",
+    "extra_emer",
+    "extra_photo",
+];
+
+const MIN_FOLDER_MATCH: usize = 3;
+
+/// System directories to skip during file counting.
+const SKIPPED_DIRS: &[&str] = &["system volume information", "$recycle.bin"];
+
+pub(crate) fn is_skipped_dir(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    SKIPPED_DIRS.iter().any(|&s| s == lower)
+}
+
+/// Discover removable drives that look like Wolfbox dashcam SD cards.
+/// Returns a list of sources with file counts and total sizes.
+#[cfg(windows)]
+pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    const DRIVE_REMOVABLE: u32 = 2;
+
+    let mask = unsafe { GetLogicalDrives() };
+    if mask == 0 {
+        return Err(AppError::Internal("GetLogicalDrives failed".into()));
+    }
+
+    let mut sources = Vec::new();
+
+    for i in 0..26u32 {
+        if mask & (1 << i) == 0 {
+            continue;
+        }
+
+        let letter = (b'A' + i as u8) as char;
+        let root = format!("{letter}:\\");
+        let wide_root = to_wide_null(&root);
+
+        let drive_type = unsafe { GetDriveTypeW(wide_root.as_ptr()) };
+        if drive_type != DRIVE_REMOVABLE {
+            continue;
+        }
+
+        if !is_dashcam_root(Path::new(&root)) {
+            continue;
+        }
+
+        let (file_count, total_bytes) = count_files_and_size(Path::new(&root));
+
+        sources.push(ImportSource {
+            path: root.clone(),
+            label: format!("sd-{letter}"),
+            read_only: !is_writable(Path::new(&root)),
+            file_count,
+            total_bytes,
+        });
+    }
+
+    Ok(sources)
+}
+
+#[cfg(not(windows))]
+pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
+    Ok(Vec::new())
+}
+
+/// Check if a directory contains at least MIN_FOLDER_MATCH known dashcam folders.
+pub fn is_dashcam_root(path: &Path) -> bool {
+    let entries = match fs::read_dir(path) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if DASHCAM_FOLDERS.iter().any(|&df| df == name) {
+            count += 1;
+        }
+    }
+
+    count >= MIN_FOLDER_MATCH
+}
+
+/// Test if a path is writable by creating and deleting a temp file.
+pub fn is_writable(path: &Path) -> bool {
+    let tmp = path.join(".dashcam-writetest");
+    match fs::File::create(&tmp) {
+        Ok(_) => {
+            let _ = fs::remove_file(&tmp);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Walk a source directory and count all files (excluding system dirs and PreAllocFiles).
+fn count_files_and_size(root: &Path) -> (u32, u64) {
+    let mut count = 0u32;
+    let mut total = 0u64;
+
+    for entry in WalkDir::new(root).follow_links(false).into_iter().filter_entry(|e| {
+        if e.file_type().is_dir() {
+            !is_skipped_dir(&e.file_name().to_string_lossy())
+        } else {
+            true
+        }
+    }) {
+        let Ok(entry) = entry else { continue };
+        if entry.file_type().is_file() {
+            let name = entry.file_name().to_string_lossy();
+            if name.starts_with(".PreAllocFile_") {
+                continue;
+            }
+            count += 1;
+            total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        }
+    }
+
+    (count, total)
+}
+
+#[cfg(windows)]
+fn to_wide_null(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_dashcam_root_with_enough_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("front_norm")).unwrap();
+        fs::create_dir(dir.path().join("rear_norm")).unwrap();
+        fs::create_dir(dir.path().join("extra_norm")).unwrap();
+        assert!(is_dashcam_root(dir.path()));
+    }
+
+    #[test]
+    fn test_is_dashcam_root_not_enough_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("front_norm")).unwrap();
+        fs::create_dir(dir.path().join("rear_norm")).unwrap();
+        assert!(!is_dashcam_root(dir.path()));
+    }
+
+    #[test]
+    fn test_is_dashcam_root_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("FRONT_NORM")).unwrap();
+        fs::create_dir(dir.path().join("Rear_Norm")).unwrap();
+        fs::create_dir(dir.path().join("extra_PHOTO")).unwrap();
+        assert!(is_dashcam_root(dir.path()));
+    }
+
+    #[test]
+    fn test_is_writable() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(is_writable(dir.path()));
+    }
+
+    #[test]
+    fn test_is_skipped_dir() {
+        assert!(is_skipped_dir("System Volume Information"));
+        assert!(is_skipped_dir("$Recycle.Bin"));
+        assert!(is_skipped_dir("$RECYCLE.BIN"));
+        assert!(!is_skipped_dir("front_norm"));
+    }
+
+    #[test]
+    fn test_count_files_and_size() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("front_norm")).unwrap();
+        fs::write(dir.path().join("front_norm").join("test.mp4"), "hello").unwrap();
+        fs::write(dir.path().join("front_norm").join("test2.mp4"), "world!").unwrap();
+
+        let (count, size) = count_files_and_size(dir.path());
+        assert_eq!(count, 2);
+        assert_eq!(size, 11); // "hello" (5) + "world!" (6)
+    }
+}

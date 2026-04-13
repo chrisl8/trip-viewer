@@ -17,6 +17,12 @@ pub enum AppError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("import already running")]
+    ImportAlreadyRunning,
+
+    #[error("no import in progress")]
+    NoImportRunning,
 }
 
 impl Serialize for AppError {

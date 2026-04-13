@@ -4334,14 +4334,17 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tempfile",
  "thiserror 1.0.69",
  "uuid",
  "walkdir",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
