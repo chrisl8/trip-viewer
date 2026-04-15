@@ -30,7 +30,37 @@ pub fn free_disk_space(path: &Path) -> Result<u64, AppError> {
     Ok(free_bytes_available)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub fn free_disk_space(path: &Path) -> Result<u64, AppError> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| AppError::Internal(format!("invalid path {}: {e}", path.display())))?;
+
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let result = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+
+    if result != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(AppError::Internal(format!(
+            "statvfs failed for {}: {err}",
+            path.display()
+        )));
+    }
+
+    // f_bavail = blocks available to unprivileged users;
+    // f_frsize = fundamental filesystem block size.
+    // The cast is a no-op on 64-bit Unix but required on 32-bit where
+    // fsblkcnt_t is u32. Silence clippy so the same code compiles clean on both.
+    #[allow(clippy::unnecessary_cast)]
+    let avail = stat.f_bavail as u64;
+    #[allow(clippy::unnecessary_cast)]
+    let frsize = stat.f_frsize as u64;
+    Ok(avail.saturating_mul(frsize))
+}
+
+#[cfg(all(not(windows), not(unix)))]
 pub fn free_disk_space(_path: &Path) -> Result<u64, AppError> {
     Err(AppError::Internal(
         "disk space check not supported on this platform".to_string(),
@@ -78,6 +108,13 @@ mod tests {
     #[test]
     fn test_free_disk_space_current_dir() {
         let free = free_disk_space(Path::new("C:\\")).unwrap();
+        assert!(free > 0, "Expected positive free space, got {free}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_free_disk_space_root() {
+        let free = free_disk_space(Path::new("/")).unwrap();
         assert!(free > 0, "Expected positive free space, got {free}");
     }
 }

@@ -4326,10 +4326,11 @@ dependencies = [
 
 [[package]]
 name = "tripviewer"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "dunce",
+ "libc",
  "mp4",
  "rayon",
  "serde",
