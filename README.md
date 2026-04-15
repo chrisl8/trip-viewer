@@ -4,7 +4,7 @@
 
 If you own a multi-channel dashcam (like a Wolf Box, Viofo, or similar), you've probably been disappointed by the software that comes with it. The manufacturer apps are slow, clunky, and can barely scrub through footage. The paid third-party viewers are better but still can't handle three camera channels well. And none of them are open source.
 
-Trip Viewer changes that. It plays all three of your dashcam channels — front, interior, and rear — perfectly synchronized, with a live GPS map tracking your position as the video plays. It uses your computer's hardware video decoder, so playback is smooth even at high resolution. And it runs as a lightweight native app on Windows and Linux (~3 MB installer on Windows; AppImage on Linux), not a bloated Electron app.
+Trip Viewer changes that. It plays every channel your dashcam records — whether that's 2, 3, or 4 cameras — perfectly synchronized, with a live GPS map tracking your position as the video plays. It uses your computer's hardware video decoder, so playback is smooth even at high resolution. And it runs as a lightweight native app on Windows and Linux (~3 MB installer on Windows; AppImage on Linux), not a bloated Electron app.
 
 ![Trip Viewer screenshot showing 3-channel synchronized playback with GPS map](screenshot.png)
 
@@ -34,7 +34,7 @@ Trip Viewer changes that. It plays all three of your dashcam channels — front,
 sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad
 ```
 
-By default on Linux, only the front channel is shown — press **M** to enable multi-channel view (interior + rear). This is opt-in because on some older integrated GPUs, three concurrent HEVC streams can overwhelm video memory. On typical modern hardware it works fine.
+By default on Linux, only the primary channel is shown — press **M** to enable multi-channel view. This is opt-in because on some older integrated GPUs, multiple concurrent HEVC streams can overwhelm video memory. On typical modern hardware it works fine.
 
 ### Auto-updates
 
@@ -46,7 +46,7 @@ Trip Viewer auto-checks for updates on launch (both Windows and AppImage builds)
 
 ## What it does
 
-- **3-channel synchronized playback** — front, interior, and rear cameras play in lockstep. Click a side view to make it the main view. Double-click the main view for fullscreen.
+- **Multi-channel synchronized playback (1–4 channels)** — every camera on your dashcam plays in lockstep. Click a side view to make it the main view. Double-click the main view for fullscreen.
 - **Live GPS map** — an OpenStreetMap view tracks your vehicle position in real time as the video plays, with a trail showing where you've been.
 - **Speed and heading display** — real-time readouts overlaid on the map so you can see how fast you were going at any moment.
 - **Timeline with speed graph** — scrub through footage visually. The speed graph shows interesting moments (hard braking, acceleration) so you can jump right to them.
@@ -55,11 +55,17 @@ Trip Viewer auto-checks for updates on launch (both Windows and AppImage builds)
 - **Keyboard shortcuts** — Space to play/pause, arrow keys to seek, brackets to change speed. Click "Keyboard shortcuts" in the sidebar footer for the full list.
 - **Auto-updates** — the app checks for new versions on startup and offers a one-click update.
 
-## Currently supported dashcams
+## Supported dashcams
 
-Trip Viewer was built and tested with **Wolf Box 3-channel dashcams** (front/interior/rear with `_F/_I/_R` file naming). The GPS parser handles the ShenShu metadata format used by Wolf Box firmware.
+Trip Viewer auto-detects common dashcam filename formats at import time. You just point it at a folder of video files — no renaming, no manual configuration.
 
-The architecture is designed to support other manufacturers — the file scanner, GPS parser, and channel mapping are all modular. If you have a different dashcam and want to try it, [open an issue](https://github.com/chrisl8/trip-viewer/issues) with details about your dashcam model and file format. I'm happy to add support for other cameras.
+Currently recognized formats:
+
+- **Wolf Box** (3-channel: front / interior / rear) — filenames like `2026_03_15_173951_02_F.MP4`. Full GPS support via the ShenShu metadata parser.
+- **Thinkware** (2-channel: front / rear) — filenames like `REC_2026_03_06_07_25_52_F.MP4` or `EVT_...` for event recordings. GPS extraction for Thinkware's format is not yet implemented; footage plays but the map won't populate.
+- **Generic 4-channel** (best-effort) — filenames like `2026_03_06_072552_A.MP4` through `..._D.MP4` (or `_1` through `_4`). Labeled "Channel A" through "Channel D". GPS not yet implemented for this format.
+
+If your dashcam uses a different naming convention, [open an issue](https://github.com/chrisl8/trip-viewer/issues) with a few example filenames (and ideally a sample file) and I'll add support. The parser architecture is modular and new format support is a small, low-risk addition.
 
 ## Platform support
 
