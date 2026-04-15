@@ -31,7 +31,10 @@ export function ImportSummary() {
       // actual Videos folder is <importRoot>/Videos or importRoot itself.
       const root = importRootPath.replace(/[\\/]$/, "");
       const endsWithVideos = /[\\/]videos$/i.test(root);
-      videosPath = endsWithVideos ? root : root + "\\Videos";
+      // Preserve whatever separator style the OS gave us (backslash on
+      // Windows, forward slash on Linux/macOS).
+      const sep = root.includes("\\") ? "\\" : "/";
+      videosPath = endsWithVideos ? root : root + sep + "Videos";
       localStorage.setItem(LAST_FOLDER_KEY, videosPath);
     }
 

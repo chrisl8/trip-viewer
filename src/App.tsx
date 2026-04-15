@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { TripLoader } from "./components/loader/TripLoader";
 import { TripList } from "./components/loader/TripList";
 import { HevcSupportGate } from "./components/video/HevcSupportGate";
@@ -21,13 +22,17 @@ function App() {
   const error = useStore((s) => s.error);
   const importError = useStore((s) => s.importError);
   const resetImport = useStore((s) => s.resetImport);
+  const setVideoPort = useStore((s) => s.setVideoPort);
   const [showIssues, setShowIssues] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [version, setVersion] = useState("");
 
   useEffect(() => {
     getVersion().then(setVersion);
-  }, []);
+    invoke<number>("get_video_port")
+      .then((port) => setVideoPort(port))
+      .catch((e) => console.error("get_video_port failed", e));
+  }, [setVideoPort]);
 
   const hasIssues = unmatched.length > 0 || scanErrors.length > 0;
 
@@ -82,7 +87,7 @@ function App() {
                   </div>
                   {scanErrors.slice(0, 10).map((e, i) => (
                     <div key={i} className="truncate" title={e.reason}>
-                      {e.path.split("\\").pop()} — {e.reason}
+                      {e.path.split(/[\\/]/).pop()} — {e.reason}
                     </div>
                   ))}
                   {scanErrors.length > 10 && (
@@ -99,7 +104,7 @@ function App() {
                   </div>
                   {unmatched.slice(0, 10).map((u, i) => (
                     <div key={i} className="truncate">
-                      {u.split("\\").pop()}
+                      {u.split(/[\\/]/).pop()}
                     </div>
                   ))}
                   {unmatched.length > 10 && (
