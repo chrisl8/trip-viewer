@@ -20,13 +20,18 @@ export function useSyncEngine(
 
     const tryInit = () => {
       const f = frontRef.current;
-      const i = interiorRef.current;
-      const r = rearRef.current;
-      if (!f || !i || !r) return;
-      if (f.readyState < 2 || i.readyState < 2 || r.readyState < 2) return;
+      if (!f || f.readyState < 2) return;
       if (engineRef.current) return;
 
-      const e = new SyncEngine(f, [i, r]);
+      // Tolerate missing slaves: the diagnostic single-channel mode in
+      // VideoGrid only renders the front panel, so interior/rear refs may
+      // be null. SyncEngine's tick loop and play/pause/seek/setSpeed all
+      // iterate `this.slaves` — an empty array is a safe no-op.
+      const slaves = [interiorRef.current, rearRef.current].filter(
+        (v): v is HTMLVideoElement => v !== null && v.readyState >= 2,
+      );
+
+      const e = new SyncEngine(f, slaves);
       e.start();
       engineRef.current = e;
       setEngine(e);

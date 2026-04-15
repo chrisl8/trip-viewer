@@ -4,6 +4,24 @@ const HARD_RESYNC_S = 0.15;
 const SOFT_CORRECT_S = 0.04;
 const SOFT_BIAS = 0.05;
 
+// WebKitGTK's GStreamer-backed <video> treats any `currentTime=` assignment
+// as a full pipeline flush + re-decode — far heavier than Chromium's
+// frame-level scrub. Running our Chromium-tuned drift correction on Linux
+// causes a thrash loop: the slave never catches up inside HARD_RESYNC_S,
+// so every tick re-flushes the pipeline, which starves the compositor and
+// can hard-lock modest iGPUs (observed on AMD Vega 11 / VCN 1.0).
+//
+// On Linux we leave slaves free-running at the same playbackRate. All
+// three channels come from the same firmware, same clock, same fps, so
+// passive drift is in the microseconds-per-second range — imperceptible
+// for dashcam playback. The drift HUD still reports live drift so we can
+// confirm this empirically. Seeks and speed changes, which are one-shot
+// and affect all three equally, are kept.
+const IS_LINUX =
+  typeof navigator !== "undefined" &&
+  navigator.userAgent.includes("Linux") &&
+  !navigator.userAgent.includes("Android");
+
 export class SyncEngine {
   private master: HTMLVideoElement;
   private slaves: HTMLVideoElement[];
@@ -36,8 +54,13 @@ export class SyncEngine {
         if (slave.readyState < 2) continue;
         const drift = slave.currentTime - masterT;
         drifts[i] = drift;
-        const absDrift = Math.abs(drift);
 
+        // On Linux we deliberately do NOT correct drift — see IS_LINUX
+        // comment at the top of the file. We only record the reading so
+        // the drift HUD remains useful.
+        if (IS_LINUX) continue;
+
+        const absDrift = Math.abs(drift);
         if (absDrift > HARD_RESYNC_S) {
           slave.currentTime = masterT;
           slave.playbackRate = speed;
