@@ -111,12 +111,18 @@ impl FilenameParser for WolfBoxParser {
 
 // ── Thinkware ───────────────────────────────────────────────────────────────
 //
-// Format: `REC_YYYY_MM_DD_HH_MM_SS_C.MP4`
+// Format: `XXX_YYYY_MM_DD_HH_MM_SS_C.MP4`
 // Example: `REC_2026_03_06_07_25_52_F.MP4`
 //   C = channel letter (F=Front, R=Rear; Thinkware F200 Pro is 2-channel)
 //
-// Some Thinkware models also use `EVT_` instead of `REC_` for event recordings.
-// We treat both as valid prefixes and flag `EVT_` as event mode.
+// Known 3-letter prefixes:
+//   REC — continuous driving (cont_rec/ folder)
+//   EVT — g-sensor event (evt_rec/ folder)
+//   MAN — manual user-triggered (manual_rec/ folder)
+//   Parking and motion-timelapse prefixes are unconfirmed. The filename
+//   shape is distinctive enough that any 3-letter uppercase prefix is
+//   safely assumed to be Thinkware; unknown prefixes default to Normal
+//   event mode until we learn what Thinkware uses.
 
 struct ThinkwareParser;
 
@@ -131,10 +137,17 @@ impl FilenameParser for ThinkwareParser {
         let (prefix, year, month, day, hh, mm, ss, chan) =
             (parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]);
 
+        // Prefix must be 3 uppercase ASCII letters. This keeps us from
+        // eagerly matching unrelated formats that happen to have 8 parts.
+        if prefix.len() != 3 || !prefix.chars().all(|c| c.is_ascii_uppercase()) {
+            return None;
+        }
+
         let event_mode = match prefix {
-            "REC" => EventMode::Normal,
             "EVT" => EventMode::Event,
-            _ => return None,
+            // REC, MAN, and unknown prefixes (parking, motion-timelapse)
+            // all classified as Normal — not g-sensor incidents.
+            _ => EventMode::Normal,
         };
 
         let dt_str = format!("{year}-{month}-{day}T{hh}:{mm}:{ss}");
@@ -324,6 +337,32 @@ mod tests {
     fn parses_thinkware_event_prefix() {
         let p = parse("EVT_2026_03_06_07_25_52_F.MP4").unwrap();
         assert_eq!(p.event_mode, EventMode::Event);
+    }
+
+    #[test]
+    fn parses_thinkware_manual_prefix() {
+        let p = parse("MAN_2023_11_03_06_43_39_F.MP4").unwrap();
+        assert_eq!(p.channel_label, LABEL_FRONT);
+        assert_eq!(p.event_mode, EventMode::Normal);
+        assert!(p.group_key.starts_with("tw:"));
+    }
+
+    #[test]
+    fn parses_thinkware_unknown_prefix_defaults_to_normal() {
+        // Parking and motion-timelapse prefixes aren't confirmed, but any
+        // 3-letter uppercase prefix with the Thinkware shape should parse
+        // (and not land in scan errors). Default event mode is Normal.
+        let p = parse("PKG_2026_03_06_07_25_52_F.MP4").unwrap();
+        assert_eq!(p.event_mode, EventMode::Normal);
+        assert!(p.group_key.contains("_PKG"));
+    }
+
+    #[test]
+    fn thinkware_rejects_non_uppercase_prefix() {
+        // Guard rail: don't accept random 3-char prefixes that aren't
+        // clearly Thinkware-style.
+        assert!(parse("rec_2026_03_06_07_25_52_F.MP4").is_err());
+        assert!(parse("12x_2026_03_06_07_25_52_F.MP4").is_err());
     }
 
     #[test]
