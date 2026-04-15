@@ -38,45 +38,32 @@ Go to [github.com/chrisl8/trip-viewer](https://github.com/chrisl8/trip-viewer) >
 
 ## How to cut a release
 
-### 1. Bump the version
-
-Update the version string in all three places:
-
-| File                        | Field                |
-| --------------------------- | -------------------- |
-| `src-tauri/Cargo.toml`      | `version = "X.Y.Z"`  |
-| `src-tauri/tauri.conf.json` | `"version": "X.Y.Z"` |
-| `package.json`              | `"version": "X.Y.Z"` |
-
-### 2. Commit the version bump
+From a clean working tree on `main`:
 
 ```bash
-git add src-tauri/tauri.conf.json package.json src-tauri/Cargo.toml
-git commit -m "Bump version to X.Y.Z"
+npm run release patch      # 0.1.4 → 0.1.5
+npm run release minor      # 0.1.4 → 0.2.0
+npm run release major      # 0.1.4 → 1.0.0
+npm run release 0.2.0-rc1  # explicit version
 ```
 
-### 3. Tag the release
+That single command:
 
-```bash
-git tag vX.Y.Z
-```
+1. Verifies the working tree is clean and you're on `main`
+2. Updates `package.json` and `package-lock.json` with the new version
+3. Updates `src-tauri/Cargo.toml` (Tauri reads its version from `package.json` automatically via `"version": "../package.json"` in `tauri.conf.json`)
+4. Runs `cargo check` to refresh `Cargo.lock`
+5. Commits all four files with message `Bump version to X.Y.Z`
+6. Creates the annotated tag `vX.Y.Z`
+7. Pushes the commit and tag to `origin`
 
-### 4. Push to GitHub
+If the working tree is dirty or you're on the wrong branch, the script bails before making any changes.
 
-If your GitHub remote is named `github`:
-
-```bash
-git push
-git push origin vX.Y.Z
-```
-
-If you use Forgejo push mirroring, the tag may sync automatically — verify at github.com/chrisl8/trip-viewer/actions.
-
-### 5. Wait for the build
+### Wait for the build
 
 The Action takes ~7-8 minutes. Monitor it at [github.com/chrisl8/trip-viewer/actions](https://github.com/chrisl8/trip-viewer/actions).
 
-### 6. Review and publish
+### Review and publish
 
 The Action creates a **draft release**. Go to [github.com/chrisl8/trip-viewer/releases](https://github.com/chrisl8/trip-viewer/releases), edit the release notes if desired, and click **Publish release**.
 
