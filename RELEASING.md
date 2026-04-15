@@ -1,6 +1,8 @@
 # Releasing Trip Viewer
 
-Pushing a version tag (e.g. `v0.2.0`) to the GitHub mirror triggers a GitHub Actions workflow that builds a Windows NSIS installer, signs it for the auto-updater, and creates a draft release with the installer and update manifest attached. You review the draft, edit the release notes if desired, and publish it.
+Pushing a version tag (e.g. `v0.2.0`) to the GitHub mirror triggers a GitHub Actions workflow that builds a Windows NSIS installer and a Linux AppImage, signs both for the auto-updater, and creates a draft release with the installers and update manifest attached. You review the draft, edit the release notes if desired, and publish it.
+
+> **Flatpak:** a Flathub distribution is planned but **not part of this release workflow**. There is no Flathub manifest repo yet; AppImage is the only Linux artifact the CI produces. When Flatpak is added, it will ship out-of-band via Flathub (which manages its own updates), not from this repo's GitHub Actions.
 
 ## One-time setup
 
@@ -80,9 +82,19 @@ The Action creates a **draft release**. Go to [github.com/chrisl8/trip-viewer/re
 
 The draft will have these assets attached:
 
+**Windows:**
+
 - `tripviewer_X.Y.Z_x64-setup.exe` — the NSIS installer
 - `tripviewer_X.Y.Z_x64-setup.exe.sig` — updater signature
-- `latest.json` — auto-update manifest
+
+**Linux:**
+
+- `trip-viewer_X.Y.Z_amd64.AppImage` — the AppImage (single-file binary, GStreamer plugins bundled)
+- `trip-viewer_X.Y.Z_amd64.AppImage.sig` — updater signature
+
+**Shared:**
+
+- `latest.json` — auto-update manifest (contains signed URLs for both platforms)
 
 ## How the auto-updater works
 
@@ -95,6 +107,8 @@ https://github.com/chrisl8/trip-viewer/releases/latest/download/latest.json
 If a newer version is available, a toast notification appears in the bottom-right corner with an "Update & Restart" button. The update is verified against the public key before installing.
 
 The updater only checks published (non-draft) releases.
+
+On Linux (AppImage), the updater downloads the new AppImage, replaces the current binary on disk, and restarts. This works when the user launched the AppImage from a writable location; if it was installed read-only (e.g. inside `/opt` or via an integration tool), the updater will surface the error and the user can download manually from the Releases page. When a Flatpak build is eventually added, auto-update will be disabled inside the Flatpak — Flathub handles updates for sandboxed installs.
 
 ## Code signing (future)
 
@@ -126,4 +140,16 @@ Expected until code signing is set up. Users click "More info" > "Run anyway". T
 
 ### Installer is very large
 
-The NSIS installer should be ~3-6 MB. If it's much larger, check that `bundle.targets` in `tauri.conf.json` is set to `["nsis"]` and not `"all"` (which would include MSI with embedded WebView2 at ~130 MB).
+The NSIS installer should be ~3-6 MB. If it's much larger, check that `bundle.targets` in `tauri.conf.json` is set to `["nsis", "appimage"]` and not `"all"` (which would include MSI with embedded WebView2 at ~130 MB).
+
+### Linux build fails on the GitHub runner
+
+The Ubuntu job in `.github/workflows/release.yml` installs `webkit2gtk-4.1`, `gstreamer1.0-libav`, `gstreamer1.0-plugins-bad`, and the rest of Tauri's Linux build deps before running `tauri-action`. If the build fails during system-dep install, check whether the base Ubuntu image version still ships WebKit2GTK 4.1 — Tauri v2 needs 4.1, not the older 4.0. As of this release we target `ubuntu-22.04`.
+
+### AppImage won't start on user's machine
+
+If a user reports the AppImage exits immediately or complains about missing libraries, the most common causes are:
+
+- No `libfuse2` on their system (required to mount the AppImage). On modern Ubuntu: `sudo apt install libfuse2`.
+- Missing `gstreamer1.0-libav` — this one the app itself catches via the HEVC support gate and shows an install hint.
+- Very old distro without WebKit2GTK 4.1 available — out of scope; we don't ship older Ubuntu LTS targets.
