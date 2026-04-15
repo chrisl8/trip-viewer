@@ -4,22 +4,45 @@
 
 If you own a multi-channel dashcam (like a Wolf Box, Viofo, or similar), you've probably been disappointed by the software that comes with it. The manufacturer apps are slow, clunky, and can barely scrub through footage. The paid third-party viewers are better but still can't handle three camera channels well. And none of them are open source.
 
-Trip Viewer changes that. It plays all three of your dashcam channels — front, interior, and rear — perfectly synchronized, with a live GPS map tracking your position as the video plays. It uses your computer's hardware video decoder, so playback is smooth even at high resolution. And it runs as a lightweight native Windows app (~3 MB installer), not a bloated Electron app.
+Trip Viewer changes that. It plays all three of your dashcam channels — front, interior, and rear — perfectly synchronized, with a live GPS map tracking your position as the video plays. It uses your computer's hardware video decoder, so playback is smooth even at high resolution. And it runs as a lightweight native app on Windows and Linux (~3 MB installer on Windows; AppImage on Linux), not a bloated Electron app.
 
 ![Trip Viewer screenshot showing 3-channel synchronized playback with GPS map](screenshot.png)
 
 ## How to install
 
-**Trip Viewer runs on Windows 10 and Windows 11.** No developer tools required.
+**Trip Viewer runs on Windows 10/11 and modern Linux distributions.** No developer tools required.
+
+### Windows
 
 1. Go to the [Releases page](https://github.com/chrisl8/trip-viewer/releases)
 2. Under the latest release, download the file ending in **`_x64-setup.exe`**
 3. Run the installer — Windows may show a SmartScreen warning since the app is new and unsigned. Click **"More info"** then **"Run anyway"**
 4. Launch **Trip Viewer** from your Start Menu
 
-**One extra requirement:** Your dashcam probably records in HEVC (H.265) format. Windows needs a decoder for this. Trip Viewer will check on startup and link you to the Microsoft Store if it's missing. The [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) is a one-time install.
+**One extra requirement on Windows:** Your dashcam probably records in HEVC (H.265) format. Windows needs a decoder for this. Trip Viewer will check on startup and link you to the Microsoft Store if it's missing. The [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) is a one-time install.
 
-Trip Viewer auto-checks for updates on launch, so you'll always have the latest version.
+### Linux
+
+1. Go to the [Releases page](https://github.com/chrisl8/trip-viewer/releases)
+2. Under the latest release, download the file ending in **`.AppImage`**
+3. Make it executable: `chmod +x trip-viewer_*_amd64.AppImage`
+4. Run it: `./trip-viewer_*_amd64.AppImage`
+
+**One extra requirement on Linux:** HEVC playback needs GStreamer's libav plugin. Trip Viewer will check on startup and show an install hint if it's missing. On Debian/Ubuntu:
+
+```bash
+sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad
+```
+
+By default on Linux, only the front channel is shown — press **M** to enable multi-channel view (interior + rear). This is opt-in because on some older integrated GPUs, three concurrent HEVC streams can overwhelm video memory. On typical modern hardware it works fine.
+
+### Auto-updates
+
+Trip Viewer auto-checks for updates on launch (both Windows and AppImage builds), so you'll always have the latest version.
+
+## Known limitations
+
+- **Linux / older AMD integrated GPUs** — On older AMD integrated GPUs (e.g. Raven Ridge / Vega 11), segment transitions may briefly stall (~8 seconds) due to WebKitGTK/VAAPI pipeline behaviour. Playback recovers automatically. Newer hardware is not affected.
 
 ## What it does
 
@@ -40,7 +63,7 @@ The architecture is designed to support other manufacturers — the file scanner
 
 ## Platform support
 
-Trip Viewer currently runs on **Windows only** (10 and 11). The technology it's built on (Tauri) supports macOS and Linux as well, so porting is possible if there's interest. If you'd like to see a macOS or Linux version, [open an issue](https://github.com/chrisl8/trip-viewer/issues) and let me know.
+Trip Viewer runs on **Windows 10/11** and **Linux** (tested on Ubuntu 22.04+ via AppImage; should work on any modern distro with WebKitGTK 4.1 and GStreamer). A macOS build is not offered — Tauri supports it, so porting is possible if there's interest. If you'd like to see a macOS version, [open an issue](https://github.com/chrisl8/trip-viewer/issues) and let me know.
 
 ## Built with AI
 
@@ -64,7 +87,8 @@ If you want to build Trip Viewer from source or contribute:
 
 - Node.js 20+
 - Rust 1.70+ (via [rustup](https://rustup.rs/))
-- [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) for HEVC playback
+- **Windows:** [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) for HEVC playback
+- **Linux:** `webkit2gtk-4.1`, `gstreamer1.0-libav`, `gstreamer1.0-plugins-bad`, plus Tauri's standard build deps (see [Tauri prerequisites](https://tauri.app/start/prerequisites/))
 
 ### Build and run
 
@@ -80,14 +104,14 @@ First build compiles the Rust backend (~2 minutes). Subsequent builds use increm
 
 | Layer | Technology |
 |-------|------------|
-| App framework | Tauri v2 (Rust backend + WebView2 frontend) |
+| App framework | Tauri v2 (Rust backend, WebView2 on Windows / WebKitGTK 4.1 on Linux) |
 | Frontend | React 19, TypeScript, Tailwind CSS v4, Zustand |
 | Maps | Leaflet + react-leaflet + OpenStreetMap |
 | Video sync | `requestVideoFrameCallback` API |
 | Container parsing | `mp4` crate (pure Rust, no ffprobe) |
 | GPS decoding | Custom ShenShu MetaData binary parser |
 | File hashing | SHA-256 via `sha2` crate |
-| CI/CD | GitHub Actions + NSIS installer + auto-updater |
+| CI/CD | GitHub Actions + NSIS (Windows) + AppImage (Linux) + auto-updater |
 
 See [DESIGN.md](DESIGN.md) for architecture decisions and [RELEASING.md](RELEASING.md) for release instructions.
 
