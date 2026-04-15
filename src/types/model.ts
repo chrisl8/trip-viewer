@@ -1,7 +1,14 @@
-export type ChannelKind = "front" | "interior" | "rear";
+/** Canonical built-in labels. `Channel.label` is free-form (any string). */
+export const LABEL_FRONT = "Front";
+export const LABEL_INTERIOR = "Interior";
+export const LABEL_REAR = "Rear";
 
 export interface Channel {
-  kind: ChannelKind;
+  /**
+   * Free-form, user-visible label ("Front", "Interior", "Rear",
+   * "Channel A", etc.). Produced by the Rust filename parser.
+   */
+  label: string;
   filePath: string;
   width: number | null;
   height: number | null;
@@ -16,6 +23,7 @@ export interface Segment {
   startTime: string;
   durationS: number;
   isEvent: boolean;
+  /** Channels in canonical order. channels[0] is the sync master. */
   channels: Channel[];
 }
 

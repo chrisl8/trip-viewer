@@ -2,18 +2,33 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum ChannelKind {
-    Front,
-    Interior,
-    Rear,
+/// Canonical channel labels for common cases. Used for ordering and for
+/// the built-in parsers, but `Channel.label` is free-form so new cameras
+/// can introduce arbitrary labels without a schema change.
+pub const LABEL_FRONT: &str = "Front";
+pub const LABEL_INTERIOR: &str = "Interior";
+pub const LABEL_REAR: &str = "Rear";
+
+/// Canonical sort rank for a channel label. Lower = earlier in the list.
+/// Known Wolf Box / Thinkware layouts sort first; anything else goes after
+/// in alphabetical order. This gives us a stable master channel choice
+/// (always channels[0]) and a stable UI ordering across any camera.
+pub fn label_rank(label: &str) -> (u8, String) {
+    let primary: u8 = match label {
+        LABEL_FRONT => 0,
+        LABEL_INTERIOR => 1,
+        LABEL_REAR => 2,
+        _ => 10,
+    };
+    (primary, label.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
-    pub kind: ChannelKind,
+    /// Free-form, user-visible label ("Front", "Interior", "Rear",
+    /// "Channel A", etc.). Produced by the filename parser.
+    pub label: String,
     pub file_path: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -30,6 +45,8 @@ pub struct Segment {
     pub start_time: NaiveDateTime,
     pub duration_s: f64,
     pub is_event: bool,
+    /// Channels in canonical order (see `label_rank`). The first entry is
+    /// the sync master.
     pub channels: Vec<Channel>,
 }
 

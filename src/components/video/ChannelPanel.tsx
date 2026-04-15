@@ -1,6 +1,5 @@
 import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import type { ChannelKind } from "../../types/model";
 
 // Diagnostic toggles. Both default off so production builds stay silent.
 //
@@ -37,7 +36,7 @@ const MEDIA_EVENTS = [
 ] as const;
 
 interface Props {
-  kind: ChannelKind;
+  label: string;
   src: string;
   isMaster: boolean;
   onClick?: () => void;
@@ -45,7 +44,7 @@ interface Props {
 }
 
 export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
-  function ChannelPanel({ kind, src, isMaster, onClick, onDoubleClick }, ref) {
+  function ChannelPanel({ label, src, isMaster, onClick, onDoubleClick }, ref) {
     const [error, setError] = useState<string | null>(null);
     const [ready, setReady] = useState(false);
     const localRef = useRef<HTMLVideoElement | null>(null);
@@ -65,9 +64,9 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
       setError(null);
       setReady(false);
       if (DEBUG_MEDIA) {
-        console.log(`[media/${kind}] boundary src=…${src.slice(-50)}`);
+        console.log(`[media/${label}] boundary src=…${src.slice(-50)}`);
       }
-    }, [src, kind]);
+    }, [src, label]);
 
     useEffect(() => {
       if (!DEBUG_MEDIA && !DEBUG_MEDIA_VERBOSE) return;
@@ -83,7 +82,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
         const v = ev.currentTarget as HTMLVideoElement;
         const tail = (v.currentSrc || v.src).slice(-50);
         const base =
-          `[media/${kind}] +${dt}s ${ev.type} ` +
+          `[media/${label}] +${dt}s ${ev.type} ` +
           `rs=${v.readyState} ns=${v.networkState} ` +
           `t=${(v.currentTime).toFixed(3)} paused=${v.paused} ended=${v.ended} ` +
           `…${tail}`;
@@ -142,7 +141,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
                   .join(" ");
 
           console.log(
-            `[media/${kind}] +${uptime}s t=${nowMedia.toFixed(2)} ` +
+            `[media/${label}] +${uptime}s t=${nowMedia.toFixed(2)} ` +
               `Δt=${dMedia.toFixed(2)} rt=${rt}% ` +
               `rs=${video.readyState} ns=${video.networkState} ` +
               `buf=${bufEnd} ahead=${bufHead}s ${evSummary}`,
@@ -161,7 +160,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           if (DEBUG_MEDIA) video.removeEventListener(name, countHandler);
         }
       };
-    }, [kind]);
+    }, [label]);
 
     return (
       <div
@@ -188,7 +187,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
             // Dump everything the browser knows so the terminal/devtools
             // console can disambiguate "couldn't load" from "couldn't decode".
             console.error(
-              `[${kind}] video error code=${code} networkState=${networkState} ` +
+              `[${label}] video error code=${code} networkState=${networkState} ` +
                 `src=${video.currentSrc || video.src} message=${message}`,
             );
             const map: Record<number, string> = {
@@ -208,7 +207,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
               isMaster ? "bg-blue-500/80 text-white" : "bg-black/60 text-neutral-200",
             )}
           >
-            {kind}
+            {label}
           </div>
           {onClick && (
             <div className="rounded bg-black/60 px-2 py-0.5 text-[10px] text-neutral-300 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
@@ -231,7 +230,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
         {error && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-red-950/80 p-4 text-center">
             <div className="text-xs font-semibold uppercase tracking-wide text-red-300">
-              {kind}
+              {label}
             </div>
             <div className="text-xs text-red-200">{error}</div>
           </div>

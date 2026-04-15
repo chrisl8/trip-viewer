@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useSyncEngine } from "../../engine/useSyncEngine";
 import { useStore } from "../../state/store";
 import type { Segment } from "../../types/model";
@@ -10,9 +10,10 @@ import { Timeline } from "../timeline/Timeline";
 import { VideoGrid } from "./VideoGrid";
 
 export function PlayerShell() {
-  const frontRef = useRef<HTMLVideoElement>(null);
-  const interiorRef = useRef<HTMLVideoElement>(null);
-  const rearRef = useRef<HTMLVideoElement>(null);
+  // Single map of label → <video> element, populated by callback refs in
+  // VideoGrid. Stable across renders so useSyncEngine's deps array doesn't
+  // churn. Keyed by channel label so it works for any channel count.
+  const channelRefs = useRef<Map<string, HTMLVideoElement | null>>(new Map());
   const shouldAutoPlay = useRef(false);
   const pendingSeekRef = useRef<number | null>(null);
 
@@ -26,17 +27,23 @@ export function PlayerShell() {
     return trip.segments[0];
   });
 
-  const engine = useSyncEngine(
-    frontRef,
-    interiorRef,
-    rearRef,
-    activeSegment?.id ?? null,
+  // Ordered list of channel labels for the current segment (canonical order).
+  // useMemo so the identity is stable as long as the labels are.
+  const channelLabels = useMemo(
+    () => activeSegment?.channels.map((c) => c.label) ?? [],
+    [activeSegment],
   );
 
-  // Segment auto-advance on ended
+  const engine = useSyncEngine(channelRefs, channelLabels, activeSegment?.id ?? null);
+
+  // Segment auto-advance on ended. The master channel (first in canonical
+  // order, i.e. channels[0]) drives this.
   useEffect(() => {
-    const front = frontRef.current;
-    if (!front) return;
+    if (!activeSegment) return;
+    const masterLabel = activeSegment.channels[0]?.label;
+    if (!masterLabel) return;
+    const master = channelRefs.current.get(masterLabel);
+    if (!master) return;
 
     const onEnded = () => {
       const { trips, loadedTripId, activeSegmentId } = useStore.getState();
@@ -55,11 +62,11 @@ export function PlayerShell() {
       }
     };
 
-    front.addEventListener("ended", onEnded);
-    return () => front.removeEventListener("ended", onEnded);
-  }, [activeSegment?.id]);
+    master.addEventListener("ended", onEnded);
+    return () => master.removeEventListener("ended", onEnded);
+  }, [activeSegment]);
 
-  // Auto-play after segment advance or cross-segment seek
+  // Auto-play after segment advance or cross-segment seek.
   useEffect(() => {
     if (!engine) return;
     if (shouldAutoPlay.current) {
@@ -72,7 +79,7 @@ export function PlayerShell() {
     }
   }, [engine]);
 
-  // Seek to an arbitrary trip-level time (may cross segment boundaries)
+  // Seek to an arbitrary trip-level time (may cross segment boundaries).
   const seekToTripTime = useCallback(
     (tripTime: number) => {
       const { trips, loadedTripId, activeSegmentId, isPlaying } =
@@ -98,7 +105,7 @@ export function PlayerShell() {
         cumulative += seg.durationS;
       }
 
-      // Past the end — seek to end of last segment
+      // Past the end — seek to end of last segment.
       const last = trip.segments[trip.segments.length - 1];
       if (last) {
         const currentSegId = activeSegmentId ?? trip.segments[0]?.id;
@@ -117,12 +124,7 @@ export function PlayerShell() {
   return (
     <div className="flex h-full flex-col">
       <div className="relative grid min-h-0 flex-1 grid-cols-[2fr_1fr_1fr] gap-2 p-2">
-        <VideoGrid
-          frontRef={frontRef}
-          interiorRef={interiorRef}
-          rearRef={rearRef}
-          activeSegment={activeSegment}
-        />
+        <VideoGrid channelRefs={channelRefs} activeSegment={activeSegment} />
         <MapPanel activeSegment={activeSegment} />
         <DriftHud />
       </div>

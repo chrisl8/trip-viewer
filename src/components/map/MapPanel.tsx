@@ -46,7 +46,8 @@ export function MapPanel({ activeSegment }: Props) {
     const all: GpsPoint[] = [];
     let cumulativeOffset = 0;
     for (const seg of trip.segments) {
-      const front = seg.channels.find((c) => c.kind === "front");
+      // Master channel (first in canonical order) carries GPS.
+      const front = seg.channels[0];
       if (!front) continue;
       const pts = gpsByFile[front.filePath];
       if (pts) {
@@ -61,7 +62,7 @@ export function MapPanel({ activeSegment }: Props) {
 
   const segmentGpsPoints: GpsPoint[] = useMemo(() => {
     if (!activeSegment) return [];
-    const front = activeSegment.channels.find((c) => c.kind === "front");
+    const front = activeSegment.channels[0];
     if (!front) return [];
     return gpsByFile[front.filePath] ?? [];
   }, [activeSegment, gpsByFile]);

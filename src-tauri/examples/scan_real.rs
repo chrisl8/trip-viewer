@@ -71,8 +71,8 @@ fn main() {
             );
             for ch in &seg.channels {
                 println!(
-                    "    {:?}: {}x{} codec={:?} gpmd={}",
-                    ch.kind,
+                    "    {}: {}x{} codec={:?} gpmd={}",
+                    ch.label,
                     ch.width.unwrap_or(0),
                     ch.height.unwrap_or(0),
                     ch.codec,

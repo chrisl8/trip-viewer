@@ -4,7 +4,7 @@ pub mod walker;
 
 use crate::error::AppError;
 use crate::metadata::mp4_probe;
-use crate::model::{ChannelKind, ScanError, ScanResult, Segment, Trip};
+use crate::model::{ScanError, ScanResult, Segment, Trip};
 use crate::scan::grouping::{GroupingInput, DEFAULT_TRIP_GAP_SECONDS};
 use chrono::{Duration, NaiveDateTime};
 use rayon::prelude::*;
@@ -31,7 +31,7 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
         root.display()
     );
 
-    // Stage 1: parse filenames. Bad names → scan errors.
+    // Stage 1: parse filenames. Files we can't parse go to scan errors.
     let mut parsed_inputs: Vec<GroupingInput> = Vec::with_capacity(files.len());
     let mut errors: Vec<ScanError> = Vec::new();
     for file in files {
@@ -51,13 +51,15 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
         }
     }
 
-    // Stage 2: assemble triplets (with stub durations for now).
+    // Stage 2: group parsed files into segments and trips. Any channel
+    // count (1–N) is accepted.
     let group_out = grouping::group(parsed_inputs, DEFAULT_TRIP_GAP_SECONDS);
     let mut trips = group_out.trips;
     let unmatched = group_out.unmatched;
 
-    // Stage 3: parallel probe every channel file → fill metadata + real durations.
-    // Collect paths per segment (immutable borrow of trips, dropped before stage 4).
+    // Stage 3: parallel probe every channel file → fill metadata + real
+    // durations. The master (first channel in canonical order) provides
+    // the segment duration.
     let segment_paths: Vec<Vec<PathBuf>> = trips
         .iter()
         .flat_map(|t| t.segments.iter())
@@ -71,22 +73,14 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
 
     let probe_outcomes: Vec<SegmentProbe> = segment_paths
         .par_iter()
-        .zip(
-            trips
-                .iter()
-                .flat_map(|t| t.segments.iter())
-                .map(|s| s.channels.iter().map(|c| c.kind).collect::<Vec<_>>())
-                .collect::<Vec<_>>()
-                .par_iter(),
-        )
-        .map(|(paths, kinds)| probe_segment(paths, kinds))
+        .map(|paths| probe_segment(paths))
         .collect();
 
-    // Apply probe outcomes to segments (mutable borrow now that immutable is dropped).
+    // Apply probe outcomes to segments.
     {
         let seg_iter = trips.iter_mut().flat_map(|t| t.segments.iter_mut());
         for (seg, probe) in seg_iter.zip(probe_outcomes.iter()) {
-            if let Some(d) = probe.front_duration {
+            if let Some(d) = probe.master_duration {
                 seg.duration_s = d;
             }
             for (ch, pch) in seg.channels.iter_mut().zip(probe.channels.iter()) {
@@ -103,8 +97,8 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
         errors.extend(probe.errors);
     }
 
-    // Stage 4: re-run trip merging with real durations. The stub 180s assumption
-    // may have mis-merged event segments that were shorter.
+    // Stage 4: re-run trip merging with real durations. The stub 180s
+    // assumption may have mis-merged short event segments.
     let all_segments: Vec<Segment> = trips.into_iter().flat_map(|t| t.segments).collect();
     let final_trips = remerge_trips(all_segments, DEFAULT_TRIP_GAP_SECONDS);
 
@@ -127,18 +121,19 @@ struct ProbedChannel {
 
 #[derive(Debug, Default)]
 struct SegmentProbe {
-    front_duration: Option<f64>,
+    /// Duration of the master channel (first in canonical order).
+    master_duration: Option<f64>,
     channels: Vec<ProbedChannel>,
     errors: Vec<ScanError>,
 }
 
-fn probe_segment(paths: &[PathBuf], kinds: &[ChannelKind]) -> SegmentProbe {
+fn probe_segment(paths: &[PathBuf]) -> SegmentProbe {
     let mut out = SegmentProbe::default();
-    for (path, kind) in paths.iter().zip(kinds.iter()) {
+    for (idx, path) in paths.iter().enumerate() {
         match mp4_probe::probe(path) {
             Ok(meta) => {
-                if *kind == ChannelKind::Front {
-                    out.front_duration = Some(meta.duration_s);
+                if idx == 0 {
+                    out.master_duration = Some(meta.duration_s);
                 }
                 out.channels.push(ProbedChannel {
                     width: Some(meta.width),
@@ -203,8 +198,8 @@ fn remerge_trips(segments: Vec<Segment>, trip_gap_s: i64) -> Vec<Trip> {
 }
 
 fn close_trip(segments: Vec<Segment>) -> Trip {
-    let start_time = segments.first().unwrap().start_time;
-    let last = segments.last().unwrap();
+    let start_time = segments.first().expect("close_trip on non-empty").start_time;
+    let last = segments.last().expect("close_trip on non-empty");
     let last_duration = if last.duration_s > 0.0 {
         last.duration_s
     } else {

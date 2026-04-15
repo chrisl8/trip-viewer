@@ -25,13 +25,20 @@ const IS_LINUX =
 export class SyncEngine {
   private master: HTMLVideoElement;
   private slaves: HTMLVideoElement[];
+  private slaveLabels: string[];
   private disposed = false;
   private pauseIntentional = false;
   private cleanup: (() => void) | null = null;
 
-  constructor(master: HTMLVideoElement, slaves: HTMLVideoElement[]) {
+  constructor(
+    master: HTMLVideoElement,
+    slaves: HTMLVideoElement[],
+    slaveLabels: string[] = [],
+  ) {
     this.master = master;
     this.slaves = slaves;
+    // Pad/truncate labels to match slaves length so lookups are safe.
+    this.slaveLabels = slaves.map((_, i) => slaveLabels[i] ?? `Slave ${i + 1}`);
     this.attachPauseGuard();
   }
 
@@ -48,12 +55,15 @@ export class SyncEngine {
       store.setCurrentTime(masterT);
       const speed = store.speed;
 
-      const drifts = [0, 0];
+      const drifts: { label: string; driftMs: number }[] = [];
       for (let i = 0; i < this.slaves.length; i++) {
         const slave = this.slaves[i];
         if (slave.readyState < 2) continue;
         const drift = slave.currentTime - masterT;
-        drifts[i] = drift;
+        drifts.push({
+          label: this.slaveLabels[i],
+          driftMs: Math.round(drift * 1000),
+        });
 
         // On Linux we deliberately do NOT correct drift — see IS_LINUX
         // comment at the top of the file. We only record the reading so
@@ -73,10 +83,7 @@ export class SyncEngine {
       }
 
       if (store.showDriftHud) {
-        store.setDrift({
-          interior: Math.round(drifts[0] * 1000),
-          rear: Math.round(drifts[1] * 1000),
-        });
+        store.setDrift(drifts);
       }
 
       this.master.requestVideoFrameCallback(tick);

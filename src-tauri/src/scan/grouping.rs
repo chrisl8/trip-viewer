@@ -1,15 +1,25 @@
-use crate::model::{Channel, ChannelKind, Segment, Trip};
+//! Group parsed dashcam files into segments and trips.
+//!
+//! A segment is a set of channel files all recorded at roughly the same
+//! time (same `group_key`, timestamps within a fuzzy window). We accept
+//! any channel count from 1 to N — the old Wolf-Box-only version required
+//! exactly three (F/I/R), which blocked users of 2-channel and 4-channel
+//! dashcams.
+
+use crate::model::{label_rank, Channel, Segment, Trip};
 use crate::scan::naming::{EventMode, ParsedName};
 use chrono::{Duration, NaiveDateTime};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use uuid::Uuid;
 
 pub const DEFAULT_TRIP_GAP_SECONDS: i64 = 120;
 pub const ASSUMED_SEGMENT_DURATION_S: f64 = 180.0;
-/// Wolf Box records each channel with a per-file timestamp. Across a triplet
-/// the three filenames can drift by up to 1 second (empirical), so match
-/// fuzzily within this window.
-pub const TRIPLET_FUZZY_WINDOW_S: i64 = 3;
+/// Across a multi-channel segment the per-file timestamps can drift by
+/// up to a couple of seconds (empirical, Wolf Box). Any two files with
+/// the same `group_key` are already considered a segment, but if two
+/// segments share a key within this window we merge them.
+pub const SEGMENT_FUZZY_WINDOW_S: i64 = 3;
 
 #[derive(Debug, Clone)]
 pub struct GroupingInput {
@@ -24,104 +34,70 @@ pub struct GroupingOutput {
 }
 
 pub fn group(items: Vec<GroupingInput>, trip_gap_s: i64) -> GroupingOutput {
-    let mut fronts: Vec<GroupingInput> = Vec::new();
-    let mut interiors: Vec<Option<GroupingInput>> = Vec::new();
-    let mut rears: Vec<Option<GroupingInput>> = Vec::new();
-
+    // Bucket by group_key — every parser is responsible for producing a
+    // key that uniquely identifies a recording instance.
+    let mut buckets: HashMap<String, Vec<GroupingInput>> = HashMap::new();
     for item in items {
-        match item.parsed.channel {
-            ChannelKind::Front => fronts.push(item),
-            ChannelKind::Interior => interiors.push(Some(item)),
-            ChannelKind::Rear => rears.push(Some(item)),
-        }
+        buckets
+            .entry(item.parsed.group_key.clone())
+            .or_default()
+            .push(item);
     }
 
-    fronts.sort_by_key(|i| i.parsed.start_time);
-    interiors.sort_by_key(|slot| {
-        slot.as_ref()
-            .map(|i| i.parsed.start_time)
-            .unwrap_or_default()
-    });
-    rears.sort_by_key(|slot| {
-        slot.as_ref()
-            .map(|i| i.parsed.start_time)
-            .unwrap_or_default()
-    });
-
-    let mut segments: Vec<Segment> = Vec::new();
-    let mut unmatched: Vec<String> = Vec::new();
-
-    for front in fronts {
-        let front_t = front.parsed.start_time;
-        let front_event = front.parsed.event_mode;
-
-        let i_idx = find_match(&interiors, front_t, front_event, TRIPLET_FUZZY_WINDOW_S);
-        let r_idx = find_match(&rears, front_t, front_event, TRIPLET_FUZZY_WINDOW_S);
-
-        match (i_idx, r_idx) {
-            (Some(i), Some(r)) => {
-                let interior = interiors[i].take().expect("claim interior");
-                let rear = rears[r].take().expect("claim rear");
-                segments.push(Segment {
-                    id: Uuid::new_v4(),
-                    start_time: front_t,
-                    duration_s: 0.0,
-                    is_event: matches!(front_event, EventMode::Event),
-                    channels: vec![
-                        make_channel(&front),
-                        make_channel(&interior),
-                        make_channel(&rear),
-                    ],
-                });
-            }
-            _ => unmatched.push(front.path.to_string_lossy().into_owned()),
-        }
+    // Each bucket becomes one segment. No minimum channel count.
+    let mut segments: Vec<Segment> = Vec::with_capacity(buckets.len());
+    for (_, bucket) in buckets {
+        segments.push(make_segment(bucket));
     }
 
-    for slot in interiors.into_iter().flatten() {
-        unmatched.push(slot.path.to_string_lossy().into_owned());
-    }
-    for slot in rears.into_iter().flatten() {
-        unmatched.push(slot.path.to_string_lossy().into_owned());
-    }
-
+    // Merge segments whose start times are within SEGMENT_FUZZY_WINDOW_S
+    // and share an event_mode. This catches cases where two parsers
+    // generated slightly different group_keys for what should be one segment
+    // (e.g. filename clock skew pushing across a second boundary).
     segments.sort_by_key(|s| s.start_time);
+    let segments = merge_fuzzy_neighbors(segments);
+
     let trips = merge_into_trips(segments, trip_gap_s);
-    GroupingOutput { trips, unmatched }
-}
-
-fn find_match(
-    list: &[Option<GroupingInput>],
-    target_t: NaiveDateTime,
-    event_mode: EventMode,
-    window_s: i64,
-) -> Option<usize> {
-    let mut best: Option<(usize, i64)> = None;
-    for (idx, slot) in list.iter().enumerate() {
-        let Some(item) = slot else { continue };
-        if item.parsed.event_mode != event_mode {
-            continue;
-        }
-        let delta_s = (item.parsed.start_time - target_t).num_seconds();
-        if delta_s.abs() <= window_s {
-            match best {
-                None => best = Some((idx, delta_s.abs())),
-                Some((_, prev_abs)) if delta_s.abs() < prev_abs => {
-                    best = Some((idx, delta_s.abs()))
-                }
-                _ => {}
-            }
-        } else if delta_s > window_s {
-            // List is sorted ascending by start_time; nothing further will match.
-            break;
-        }
+    GroupingOutput {
+        trips,
+        // With the group-key approach, a file either parses (and becomes
+        // a 1+ channel segment) or doesn't parse at all (and is already
+        // in `errors` upstream). There's no more "unmatched" category.
+        unmatched: Vec::new(),
     }
-    best.map(|(idx, _)| idx)
 }
 
-fn make_channel(item: &GroupingInput) -> Channel {
+fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
+    // Use the earliest timestamp in the bucket as the segment start.
+    // Event mode comes from any file (they all share group_key, so they
+    // all share event_mode by construction).
+    let start_time = bucket
+        .iter()
+        .map(|i| i.parsed.start_time)
+        .min()
+        .expect("bucket is non-empty by construction");
+    let event_mode = bucket[0].parsed.event_mode;
+
+    let mut channels: Vec<Channel> = bucket.into_iter().map(make_channel).collect();
+    // Canonical order: Front, Interior, Rear, then others alphabetically.
+    channels.sort_by(|a, b| label_rank(&a.label).cmp(&label_rank(&b.label)));
+
+    // Drop duplicate labels — if two files with the same parser label
+    // show up in one bucket, keep the first after canonical sort.
+    channels.dedup_by(|a, b| a.label == b.label);
+
+    Segment {
+        id: Uuid::new_v4(),
+        start_time,
+        duration_s: 0.0,
+        is_event: matches!(event_mode, EventMode::Event),
+        channels,
+    }
+}
+
+fn make_channel(item: GroupingInput) -> Channel {
     Channel {
-        kind: item.parsed.channel,
+        label: item.parsed.channel_label,
         file_path: item.path.to_string_lossy().into_owned(),
         width: None,
         height: None,
@@ -130,6 +106,40 @@ fn make_channel(item: &GroupingInput) -> Channel {
         codec: None,
         has_gpmd_track: false,
     }
+}
+
+/// Merge any adjacent segments whose start times are within
+/// `SEGMENT_FUZZY_WINDOW_S`, share `is_event`, **and have no overlapping
+/// channel labels**. This handles timestamp skew across channels from the
+/// same camera (Wolf Box's per-channel timestamps can drift by 1s) while
+/// preserving independent segments from different cameras that happen to
+/// record at the same moment (mixed-format folders).
+fn merge_fuzzy_neighbors(segments: Vec<Segment>) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        if let Some(last) = out.last_mut() {
+            let delta = (seg.start_time - last.start_time).num_seconds().abs();
+            let within_window = delta <= SEGMENT_FUZZY_WINDOW_S;
+            let same_event_mode = last.is_event == seg.is_event;
+
+            let last_labels: HashSet<&str> =
+                last.channels.iter().map(|c| c.label.as_str()).collect();
+            let disjoint = seg
+                .channels
+                .iter()
+                .all(|c| !last_labels.contains(c.label.as_str()));
+
+            if within_window && same_event_mode && disjoint {
+                let mut combined: Vec<Channel> = last.channels.drain(..).collect();
+                combined.extend(seg.channels);
+                combined.sort_by(|a, b| label_rank(&a.label).cmp(&label_rank(&b.label)));
+                last.channels = combined;
+                continue;
+            }
+        }
+        out.push(seg);
+    }
+    out
 }
 
 fn merge_into_trips(segments: Vec<Segment>, trip_gap_s: i64) -> Vec<Trip> {
@@ -171,8 +181,8 @@ fn merge_into_trips(segments: Vec<Segment>, trip_gap_s: i64) -> Vec<Trip> {
 }
 
 fn close_trip(segments: Vec<Segment>) -> Trip {
-    let start_time = segments.first().unwrap().start_time;
-    let last = segments.last().unwrap();
+    let start_time = segments.first().expect("close_trip on non-empty").start_time;
+    let last = segments.last().expect("close_trip on non-empty");
     let last_duration = if last.duration_s > 0.0 {
         last.duration_s
     } else {
@@ -190,6 +200,7 @@ fn close_trip(segments: Vec<Segment>) -> Trip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{LABEL_FRONT, LABEL_INTERIOR, LABEL_REAR};
     use crate::scan::naming;
 
     fn input(name: &str) -> GroupingInput {
@@ -200,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn single_complete_triplet_makes_one_segment_and_trip() {
+    fn wolf_box_triplet_makes_one_segment_and_trip() {
         let items = vec![
             input("2026_03_23_094634_00_F.MP4"),
             input("2026_03_23_094634_00_I.MP4"),
@@ -210,18 +221,47 @@ mod tests {
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 3);
+        // Canonical order: Front, Interior, Rear.
+        assert_eq!(out.trips[0].segments[0].channels[0].label, LABEL_FRONT);
+        assert_eq!(out.trips[0].segments[0].channels[1].label, LABEL_INTERIOR);
+        assert_eq!(out.trips[0].segments[0].channels[2].label, LABEL_REAR);
+    }
+
+    #[test]
+    fn thinkware_pair_makes_two_channel_segment() {
+        let items = vec![
+            input("REC_2026_03_06_07_25_52_F.MP4"),
+            input("REC_2026_03_06_07_25_52_R.MP4"),
+        ];
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        assert_eq!(out.trips.len(), 1);
+        assert_eq!(out.trips[0].segments.len(), 1);
+        assert_eq!(out.trips[0].segments[0].channels.len(), 2);
+        assert_eq!(out.trips[0].segments[0].channels[0].label, LABEL_FRONT);
+        assert_eq!(out.trips[0].segments[0].channels[1].label, LABEL_REAR);
+    }
+
+    #[test]
+    fn single_file_becomes_one_channel_segment() {
+        // No more "unmatched" for partially-recorded segments.
+        let items = vec![input("2026_03_23_094634_00_F.MP4")];
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        assert_eq!(out.trips.len(), 1);
+        assert_eq!(out.trips[0].segments[0].channels.len(), 1);
         assert!(out.unmatched.is_empty());
     }
 
     #[test]
-    fn missing_channel_goes_to_unmatched() {
+    fn four_channel_segment_groups_together() {
         let items = vec![
-            input("2026_03_23_094634_00_F.MP4"),
-            input("2026_03_23_094634_00_I.MP4"),
+            input("2026_03_06_072552_A.MP4"),
+            input("2026_03_06_072552_B.MP4"),
+            input("2026_03_06_072552_C.MP4"),
+            input("2026_03_06_072552_D.MP4"),
         ];
         let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
-        assert!(out.trips.is_empty());
-        assert_eq!(out.unmatched.len(), 2);
+        assert_eq!(out.trips.len(), 1);
+        assert_eq!(out.trips[0].segments[0].channels.len(), 4);
     }
 
     #[test]
@@ -281,52 +321,37 @@ mod tests {
     }
 
     #[test]
-    fn rear_clock_skew_within_window_still_matches() {
-        // Event triplet with rear channel off by 1 second.
-        let items = vec![
-            input("2026_03_22_164128_02_F.MP4"),
-            input("2026_03_22_164128_02_I.MP4"),
-            input("2026_03_22_164127_02_R.MP4"),
-        ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
-        assert_eq!(out.trips.len(), 1);
-        assert_eq!(out.trips[0].segments.len(), 1);
-        assert!(out.unmatched.is_empty());
-    }
-
-    #[test]
-    fn skew_across_event_boundary_does_not_match_different_event_modes() {
-        // A front _00_ at t=100 must not pair with an interior _02_ at t=101.
+    fn skew_across_event_boundary_does_not_merge_different_event_modes() {
+        // Normal front and event I/R are different recordings; must not merge.
         let items = vec![
             input("2026_03_23_094634_00_F.MP4"),
             input("2026_03_23_094635_02_I.MP4"),
             input("2026_03_23_094635_02_R.MP4"),
         ];
         let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
-        assert!(out.trips.is_empty());
-        assert_eq!(out.unmatched.len(), 3);
+        // Two segments: one 1-channel (Normal Front), one 2-channel (Event I+R).
+        let total_segments: usize = out.trips.iter().map(|t| t.segments.len()).sum();
+        assert_eq!(total_segments, 2);
     }
 
     #[test]
-    fn fuzzy_match_picks_closest_candidate() {
-        // Two fronts, two interiors — make sure greedy picks the closest pairing.
+    fn mixed_dashcam_formats_group_separately() {
+        // Wolf Box and Thinkware files in the same folder shouldn't cross-pollinate.
         let items = vec![
             input("2026_03_23_094634_00_F.MP4"),
-            input("2026_03_23_094636_00_I.MP4"),
-            input("2026_03_23_094636_00_R.MP4"),
-            input("2026_03_23_094637_00_F.MP4"),
-            input("2026_03_23_094639_00_I.MP4"),
-            input("2026_03_23_094639_00_R.MP4"),
+            input("2026_03_23_094634_00_I.MP4"),
+            input("2026_03_23_094634_00_R.MP4"),
+            input("REC_2026_03_23_09_46_34_F.MP4"),
+            input("REC_2026_03_23_09_46_34_R.MP4"),
         ];
         let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
-        // Both fronts should match their closest interior/rear.
-        assert_eq!(
-            out.trips
-                .iter()
-                .flat_map(|t| t.segments.iter())
-                .count(),
-            2
-        );
-        assert!(out.unmatched.is_empty());
+        let all_segments: Vec<&Segment> =
+            out.trips.iter().flat_map(|t| t.segments.iter()).collect();
+        assert_eq!(all_segments.len(), 2);
+        // The two segments have different channel counts; make sure we
+        // didn't merge them.
+        let counts: Vec<usize> = all_segments.iter().map(|s| s.channels.len()).collect();
+        assert!(counts.contains(&3));
+        assert!(counts.contains(&2));
     }
 }

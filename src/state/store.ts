@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ChannelKind, GpsPoint, ScanError, Trip } from "../types/model";
+import type { GpsPoint, ScanError, Trip } from "../types/model";
 import type {
   ImportSource,
   ImportPhaseChange,
@@ -28,8 +28,11 @@ export interface PlaybackSlice {
   volume: number;
   muted: boolean;
   showDriftHud: boolean;
-  drift: { interior: number; rear: number };
-  primaryChannel: ChannelKind;
+  /** One entry per slave channel; label is the channel's free-form label. */
+  drift: { label: string; driftMs: number }[];
+  /** Label of the currently-primary channel, or null if no segment is
+   *  loaded yet. Any string label is valid ("Front", "Interior", "Channel A", etc.). */
+  primaryChannel: string | null;
   // Linux-only opt-in for rendering interior/rear channels. Off by default
   // on Linux because three concurrent HEVC pipelines can exhaust VRAM on
   // low-memory iGPUs (Vega 11 observed) and hang the GPU. Windows and macOS
@@ -87,9 +90,9 @@ export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice {
   setCurrentTime: (t: number) => void;
   setIsPlaying: (p: boolean) => void;
   setSpeed: (s: PlaybackSlice["speed"]) => void;
-  setDrift: (d: { interior: number; rear: number }) => void;
+  setDrift: (d: { label: string; driftMs: number }[]) => void;
   toggleDriftHud: () => void;
-  setPrimaryChannel: (kind: ChannelKind) => void;
+  setPrimaryChannel: (label: string | null) => void;
   setMultiChannelEnabled: (v: boolean) => void;
   toggleMultiChannelEnabled: () => void;
 }
@@ -109,8 +112,10 @@ export const useStore = create<AppState>((set) => ({
   volume: 1,
   muted: false,
   showDriftHud: false,
-  drift: { interior: 0, rear: 0 },
-  primaryChannel: "front",
+  drift: [],
+  // Primary channel is null until a segment is loaded; VideoGrid initializes
+  // it to channels[0].label (the canonical master) on first render.
+  primaryChannel: null,
   multiChannelEnabled: false,
 
   importStatus: "idle",
@@ -171,10 +176,11 @@ export const useStore = create<AppState>((set) => ({
       activeSegmentId: null,
       currentTime: 0,
       isPlaying: false,
-      primaryChannel: "front",
+      // Reset to null; VideoGrid will set it to the new segment's master.
+      primaryChannel: null,
     }),
   setActiveSegmentId: (activeSegmentId) =>
-    set({ activeSegmentId, currentTime: 0, isPlaying: false, primaryChannel: "front" }),
+    set({ activeSegmentId, currentTime: 0, isPlaying: false, primaryChannel: null }),
   setCurrentTime: (currentTime) => set({ currentTime }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),
   setSpeed: (speed) => set({ speed }),

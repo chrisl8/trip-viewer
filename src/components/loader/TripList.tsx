@@ -32,10 +32,11 @@ export function TripList() {
     selectTrip(tripId);
     const trip = useStore.getState().trips.find((t) => t.id === tripId);
     if (!trip) return;
+    // GPS data lives with the first/master channel (Front on Wolf Box,
+    // first in canonical order otherwise).
     const frontPaths = trip.segments
-      .map((s) => s.channels.find((c) => c.kind === "front"))
-      .filter(Boolean)
-      .map((c) => c!.filePath);
+      .map((s) => s.channels[0]?.filePath)
+      .filter((p): p is string => typeof p === "string");
     try {
       const results = await extractGpsBatch(frontPaths);
       const gpsByFile = { ...useStore.getState().gpsByFile };

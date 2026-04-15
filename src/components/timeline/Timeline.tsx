@@ -44,7 +44,8 @@ export function Timeline({ onSeekTripTime }: Props) {
     const pts: { x: number; speed: number }[] = [];
     let cumulative = 0;
     for (const seg of trip.segments) {
-      const front = seg.channels.find((c) => c.kind === "front");
+      // Master channel carries GPS; use channels[0] (Front or otherwise).
+      const front = seg.channels[0];
       if (front) {
         const gps: GpsPoint[] = gpsByFile[front.filePath] ?? [];
         for (const p of gps) {

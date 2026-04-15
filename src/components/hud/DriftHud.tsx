@@ -11,12 +11,22 @@ export function DriftHud() {
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
         Sync Drift
       </div>
-      <div className={drift.interior > 40 || drift.interior < -40 ? "text-yellow-400" : "text-green-400"}>
-        Interior: {drift.interior > 0 ? "+" : ""}{drift.interior}ms
-      </div>
-      <div className={drift.rear > 40 || drift.rear < -40 ? "text-yellow-400" : "text-green-400"}>
-        Rear: {drift.rear > 0 ? "+" : ""}{drift.rear}ms
-      </div>
+      {drift.length === 0 ? (
+        <div className="text-neutral-500">no slaves</div>
+      ) : (
+        drift.map((d) => {
+          const warn = d.driftMs > 40 || d.driftMs < -40;
+          return (
+            <div
+              key={d.label}
+              className={warn ? "text-yellow-400" : "text-green-400"}
+            >
+              {d.label}: {d.driftMs > 0 ? "+" : ""}
+              {d.driftMs}ms
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }

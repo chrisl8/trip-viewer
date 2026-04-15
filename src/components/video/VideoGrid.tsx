@@ -1,6 +1,6 @@
-import { CSSProperties, RefObject } from "react";
+import { CSSProperties, MutableRefObject, useEffect } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { Channel, ChannelKind, Segment } from "../../types/model";
+import type { Segment } from "../../types/model";
 import { ChannelPanel } from "./ChannelPanel";
 import { useStore } from "../../state/store";
 
@@ -19,80 +19,68 @@ const IS_LINUX =
 
 function videoSrcFor(filePath: string, videoPort: number | null): string {
   if (IS_LINUX && videoPort && videoPort > 0) {
-    // filePath is absolute on Linux (e.g. "/home/chris10/..."), so the
-    // leading slash is already part of the URL path. Concatenating with
-    // `/` in between would produce `http://host:port//home/...` — some
-    // HTTP parsers treat that as empty authority + path, and our own
-    // server used to reject it as non-absolute.
     return `http://127.0.0.1:${videoPort}${encodeURI(filePath)}`;
   }
   return convertFileSrc(filePath);
 }
 
 interface Props {
-  frontRef: RefObject<HTMLVideoElement | null>;
-  interiorRef: RefObject<HTMLVideoElement | null>;
-  rearRef: RefObject<HTMLVideoElement | null>;
+  /** Shared map of label → <video> element, populated by callback refs.
+   *  Stable identity across renders so useSyncEngine doesn't re-run. */
+  channelRefs: MutableRefObject<Map<string, HTMLVideoElement | null>>;
   activeSegment: Segment | null;
 }
 
-function channelByKind(segment: Segment, kind: ChannelKind): Channel | undefined {
-  return segment.channels.find((c) => c.kind === kind);
-}
-
-function refForKind(
-  kind: ChannelKind,
-  frontRef: RefObject<HTMLVideoElement | null>,
-  interiorRef: RefObject<HTMLVideoElement | null>,
-  rearRef: RefObject<HTMLVideoElement | null>,
-): RefObject<HTMLVideoElement | null> {
-  switch (kind) {
-    case "front":
-      return frontRef;
-    case "interior":
-      return interiorRef;
-    case "rear":
-      return rearRef;
-  }
-}
-
 /**
- * Compute CSS grid placement for a channel.
- * The primary channel spans the left column across both rows.
- * The two secondaries stack in the right column.
+ * Compute CSS grid placement for a channel panel.
+ *
+ * Layout philosophy: primary takes col 1 full height; secondaries stack
+ * in col 2. Row count adapts to secondary count so each secondary gets
+ * the full column width. Works for 1, 2, 3, 4+ channels.
  */
 function gridStyle(
-  kind: ChannelKind,
-  primaryChannel: ChannelKind,
+  isPrimary: boolean,
   secondaryIndex: number,
+  secondaryCount: number,
 ): CSSProperties {
-  if (kind === primaryChannel) {
-    return { gridColumn: 1, gridRow: "1 / 3" };
+  if (secondaryCount === 0) {
+    // Single channel: fill the whole area.
+    return { gridColumn: "1 / 3", gridRow: "1 / 3" };
   }
+  if (isPrimary) {
+    // Primary occupies col 1, full height.
+    return { gridColumn: 1, gridRow: `1 / ${secondaryCount + 1}` };
+  }
+  // Secondary cell: col 2, one row per secondary.
   return { gridColumn: 2, gridRow: secondaryIndex + 1 };
 }
 
-export function VideoGrid({
-  frontRef,
-  interiorRef,
-  rearRef,
-  activeSegment,
-}: Props) {
+export function VideoGrid({ channelRefs, activeSegment }: Props) {
   const primaryChannel = useStore((s) => s.primaryChannel);
   const setPrimaryChannel = useStore((s) => s.setPrimaryChannel);
   const videoPort = useStore((s) => s.videoPort);
   const multiChannelEnabled = useStore((s) => s.multiChannelEnabled);
   const setMultiChannelEnabled = useStore((s) => s.setMultiChannelEnabled);
 
-  // On Linux, interior/rear channels are opt-in: three concurrent HEVC
-  // pipelines can saturate memory bandwidth on low-VRAM iGPUs (Vega 11
-  // observed) and in extreme cases hang the GPU. Windows/macOS are
-  // unaffected and always show all three channels.
+  // On first render of a segment (or when primaryChannel is null from a
+  // trip/segment change), initialize primary to the first channel in
+  // canonical order. This is also the sync master.
+  useEffect(() => {
+    if (!activeSegment) return;
+    const master = activeSegment.channels[0]?.label ?? null;
+    if (!master) return;
+    // If primaryChannel is stale (references a label no longer in the
+    // segment, e.g. after switching from 3-channel Wolf Box to 2-channel
+    // Thinkware), reset it.
+    const valid = activeSegment.channels.some((c) => c.label === primaryChannel);
+    if (!valid) setPrimaryChannel(master);
+  }, [activeSegment, primaryChannel, setPrimaryChannel]);
+
+  // On Linux, additional channels are opt-in: three or more concurrent
+  // HEVC pipelines can saturate memory bandwidth on low-VRAM iGPUs.
+  // Windows/macOS are unaffected and always render everything.
   const showSecondaries = !IS_LINUX || multiChannelEnabled;
 
-  // On Linux, wait for the loopback video server port before rendering the
-  // video elements. Rendering with an asset:// or file:// src first would
-  // cause <video> to emit an error and poison playback.
   if (IS_LINUX && !videoPort) {
     return (
       <div className="col-span-2 flex items-center justify-center text-sm text-neutral-500">
@@ -109,55 +97,84 @@ export function VideoGrid({
     );
   }
 
-  const allKinds: ChannelKind[] = ["front", "interior", "rear"];
-  const kindsToRender: ChannelKind[] = showSecondaries
-    ? allKinds
-    : [primaryChannel];
-  // Track secondary index for grid row assignment
-  let secondaryIdx = 0;
+  // Always use canonical (Rust-sorted) order. The store's `primaryChannel`
+  // label just tells us which of the rendered panels gets the primary
+  // slot — it doesn't change tree order.
+  const channels = activeSegment.channels;
+  const effectivePrimary =
+    channels.find((c) => c.label === primaryChannel)?.label ??
+    channels[0]?.label;
+
+  // On Linux in single-channel mode, we render ONLY the primary.
+  // Otherwise we render all channels.
+  const toRender = showSecondaries
+    ? channels
+    : channels.filter((c) => c.label === effectivePrimary);
+
+  const secondaries = toRender.filter((c) => c.label !== effectivePrimary);
+
+  function setRef(label: string) {
+    return (node: HTMLVideoElement | null) => {
+      if (node) {
+        channelRefs.current.set(label, node);
+      } else {
+        channelRefs.current.delete(label);
+      }
+    };
+  }
 
   function handleMainDoubleClick() {
     if (document.fullscreenElement) {
       document.exitFullscreen();
-    } else {
-      const ref = refForKind(primaryChannel, frontRef, interiorRef, rearRef);
-      ref.current?.requestFullscreen();
+      return;
     }
+    const el = channelRefs.current.get(effectivePrimary);
+    el?.requestFullscreen();
   }
 
-  return (
-    <div className="col-span-2 grid grid-cols-[2fr_1fr] grid-rows-2 gap-2">
-      {kindsToRender.map((kind) => {
-        const channel = channelByKind(activeSegment, kind);
-        if (!channel) return null;
+  // Row template: if primary takes full height and there are N
+  // secondaries, we need N rows. Minimum of 2 rows for aesthetic
+  // symmetry when there's only 1 secondary.
+  const rowCount = Math.max(secondaries.length, 2);
+  const gridTemplateRows = `repeat(${rowCount}, minmax(0, 1fr))`;
 
-        const isPrimary = kind === primaryChannel;
-        const idx = isPrimary ? 0 : secondaryIdx++;
-        const ref = refForKind(kind, frontRef, interiorRef, rearRef);
+  return (
+    <div
+      className="col-span-2 grid grid-cols-[2fr_1fr] gap-2"
+      style={{ gridTemplateRows }}
+    >
+      {toRender.map((channel) => {
+        const isPrimary = channel.label === effectivePrimary;
+        const idx = isPrimary
+          ? 0
+          : secondaries.findIndex((c) => c.label === channel.label);
 
         return (
-          <div key={kind} style={gridStyle(kind, primaryChannel, idx)}>
+          <div
+            key={channel.label}
+            style={gridStyle(isPrimary, idx, secondaries.length)}
+          >
             <ChannelPanel
-              ref={ref}
-              kind={kind}
+              ref={setRef(channel.label)}
+              label={channel.label}
               src={videoSrcFor(channel.filePath, videoPort)}
               isMaster={isPrimary}
-              onClick={isPrimary ? undefined : () => setPrimaryChannel(kind)}
+              onClick={isPrimary ? undefined : () => setPrimaryChannel(channel.label)}
               onDoubleClick={isPrimary ? handleMainDoubleClick : undefined}
             />
           </div>
         );
       })}
 
-      {!showSecondaries && (
+      {!showSecondaries && channels.length > 1 && (
         <button
           type="button"
           onClick={() => setMultiChannelEnabled(true)}
-          style={{ gridColumn: 2, gridRow: "1 / 3" }}
+          style={{ gridColumn: 2, gridRow: `1 / ${rowCount + 1}` }}
           className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-md border border-dashed border-neutral-700 bg-neutral-900/50 p-4 text-center text-xs text-neutral-400 hover:border-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
         >
           <div className="font-semibold uppercase tracking-wide text-neutral-300">
-            Interior &amp; Rear
+            Other channels
           </div>
           <div>Click to enable multi-channel view</div>
           <div className="text-[10px] leading-snug text-neutral-500">
