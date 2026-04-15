@@ -21,6 +21,11 @@ export function KeyboardShortcuts({ engine }: { engine: SyncEngine | null }) {
         return;
       }
 
+      if (e.code === "KeyM") {
+        store.toggleMultiChannelEnabled();
+        return;
+      }
+
       if (!engine) return;
 
       switch (e.code) {

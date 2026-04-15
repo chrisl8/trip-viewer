@@ -8,6 +8,7 @@ const shortcuts = [
   { keys: "Shift + \u2190 / \u2192", action: "Seek 30 seconds" },
   { keys: "[ / ]", action: "Decrease / Increase speed" },
   { keys: "D", action: "Toggle drift HUD" },
+  { keys: "M", action: "Toggle multi-channel view (Linux only)" },
 ];
 
 const interactions = [
