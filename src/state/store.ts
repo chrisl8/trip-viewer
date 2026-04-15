@@ -30,6 +30,11 @@ export interface PlaybackSlice {
   showDriftHud: boolean;
   drift: { interior: number; rear: number };
   primaryChannel: ChannelKind;
+  // Linux-only opt-in for rendering interior/rear channels. Off by default
+  // on Linux because three concurrent HEVC pipelines can exhaust VRAM on
+  // low-memory iGPUs (Vega 11 observed) and hang the GPU. Windows and macOS
+  // ignore this and always render all three channels — see VideoGrid.tsx.
+  multiChannelEnabled: boolean;
 }
 
 export type ImportStatus =
@@ -67,9 +72,11 @@ export interface ImportSlice {
 export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice {
   status: AppStatus;
   error: string | null;
+  videoPort: number | null;
 
   setStatus: (s: AppStatus) => void;
   setError: (e: string | null) => void;
+  setVideoPort: (p: number | null) => void;
   setScanResult: (args: {
     trips: Trip[];
     unmatched: string[];
@@ -83,6 +90,8 @@ export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice {
   setDrift: (d: { interior: number; rear: number }) => void;
   toggleDriftHud: () => void;
   setPrimaryChannel: (kind: ChannelKind) => void;
+  setMultiChannelEnabled: (v: boolean) => void;
+  toggleMultiChannelEnabled: () => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -102,6 +111,7 @@ export const useStore = create<AppState>((set) => ({
   showDriftHud: false,
   drift: { interior: 0, rear: 0 },
   primaryChannel: "front",
+  multiChannelEnabled: false,
 
   importStatus: "idle",
   importSources: [],
@@ -115,6 +125,7 @@ export const useStore = create<AppState>((set) => ({
 
   status: "idle",
   error: null,
+  videoPort: null,
 
   setImportStatus: (importStatus) => set({ importStatus }),
   setImportSources: (importSources) => set({ importSources }),
@@ -144,6 +155,7 @@ export const useStore = create<AppState>((set) => ({
 
   setStatus: (status) => set({ status }),
   setError: (error) => set({ error, status: error ? "error" : "idle" }),
+  setVideoPort: (videoPort) => set({ videoPort }),
   setScanResult: ({ trips, unmatched, errors }) =>
     set({
       trips,
@@ -169,4 +181,7 @@ export const useStore = create<AppState>((set) => ({
   setDrift: (drift) => set({ drift }),
   toggleDriftHud: () => set((s) => ({ showDriftHud: !s.showDriftHud })),
   setPrimaryChannel: (primaryChannel) => set({ primaryChannel }),
+  setMultiChannelEnabled: (multiChannelEnabled) => set({ multiChannelEnabled }),
+  toggleMultiChannelEnabled: () =>
+    set((s) => ({ multiChannelEnabled: !s.multiChannelEnabled })),
 }));
