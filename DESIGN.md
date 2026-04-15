@@ -39,7 +39,7 @@ There is **no open-source, multi-channel, GPS-aware dashcam viewer** that uses h
 
 ### What we built: Tauri v2 + React + HTML5 `<video>`
 
-- **Tauri v2** — Rust backend, web frontend, ~3 MB installer. Uses the system WebView2 runtime (pre-installed on Windows 10/11) instead of bundling Chromium.
+- **Tauri v2** — Rust backend, web frontend, ~3 MB installer. Uses the system WebView2 runtime (pre-installed on Windows 10/11) on Windows and WebKitGTK 4.1 on Linux, instead of bundling Chromium.
 - **React 19 + TypeScript** — frontend with Zustand for state, Tailwind CSS v4 for styling.
 - **3x HTML5 `<video>` elements** — synchronized via `requestVideoFrameCallback` for frame-accurate sync across front/interior/rear channels. Hardware-accelerated decoding via the browser's native HEVC decoder.
 - **Leaflet + OpenStreetMap** — live GPS map with track polyline and interpolated vehicle marker.
@@ -47,7 +47,7 @@ There is **no open-source, multi-channel, GPS-aware dashcam viewer** that uses h
 
 ### Why this architecture
 
-HTML5 `<video>` provides hardware-accelerated HEVC decoding for free via WebView2. Three video elements can be synchronized well enough for dashcam playback (not frame-perfect, but within ~30ms — imperceptible for driving footage). The tradeoff is requiring the Microsoft HEVC Video Extension on Windows, which the app detects and handles with a startup gate.
+HTML5 `<video>` provides hardware-accelerated HEVC decoding for free via WebView2 on Windows and via WebKitGTK's GStreamer backend on Linux. Three video elements can be synchronized well enough for dashcam playback (not frame-perfect, but within ~30ms — imperceptible for driving footage). The tradeoff is an OS-level codec dependency — Microsoft HEVC Video Extension on Windows, `gstreamer1.0-libav` + `plugins-bad` on Linux — which the app detects and handles with a startup gate.
 
 ### What was ruled out
 
@@ -56,9 +56,13 @@ HTML5 `<video>` provides hardware-accelerated HEVC decoding for free via WebView
 - **PyQt + mpv** — Distribution is painful (PyInstaller), UI aesthetics harder than web tech.
 - **ffprobe dependency** — Bundling ffprobe.exe adds ~80 MB, triggers Defender heuristics on unsigned builds, and PATH discovery on Windows is unreliable. Pure Rust `mp4` crate does everything needed.
 
-### Accepted tradeoff: HEVC Extension
+### Accepted tradeoff: HEVC codec dependency
 
-Wolf Box files are 100% HEVC. Windows WebView2 can play HEVC but only if the Microsoft HEVC Video Extension is installed (paid Store app on most consumer SKUs, free on OEM installs). The app handles this with a `<HevcSupportGate>` component that probes `canPlayType` at startup and deep-links to the Store if missing. Transcoding to H.264 on import was considered and rejected — too slow and storage-heavy.
+Wolf Box files are 100% HEVC. WebView2 on Windows plays HEVC only if the Microsoft HEVC Video Extension is installed (paid Store app on most consumer SKUs, free on OEM installs); WebKitGTK on Linux plays HEVC only if `gstreamer1.0-libav` is installed. The app handles both with a `<HevcSupportGate>` component that probes `canPlayType` at startup and shows platform-appropriate install guidance. A future Flatpak build would sidestep this entirely by bundling the `org.freedesktop.Platform.ffmpeg-full` extension. Transcoding to H.264 on import was considered and rejected — too slow and storage-heavy.
+
+### Accepted tradeoff: multi-channel view is opt-in on Linux
+
+On Windows the app renders front, interior, and rear simultaneously by default. On Linux the secondary channels (interior, rear) are **hidden by default and must be opted into** via the placeholder in the right column of the player or the `M` keyboard shortcut. The reason: on low-VRAM AMD iGPUs — notably Raven Ridge / Vega 11 with the common 1 GB UMA carveout — three concurrent HEVC pipelines through WebKitGTK's GStreamer+VAAPI path saturate memory bandwidth (`mclk` pegged at 100%), drive VRAM to 90%+, and in sustained playback can hang the GPU outright (full system lockup requiring reset). Single-channel playback on the same hardware still shows stutter and per-segment pipeline-rebuild stalls, but does not hang. Rather than try to detect "safe" GPU classes at runtime, we default-off on Linux and let the user enable multi-channel if their hardware handles it. Windows and macOS are unaffected — WebView2 and Safari's media path don't exhibit the same VRAM spike.
 
 ---
 
@@ -66,7 +70,7 @@ Wolf Box files are 100% HEVC. Windows WebView2 can play HEVC but only if the Mic
 
 | Layer | Technology |
 | ----- | ---------- |
-| Framework | Tauri v2 (Rust backend, WebView2 frontend) |
+| Framework | Tauri v2 (Rust backend, WebView2 on Windows / WebKitGTK 4.1 on Linux) |
 | Frontend | React 19, TypeScript, Tailwind CSS v4 |
 | State | Zustand |
 | Maps | Leaflet + react-leaflet + OpenStreetMap tiles |
@@ -74,8 +78,8 @@ Wolf Box files are 100% HEVC. Windows WebView2 can play HEVC but only if the Mic
 | Container parsing | `mp4` crate (pure Rust) |
 | GPS decoding | Custom ShenShu MetaData binary parser (NMEA DDMM.MMMM format) |
 | File hashing | `sha2` crate (SHA-256, optimized in dev builds) |
-| Windows APIs | `windows-sys` (drive enumeration, disk space) |
-| Installer | NSIS via `tauri-action` |
+| Platform APIs | `windows-sys` on Windows (drive enumeration, disk space); `libc::statvfs` on Linux |
+| Installer | NSIS on Windows, AppImage on Linux, via `tauri-action` (Flatpak planned) |
 | Auto-update | `tauri-plugin-updater` with GitHub Releases |
 | CI/CD | GitHub Actions (build on tag push, draft release) |
 
@@ -142,8 +146,10 @@ File detection uses Wolf Box naming: `YYYY_MM_DD_HHMMSS_EE_C.MP4` where `EE` is 
 ### Distribution
 
 - **NSIS installer** — ~3 MB Windows setup exe
+- **AppImage** — single-file Linux binary with bundled GStreamer plugins for HEVC playback
+- **Flatpak (Flathub)** — planned; would ship a sandboxed Linux package using `org.freedesktop.Platform.ffmpeg-full` for codec support with Flathub handling updates. Not in this release.
 - **GitHub Actions CI** — auto-build on version tag, draft release with installer + updater manifest
-- **Auto-updater** — checks GitHub Releases on startup, one-click update and restart
+- **Auto-updater** — checks GitHub Releases on startup for NSIS and AppImage builds (would be disabled in Flatpak when added, since Flathub manages updates)
 - **Tauri signing keys** — update artifacts signed for integrity verification
 
 ---

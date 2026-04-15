@@ -26,7 +26,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -W clippy::all
 
 ## Architecture
 
-Trip Viewer is a **Tauri v2** desktop app: Rust backend (`src-tauri/src/`) communicates with a React/TypeScript frontend (`src/`) via Tauri commands and events. Target platform is Windows only for now.
+Trip Viewer is a **Tauri v2** desktop app: Rust backend (`src-tauri/src/`) communicates with a React/TypeScript frontend (`src/`) via Tauri commands and events. Targets Windows (NSIS installer) and Linux (AppImage; Flatpak planned). Windows is the primary development platform; the Linux port relies on WebKitGTK 4.1 and GStreamer for video rendering.
 
 ### Rust backend module map
 
@@ -50,8 +50,8 @@ See DESIGN.md for full context. Key ones:
 
 - **HTML5 `<video>` for playback** (not libmpv). `tauri-plugin-libmpv` is broken for multi-instance on Windows.
 - **Pure Rust `mp4` crate** (not ffprobe). Bundling ffprobe adds 80 MB and triggers Defender heuristics.
-- **HEVC Extension tax accepted** — app uses a `<HevcSupportGate>` startup check with Store deep-link.
-- **NSIS only** for installer (not MSI). ~3 MB vs ~130 MB for MSI.
+- **HEVC Extension tax accepted** — app uses a `<HevcSupportGate>` startup check with Store deep-link on Windows, and an apt-install hint on Linux when GStreamer's libav plugin is missing.
+- **NSIS on Windows, AppImage on Linux (Flatpak planned).** MSI rejected (~130 MB vs 3 MB NSIS). `.deb` skipped — AppImage bundles its own GStreamer plugins for codec-complete direct downloads. A future Flatpak would reach Debian/Ubuntu/Fedora/Arch with bundled codecs via `org.freedesktop.Platform.ffmpeg-full`, but no Flathub manifest exists yet.
 - **No fullscreen API on single-click** — use double-click (conflict with play/pause expectation).
 
 ## Import pipeline invariants
