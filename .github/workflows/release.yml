@@ -16,6 +16,8 @@ jobs:
             args: ''
           - platform: ubuntu-22.04
             args: ''
+          - platform: macos-latest
+            args: ''
     runs-on: ${{ matrix.platform }}
 
     steps:
@@ -55,7 +57,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'Trip Viewer v__VERSION__'
-          releaseBody: 'Download the `.exe` (Windows) or `.AppImage` (Linux) below to install or update.'
+          releaseBody: 'Download the `.exe` (Windows), `.AppImage` (Linux), or `.dmg` (macOS) below to install or update.'
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true

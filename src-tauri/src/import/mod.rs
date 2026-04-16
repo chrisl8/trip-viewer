@@ -388,7 +388,9 @@ fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(not(windows))]
 fn is_process_alive(pid: u32) -> bool {
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
+    // Signal 0 tests whether the process exists without actually sending a signal.
+    // Works on both Linux and macOS (unlike /proc/{pid} which doesn't exist on macOS).
+    unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 fn release_lock(path: &Path) {
