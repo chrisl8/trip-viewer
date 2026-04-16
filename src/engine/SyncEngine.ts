@@ -4,23 +4,30 @@ const HARD_RESYNC_S = 0.15;
 const SOFT_CORRECT_S = 0.04;
 const SOFT_BIAS = 0.05;
 
-// WebKitGTK's GStreamer-backed <video> treats any `currentTime=` assignment
-// as a full pipeline flush + re-decode — far heavier than Chromium's
-// frame-level scrub. Running our Chromium-tuned drift correction on Linux
-// causes a thrash loop: the slave never catches up inside HARD_RESYNC_S,
-// so every tick re-flushes the pipeline, which starves the compositor and
-// can hard-lock modest iGPUs (observed on AMD Vega 11 / VCN 1.0).
+// WebKit-based <video> pipelines (WebKitGTK + GStreamer on Linux,
+// WKWebView + AVFoundation/Video Toolbox on macOS) implement any
+// `currentTime=` assignment as a full pipeline flush + re-decode — far
+// heavier than Chromium/Blink's frame-level scrub. Running our Chromium-
+// tuned drift correction on these platforms causes a thrash loop: the
+// slave never catches up inside HARD_RESYNC_S, so every tick re-flushes
+// the pipeline, which starves the compositor (observed as a full GPU
+// hang on AMD Vega 11 / VCN 1.0 under Linux, and as primary-view freezes
+// with secondary-channel glitching on an M4 Mac mini).
 //
-// On Linux we leave slaves free-running at the same playbackRate. All
-// three channels come from the same firmware, same clock, same fps, so
-// passive drift is in the microseconds-per-second range — imperceptible
-// for dashcam playback. The drift HUD still reports live drift so we can
-// confirm this empirically. Seeks and speed changes, which are one-shot
-// and affect all three equally, are kept.
-const IS_LINUX =
+// On these platforms we leave slaves free-running at the same
+// playbackRate. All three channels come from the same firmware, same
+// clock, same fps, so passive drift is in the microseconds-per-second
+// range — imperceptible for dashcam playback. The drift HUD still
+// reports live drift so we can confirm this empirically. Seeks and
+// speed changes, which are one-shot and affect all three equally, are
+// kept.
+const SKIP_DRIFT_CORRECTION =
   typeof navigator !== "undefined" &&
-  navigator.userAgent.includes("Linux") &&
-  !navigator.userAgent.includes("Android");
+  // WebKitGTK + GStreamer (Linux)
+  ((navigator.userAgent.includes("Linux") &&
+    !navigator.userAgent.includes("Android")) ||
+    // WKWebView + AVFoundation (macOS)
+    navigator.userAgent.includes("Mac OS X"));
 
 export class SyncEngine {
   private master: HTMLVideoElement;
@@ -65,10 +72,10 @@ export class SyncEngine {
           driftMs: Math.round(drift * 1000),
         });
 
-        // On Linux we deliberately do NOT correct drift — see IS_LINUX
-        // comment at the top of the file. We only record the reading so
-        // the drift HUD remains useful.
-        if (IS_LINUX) continue;
+        // On WebKit-based pipelines we deliberately do NOT correct drift
+        // — see SKIP_DRIFT_CORRECTION comment at the top of the file. We
+        // only record the reading so the drift HUD remains useful.
+        if (SKIP_DRIFT_CORRECTION) continue;
 
         const absDrift = Math.abs(drift);
         if (absDrift > HARD_RESYNC_S) {

@@ -3,7 +3,13 @@ import { SyncEngine } from "./SyncEngine";
 
 // Windows/macOS always render all channels of a segment; Linux has an
 // opt-in single-channel mode where non-master refs may be null or not-ready.
-// Must match the IS_LINUX definition in SyncEngine.ts and VideoGrid.tsx.
+// This IS_LINUX is scoped to that partial-slave tolerance only — it is
+// intentionally separate from SyncEngine.ts's SKIP_DRIFT_CORRECTION
+// (which also covers macOS) because the two concerns are orthogonal:
+// macOS wants full three-channel playback like Windows, but needs the
+// drift-correction skip because WKWebView shares WebKit's pipeline-flush
+// semantics. VideoGrid.tsx's IS_LINUX is Linux-only for a third reason
+// (the asset-protocol workaround / single-channel layout).
 const IS_LINUX =
   typeof navigator !== "undefined" &&
   navigator.userAgent.includes("Linux") &&
