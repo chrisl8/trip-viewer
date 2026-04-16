@@ -7,6 +7,7 @@ export function UpdateChecker() {
   const [status, setStatus] = useState<"idle" | "downloading" | "error">(
     "idle",
   );
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
@@ -14,8 +15,8 @@ export function UpdateChecker() {
       .then((u) => {
         if (u?.available) setUpdate(u);
       })
-      .catch(() => {
-        // Silently ignore update check failures (offline, no releases yet, etc.)
+      .catch((err) => {
+        console.error("Update check failed:", err);
       });
   }, []);
 
@@ -26,7 +27,9 @@ export function UpdateChecker() {
       setStatus("downloading");
       await update.downloadAndInstall();
       await relaunch();
-    } catch {
+    } catch (err) {
+      console.error("Update install failed:", err);
+      setErrorMessage(err instanceof Error ? err.message : String(err));
       setStatus("error");
     }
   };
@@ -34,15 +37,22 @@ export function UpdateChecker() {
   return (
     <div className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-sm shadow-lg">
       {status === "error" ? (
-        <>
-          <span className="text-red-400">Update failed.</span>
-          <button
-            onClick={() => setDismissed(true)}
-            className="text-neutral-500 hover:text-neutral-300"
-          >
-            Dismiss
-          </button>
-        </>
+        <div className="flex max-w-md flex-col gap-1">
+          <div className="flex items-center gap-3">
+            <span className="text-red-400">Update failed.</span>
+            <button
+              onClick={() => setDismissed(true)}
+              className="text-neutral-500 hover:text-neutral-300"
+            >
+              Dismiss
+            </button>
+          </div>
+          {errorMessage && (
+            <span className="break-words text-xs text-neutral-500">
+              {errorMessage}
+            </span>
+          )}
+        </div>
       ) : status === "downloading" ? (
         <span className="text-neutral-300">Downloading update...</span>
       ) : (
