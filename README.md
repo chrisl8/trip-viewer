@@ -1,16 +1,22 @@
+<img src="icon/icon-128.png" align="left" width="96" alt="Trip Viewer icon"/>
+
 # Trip Viewer
 
-**A free, open-source dashcam viewer that actually works.**
+**A free, open-source dashcam viewer with synchronized video and a live GPS map.**
 
-If you own a multi-channel dashcam (like a Wolf Box, Viofo, or similar), you've probably been disappointed by the software that comes with it. The manufacturer apps are slow, clunky, and can barely scrub through footage. The paid third-party viewers are better but still can't handle three camera channels well. And none of them are open source.
+<a href="#windows"><img src="icon/badges/windows.svg" alt="Windows" height="28"/></a> &nbsp; <a href="#macos"><img src="icon/badges/apple.svg" alt="macOS" height="28"/></a> &nbsp; <a href="#linux"><img src="icon/badges/linux.svg" alt="Linux" height="28"/></a>
 
-Trip Viewer changes that. It plays every channel your dashcam records — whether that's 2, 3, or 4 cameras — perfectly synchronized, with a live GPS map tracking your position as the video plays. It uses your computer's hardware video decoder, so playback is smooth even at high resolution. And it runs as a lightweight native app on Windows and Linux (~3 MB installer on Windows; AppImage on Linux), not a bloated Electron app.
+<br clear="left"/>
+
+Trip Viewer plays back footage from dashcams with one to four camera channels, keeping every channel perfectly in sync. A live OpenStreetMap view tracks your vehicle's GPS position as the video plays, with speed and heading shown on the map — a favorite feature among single-camera dashcam owners as well as multi-channel setups.
+
+Hardware video decoding keeps playback smooth even at high resolution, and Trip Viewer runs as a lightweight native app on Windows, macOS, and Linux (~3 MB installer on Windows, signed DMG on macOS, AppImage on Linux).
 
 ![Trip Viewer screenshot showing 3-channel synchronized playback with GPS map](screenshot.png)
 
 ## How to install
 
-**Trip Viewer runs on Windows 10/11 and modern Linux distributions.** No developer tools required.
+**Trip Viewer runs on Windows 10/11, macOS 11 (Big Sur) or later, and modern Linux distributions.** No developer tools required.
 
 ### Windows
 
@@ -20,6 +26,17 @@ Trip Viewer changes that. It plays every channel your dashcam records — whethe
 4. Launch **Trip Viewer** from your Start Menu
 
 **One extra requirement on Windows:** Your dashcam probably records in HEVC (H.265) format. Windows needs a decoder for this. Trip Viewer will check on startup and link you to the Microsoft Store if it's missing. The [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) is a one-time install.
+
+### macOS
+
+1. Go to the [Releases page](https://github.com/chrisl8/trip-viewer/releases)
+2. Check which chip your Mac has: **Apple menu → About This Mac**
+   - **Apple M1 / M2 / M3 / M4** (or later) → download the file ending in **`_aarch64.dmg`**
+   - **Intel** → download the file ending in **`_x64.dmg`**
+3. Double-click the DMG to mount it, then drag **Trip Viewer** into the **Applications** folder
+4. Launch **Trip Viewer** from Launchpad or Applications
+
+The macOS build is code-signed and notarized by Apple, so you won't see Gatekeeper warnings on first launch. HEVC playback works out of the box — no codec extensions to install.
 
 ### Linux
 
@@ -38,7 +55,7 @@ By default on Linux, only the primary channel is shown — press **M** to enable
 
 ### Auto-updates
 
-Trip Viewer auto-checks for updates on launch (both Windows and AppImage builds), so you'll always have the latest version.
+Trip Viewer auto-checks for updates on launch (Windows, macOS DMG, and Linux AppImage builds), so you'll always have the latest version.
 
 ## Known limitations
 
@@ -70,7 +87,7 @@ If your dashcam uses a different naming convention, [open an issue](https://gith
 
 ## Platform support
 
-Trip Viewer runs on **Windows 10/11** and **Linux** (tested on Ubuntu 22.04+ via AppImage; should work on any modern distro with WebKitGTK 4.1 and GStreamer). A macOS build is not offered — Tauri supports it, so porting is possible if there's interest. If you'd like to see a macOS version, [open an issue](https://github.com/chrisl8/trip-viewer/issues) and let me know.
+Trip Viewer runs on **Windows 10/11**, **macOS 11 (Big Sur) or later** (both Apple Silicon and Intel Macs — separate signed DMGs), and **Linux** (tested on Ubuntu 22.04+ via AppImage; should work on any modern distro with WebKitGTK 4.1 and GStreamer).
 
 ## Built with AI
 
@@ -95,6 +112,7 @@ If you want to build Trip Viewer from source or contribute:
 - Node.js 20+
 - Rust 1.70+ (via [rustup](https://rustup.rs/))
 - **Windows:** [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) for HEVC playback
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`). HEVC playback works natively via AVFoundation — no extra codecs needed. Local `npm run tauri build` produces a DMG for the host architecture only; CI uses a matrix build for both Intel and Apple Silicon.
 - **Linux:** `webkit2gtk-4.1`, `gstreamer1.0-libav`, `gstreamer1.0-plugins-bad`, plus Tauri's standard build deps (see [Tauri prerequisites](https://tauri.app/start/prerequisites/))
 
 ### Build and run
@@ -111,14 +129,14 @@ First build compiles the Rust backend (~2 minutes). Subsequent builds use increm
 
 | Layer | Technology |
 |-------|------------|
-| App framework | Tauri v2 (Rust backend, WebView2 on Windows / WebKitGTK 4.1 on Linux) |
+| App framework | Tauri v2 (Rust backend, WebView2 on Windows / WKWebView on macOS / WebKitGTK 4.1 on Linux) |
 | Frontend | React 19, TypeScript, Tailwind CSS v4, Zustand |
 | Maps | Leaflet + react-leaflet + OpenStreetMap |
 | Video sync | `requestVideoFrameCallback` API |
 | Container parsing | `mp4` crate (pure Rust, no ffprobe) |
 | GPS decoding | Custom ShenShu MetaData (Wolf Box) + NovaTek gps0 atom (Miltona) parsers |
 | File hashing | SHA-256 via `sha2` crate |
-| CI/CD | GitHub Actions + NSIS (Windows) + AppImage (Linux) + auto-updater |
+| CI/CD | GitHub Actions + NSIS (Windows) + DMG (macOS, dual-arch) + AppImage (Linux) + auto-updater |
 
 See [DESIGN.md](DESIGN.md) for architecture decisions and [RELEASING.md](RELEASING.md) for release instructions.
 

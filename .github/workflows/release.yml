@@ -16,7 +16,9 @@ jobs:
             args: ''
           - platform: ubuntu-22.04
             args: ''
-          - platform: macos-latest
+          - platform: macos-13          # Intel (x86_64)
+            args: ''
+          - platform: macos-latest      # Apple Silicon (aarch64)
             args: ''
     runs-on: ${{ matrix.platform }}
 
