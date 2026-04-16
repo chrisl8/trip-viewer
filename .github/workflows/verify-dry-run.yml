@@ -67,7 +67,10 @@ jobs:
           "$MS" -G -W -f -s "$SANDBOX/test.key" -p "$SANDBOX/test.pub"
 
           echo "dry-run stub artifact $(date -u +%s)" > "$SANDBOX/stub.bin"
-          "$MS" -S -W -s "$SANDBOX/test.key" -m "$SANDBOX/stub.bin" -x "$SANDBOX/stub.bin.sig"
+          # Sign into a raw .minisig, then base64-wrap it to match what Tauri v2
+          # writes on disk (the .sig file contains the base64 form).
+          "$MS" -S -W -s "$SANDBOX/test.key" -m "$SANDBOX/stub.bin" -x "$SANDBOX/stub.minisig"
+          base64 < "$SANDBOX/stub.minisig" | tr -d '\r\n' > "$SANDBOX/stub.bin.sig"
 
           # Build a tauri.conf.json-shaped file with the base64-encoded test pubkey.
           # Tauri stores the pubkey base64-wrapped around minisign's text-format pubkey.

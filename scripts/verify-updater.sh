@@ -82,12 +82,13 @@ if ! command -v minisign >/dev/null 2>&1; then
 fi
 
 TMP_KEY="$(mktemp)"
-trap 'rm -f "$TMP_KEY"' EXIT
+TMP_SIG="$(mktemp)"
+trap 'rm -f "$TMP_KEY" "$TMP_SIG"' EXIT
 
-# Node is already a hard dep (Tauri needs it) and is more portable than jq on dev
-# machines. Path comes via argv so Git Bash does MSYS path translation correctly.
-# On Git Bash its stdout can still become CRLF, hence `tr -d '\r\n\t '` before
-# `base64 -d` — that stray \r is what broke the v0.1.18 Windows CI verify step.
+# Pubkey: node is already a hard dep (Tauri needs it) and is more portable than jq
+# on dev machines. Path comes via argv so Git Bash does MSYS path translation
+# correctly. `tr -d '\r\n\t '` before `base64 -d` covers Git Bash's CRLF output —
+# that stray \r is what broke the v0.1.18 Windows CI verify step.
 node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).plugins.updater.pubkey)' "$CONF" \
   | tr -d '\r\n\t ' | base64 -d > "$TMP_KEY"
 
@@ -96,6 +97,19 @@ if [ ! -s "$TMP_KEY" ]; then
   exit 2
 fi
 
+# Signature: Tauri v2 writes .sig as the base64-encoded minisign signature blob
+# (what goes into latest.json's `signature` field). Standalone `minisign -Vm`
+# expects the raw text-format .minisig, so decode first. (Reverts the claim in
+# commit a2f9d5a — that commit removed this decode based on a misreading; the
+# real v0.1.18 failure was the pubkey CRLF bug above, which masked this one.)
+tr -d '\r\n\t ' < "$SIG" | base64 -d > "$TMP_SIG"
+
+if [ ! -s "$TMP_SIG" ]; then
+  echo "verify-updater: failed to decode signature from $SIG" >&2
+  exit 2
+fi
+
 echo "verify-updater: verifying $(basename "$ARTIFACT") against its .sig"
-minisign -Vm "$ARTIFACT" -x "$SIG" -p "$TMP_KEY"
+echo "verify-updater: sig $(wc -c < "$SIG") bytes on disk -> $(wc -c < "$TMP_SIG") bytes decoded"
+minisign -Vm "$ARTIFACT" -x "$TMP_SIG" -p "$TMP_KEY"
 echo "verify-updater: OK"
