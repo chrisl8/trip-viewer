@@ -16,7 +16,7 @@ jobs:
             args: ''
           - platform: ubuntu-22.04
             args: ''
-          - platform: macos-13          # Intel (x86_64)
+          - platform: macos-15-intel    # Intel (x86_64) — macos-13 was retired 2025-12-08
             args: ''
           - platform: macos-latest      # Apple Silicon (aarch64)
             args: ''
@@ -88,7 +88,7 @@ jobs:
               MINISIGN=minisign
               ARTIFACT_GLOB="src-tauri/target/release/bundle/appimage/*_amd64.AppImage"
               ;;
-            macos-13|macos-latest)
+            macos-15-intel|macos-latest)
               brew install minisign
               MINISIGN=minisign
               ARTIFACT_GLOB="src-tauri/target/release/bundle/dmg/*.dmg"
