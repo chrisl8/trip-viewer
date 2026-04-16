@@ -111,7 +111,8 @@ jobs:
           fi
 
           jq -r .plugins.updater.pubkey src-tauri/tauri.conf.json | base64 -d > "$RUNNER_TEMP/pk.txt"
-          base64 -d "$SIG" > "$RUNNER_TEMP/artifact.minisig"
 
           echo "Verifying $(basename "$ARTIFACT") against its .sig"
-          "$MINISIGN" -Vm "$ARTIFACT" -x "$RUNNER_TEMP/artifact.minisig" -p "$RUNNER_TEMP/pk.txt"
+          wc -c "$SIG"
+          head -n 1 "$SIG"
+          "$MINISIGN" -Vm "$ARTIFACT" -x "$SIG" -p "$RUNNER_TEMP/pk.txt"
