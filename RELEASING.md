@@ -36,6 +36,18 @@ Go to [github.com/chrisl8/trip-viewer](https://github.com/chrisl8/trip-viewer) >
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions.
 
+## Before tagging: pre-flight check
+
+The `Verify updater (dry run)` workflow runs on every push to `main` and every PR. It signs and verifies a throwaway stub artifact on all four matrix platforms — if that job is green on `main`, the verify step in the release workflow will also be green on a tag push. Check it at [github.com/chrisl8/trip-viewer/actions/workflows/verify-dry-run.yml](https://github.com/chrisl8/trip-viewer/actions/workflows/verify-dry-run.yml) before tagging.
+
+You can also run the verify step locally after `npm run tauri build`:
+
+```bash
+bash scripts/verify-updater.sh
+```
+
+This auto-detects the bundle for your platform and verifies it against the pubkey in `src-tauri/tauri.conf.json`. It will download minisign on the fly if you don't have it installed.
+
 ## How to cut a release
 
 From a clean working tree on `main`:

@@ -1,0 +1,84 @@
+name: Verify updater (dry run)
+
+# Exercises scripts/verify-updater.sh end-to-end on every push/PR without cutting a
+# release tag. Catches shell-portability bugs (e.g. the Windows CRLF base64 bug
+# from v0.1.18) and tool-install bugs (e.g. apt-install-minisign on ubuntu-22.04)
+# in the cheap feedback loop instead of on an expensive tag push.
+#
+# Approach: generate a throwaway minisign keypair, sign a stub artifact, write a
+# tauri.conf.json-shaped config with the test pubkey, then invoke verify-updater.sh
+# against that stub + config. If the script works end-to-end here, a real tag push
+# will also work.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  dry-run:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest, ubuntu-22.04, macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+
+      - name: Generate test keypair and sign stub
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SANDBOX="${RUNNER_TEMP}/verify-dry-run"
+          mkdir -p "$SANDBOX"
+
+          # Install minisign using the SAME URL/method verify-updater.sh uses.
+          # On non-mac platforms we install into $SANDBOX (not added to PATH) so the
+          # next step's invocation of verify-updater.sh hits its own install path.
+          case "${{ matrix.platform }}" in
+            windows-latest)
+              curl -fsSL -o "$SANDBOX/ms.zip" https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-win64.zip
+              unzip -q "$SANDBOX/ms.zip" -d "$SANDBOX"
+              MS="$SANDBOX/minisign-win64/minisign.exe"
+              ;;
+            ubuntu-22.04)
+              curl -fsSL -o "$SANDBOX/ms.tar.gz" https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-linux.tar.gz
+              tar -xzf "$SANDBOX/ms.tar.gz" -C "$SANDBOX"
+              MS="$SANDBOX/minisign-linux/x86_64/minisign"
+              ;;
+            macos-15-intel|macos-latest)
+              # brew adds to PATH, so the verify step's own install will short-circuit on mac.
+              # That's fine — mac install path is the same `brew install` verify-updater.sh uses.
+              brew install minisign
+              MS=minisign
+              ;;
+          esac
+
+          "$MS" -G -W -f -s "$SANDBOX/test.key" -p "$SANDBOX/test.pub"
+
+          echo "dry-run stub artifact $(date -u +%s)" > "$SANDBOX/stub.bin"
+          "$MS" -S -W -s "$SANDBOX/test.key" -m "$SANDBOX/stub.bin" -x "$SANDBOX/stub.bin.sig"
+
+          # Build a tauri.conf.json-shaped file with the base64-encoded test pubkey.
+          # Tauri stores the pubkey base64-wrapped around minisign's text-format pubkey.
+          PUB_B64=$(base64 < "$SANDBOX/test.pub" | tr -d '\r\n')
+          mkdir -p "$SANDBOX/src-tauri"
+          printf '{"plugins":{"updater":{"pubkey":"%s"}}}\n' "$PUB_B64" > "$SANDBOX/src-tauri/tauri.conf.json"
+
+          echo "SANDBOX=$SANDBOX" >> "$GITHUB_ENV"
+
+      - name: Run scripts/verify-updater.sh against stub artifact
+        shell: bash
+        env:
+          TAURI_CONF: ${{ env.SANDBOX }}/src-tauri/tauri.conf.json
+        run: bash scripts/verify-updater.sh "${SANDBOX}/stub.bin"
