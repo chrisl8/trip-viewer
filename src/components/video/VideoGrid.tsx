@@ -4,21 +4,36 @@ import type { Segment } from "../../types/model";
 import { ChannelPanel } from "./ChannelPanel";
 import { useStore } from "../../state/store";
 
-// On Linux, Tauri's convertFileSrc returns `asset://localhost/...` which
-// WebKitGTK's GStreamer-based media player can't load (no GStreamer URI
-// handler for the `asset` scheme, so <video> fails with FormatError).
-// `file://` URLs are blocked by cross-origin policy between the localhost
-// webview and the filesystem. The workaround is a tiny HTTP server bound
-// to 127.0.0.1 (see src-tauri/src/video_server.rs); we fetch its port via
-// `get_video_port` at app startup. On Windows/macOS the default asset
-// protocol is already HTTP-based and works fine, so videoPort is 0.
+// Both Linux and macOS need the tiny loopback HTTP server
+// (src-tauri/src/video_server.rs) for <video> playback, for different
+// reasons:
+//
+//   Linux (WebKitGTK + GStreamer): Tauri's convertFileSrc returns
+//     `asset://localhost/...` but WebKitGTK's <video> has no URI handler
+//     for the `asset` scheme and fails with FormatError. `file://` URLs
+//     are blocked by cross-origin policy between the webview and the
+//     filesystem.
+//
+//   macOS (WKWebView + AVFoundation): the asset:// handler on macOS does
+//     not honor HTTP Range requests. Wolfbox MP4s have `moov` at EOF, so
+//     without range support AVFoundation linearly buffers ~14 s of mdat
+//     before it can start decoding the primary 4K channel.
+//
+// The Rust server is fully Range-capable (206 Partial Content), so
+// whoever has a non-zero videoPort uses HTTP. Windows (WebView2) handles
+// the default asset protocol correctly and gets videoPort = 0, falling
+// through to convertFileSrc.
 const IS_LINUX =
   typeof navigator !== "undefined" &&
   navigator.userAgent.includes("Linux") &&
   !navigator.userAgent.includes("Android");
 
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  navigator.userAgent.includes("Mac OS X");
+
 function videoSrcFor(filePath: string, videoPort: number | null): string {
-  if (IS_LINUX && videoPort && videoPort > 0) {
+  if (videoPort && videoPort > 0) {
     return `http://127.0.0.1:${videoPort}${encodeURI(filePath)}`;
   }
   return convertFileSrc(filePath);
@@ -87,7 +102,7 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
   // Windows/macOS are unaffected and always render everything.
   const showSecondaries = !IS_LINUX || multiChannelEnabled;
 
-  if (IS_LINUX && !videoPort) {
+  if ((IS_LINUX || IS_MAC) && !videoPort) {
     return (
       <div className="col-span-2 flex items-center justify-center text-sm text-neutral-500">
         Starting video server…

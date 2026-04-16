@@ -1,4 +1,4 @@
-//! Minimal localhost HTTP server for serving local video files on Linux.
+//! Minimal localhost HTTP server for serving local video files on Linux and macOS.
 //!
 //! Background: Tauri's `asset://` scheme on Linux is routed through the
 //! WebView for fetch/XHR, but WebKitGTK's GStreamer-based `<video>` element
@@ -8,7 +8,18 @@
 //! files from 127.0.0.1 over plain HTTP so the `<video>` element can load
 //! them normally, with full support for Range requests (seeking).
 //!
-//! Windows and macOS use Tauri's built-in asset protocol and don't need this.
+//! macOS needs the same server for a different reason: Tauri v2's `asset://`
+//! handler on WKWebView does NOT honor HTTP Range requests. AVFoundation
+//! needs to fetch the `moov` atom to build sample tables before it can
+//! decode, and Wolfbox firmware writes MP4s with `moov` at the END of the
+//! file. Without range support, WKWebView feeds AVFoundation a forward-only
+//! byte stream, stalling playback of the primary channel for ~14 s while it
+//! linearly buffers through mdat to reach moov. Serving over 127.0.0.1 with
+//! full 206 Partial Content support lets AVFoundation seek to EOF for moov
+//! and start decoding immediately.
+//!
+//! Windows uses Tauri's built-in asset protocol (Chromium-based WebView2
+//! handles range reads correctly) and doesn't need this.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -34,10 +45,10 @@ pub fn start() -> std::io::Result<u16> {
 
 /// Convert a raw HTTP request-path into an absolute filesystem PathBuf.
 ///
-/// The URL path *is* the absolute filesystem path (on Linux). This tolerates
-/// extra leading slashes — `//home/x.mp4` parses the same as `/home/x.mp4`
-/// — so the server is robust to clients that accidentally produce double
-/// slashes between authority and path.
+/// The URL path *is* the absolute filesystem path. This tolerates extra
+/// leading slashes — `//home/x.mp4` parses the same as `/home/x.mp4` — so
+/// the server is robust to clients that accidentally produce double slashes
+/// between authority and path.
 pub(crate) fn request_path(raw: &str) -> Option<PathBuf> {
     // Drop query string / fragment — we don't use them.
     let raw = raw.split(['?', '#']).next().unwrap_or(raw);

@@ -4,13 +4,16 @@ mod import;
 mod metadata;
 mod model;
 pub mod scan;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod video_server;
 mod window_fit;
 
 /// Tauri state wrapping the loopback video server port.
-/// On non-Linux platforms this is always 0 and the frontend falls back to
-/// Tauri's built-in asset protocol.
+/// On Windows this is always 0 and the frontend falls back to Tauri's
+/// built-in asset protocol. Linux and macOS run the loopback HTTP server
+/// because their WebView video pipelines can't use `asset://` directly —
+/// Linux WebKitGTK has no URI handler for it, and macOS WKWebView's asset
+/// handler doesn't honor HTTP Range requests (breaks moov-at-end MP4s).
 struct VideoPort(u16);
 
 #[tauri::command]
@@ -20,7 +23,7 @@ fn get_video_port(port: tauri::State<VideoPort>) -> u16 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let video_port = video_server::start()
         .inspect(|&p| {
             eprintln!("[video-server] listening on 127.0.0.1:{p}");
@@ -29,7 +32,7 @@ pub fn run() {
             eprintln!("[video-server] failed to start: {e}");
             0
         });
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let video_port: u16 = 0;
 
     tauri::Builder::default()
