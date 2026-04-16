@@ -33,12 +33,20 @@ export function TripList() {
     const trip = useStore.getState().trips.find((t) => t.id === tripId);
     if (!trip) return;
     // GPS data lives with the first/master channel (Front on Wolf Box,
-    // first in canonical order otherwise).
-    const frontPaths = trip.segments
-      .map((s) => s.channels[0]?.filePath)
-      .filter((p): p is string => typeof p === "string");
+    // first in canonical order otherwise). We pair each path with its
+    // segment's cameraKind so the backend dispatches to the right decoder
+    // (Wolf Box's ShenShu meta-track vs. Miltona's gps0 atom vs. Thinkware's
+    // none-at-all).
+    const requests = trip.segments
+      .map((s) => {
+        const path = s.channels[0]?.filePath;
+        if (!path || !s.gpsSupported) return null;
+        return { path, cameraKind: s.cameraKind };
+      })
+      .filter((r): r is { path: string; cameraKind: typeof trip.segments[0]["cameraKind"] } => r !== null);
+    if (requests.length === 0) return;
     try {
-      const results = await extractGpsBatch(frontPaths);
+      const results = await extractGpsBatch(requests);
       const gpsByFile = { ...useStore.getState().gpsByFile };
       for (const item of results) {
         gpsByFile[item.filePath] = item.points;

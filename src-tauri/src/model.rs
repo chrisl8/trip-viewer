@@ -1,3 +1,4 @@
+use crate::scan::naming::CameraKind;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -48,6 +49,14 @@ pub struct Segment {
     /// Channels in canonical order (see `label_rank`). The first entry is
     /// the sync master.
     pub channels: Vec<Channel>,
+    /// Which dashcam brand recorded this segment. Derived from the master
+    /// channel's filename by the scanner.
+    pub camera_kind: CameraKind,
+    /// Whether the frontend should render the GPS map for this segment.
+    /// `false` when we know this camera model doesn't record GPS (e.g.
+    /// Thinkware non-GPS variants) — the UI hides the panel entirely and
+    /// shows a small caption instead of an empty "No GPS data" placeholder.
+    pub gps_supported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

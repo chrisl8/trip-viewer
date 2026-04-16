@@ -3,6 +3,12 @@ export const LABEL_FRONT = "Front";
 export const LABEL_INTERIOR = "Interior";
 export const LABEL_REAR = "Rear";
 
+/**
+ * Which dashcam produced a file/segment. Serialized as lowercase camelCase
+ * to match the Rust `#[serde(rename_all = "camelCase")]` on `CameraKind`.
+ */
+export type CameraKind = "wolfBox" | "thinkware" | "miltona" | "generic";
+
 export interface Channel {
   /**
    * Free-form, user-visible label ("Front", "Interior", "Rear",
@@ -25,6 +31,16 @@ export interface Segment {
   isEvent: boolean;
   /** Channels in canonical order. channels[0] is the sync master. */
   channels: Channel[];
+  /** Which dashcam brand recorded this segment (derived from filename). */
+  cameraKind: CameraKind;
+  /**
+   * Whether the frontend should render the GPS map for this segment.
+   * False for camera models we know don't record GPS (e.g. Thinkware
+   * non-GPS variants). When false, the map panel is hidden entirely and
+   * a small inline caption explains why — rather than showing an empty
+   * "No GPS data" placeholder that eats screen real estate.
+   */
+  gpsSupported: boolean;
 }
 
 export interface Trip {

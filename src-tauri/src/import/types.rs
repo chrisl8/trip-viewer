@@ -1,3 +1,4 @@
+use crate::scan::naming::CameraKind;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -11,6 +12,12 @@ pub struct ImportSource {
     pub read_only: bool,
     pub file_count: u32,
     pub total_bytes: u64,
+    /// Dashcam brand detected from the folder layout. Used only for
+    /// user-facing labelling ("Thinkware SD card detected"). Always
+    /// `Some(_)` for auto-detected drives; `None` when the user picks a
+    /// folder manually and we haven't probed its shape yet.
+    #[serde(default)]
+    pub detected_kind: Option<CameraKind>,
 }
 
 // ── Progress Events (Rust → Frontend) ──

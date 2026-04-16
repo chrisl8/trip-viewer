@@ -121,13 +121,26 @@ export function PlayerShell() {
     [engine],
   );
 
+  // When the active segment's camera doesn't record GPS, collapse the map
+  // slot and let the video grid grow into the freed space. A small muted
+  // caption explains why — so users aren't left wondering where the map went.
+  const gpsSupported = activeSegment?.gpsSupported ?? true;
+  const gridCols = gpsSupported
+    ? "grid-cols-[2fr_1fr_1fr]"
+    : "grid-cols-[3fr_1fr]";
+
   return (
     <div className="flex h-full flex-col">
-      <div className="relative grid min-h-0 flex-1 grid-cols-[2fr_1fr_1fr] gap-2 p-2">
+      <div className={`relative grid min-h-0 flex-1 ${gridCols} gap-2 p-2`}>
         <VideoGrid channelRefs={channelRefs} activeSegment={activeSegment} />
-        <MapPanel activeSegment={activeSegment} />
+        {gpsSupported && <MapPanel activeSegment={activeSegment} />}
         <DriftHud />
       </div>
+      {!gpsSupported && activeSegment && (
+        <div className="border-t border-neutral-800 bg-neutral-950 px-4 py-1 text-xs text-neutral-500">
+          This camera model doesn&rsquo;t record GPS data.
+        </div>
+      )}
       <div className="border-t border-neutral-800 bg-neutral-950 px-4 pt-2">
         <Timeline onSeekTripTime={seekToTripTime} />
       </div>

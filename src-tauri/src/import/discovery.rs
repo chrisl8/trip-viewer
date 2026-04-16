@@ -1,12 +1,13 @@
 use crate::error::AppError;
 use crate::import::types::ImportSource;
+use crate::scan::naming::CameraKind;
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
-/// Known Wolfbox dashcam folder names. A removable drive is a dashcam card
-/// if its root contains at least MIN_FOLDER_MATCH of these.
-const DASHCAM_FOLDERS: &[&str] = &[
+/// Wolf Box dashcam folder names. A drive is a Wolf Box SD card if its
+/// root contains at least `WOLFBOX_MIN_MATCH` of these.
+const WOLFBOX_FOLDERS: &[&str] = &[
     "front_norm",
     "front_emer",
     "front_photo",
@@ -17,8 +18,13 @@ const DASHCAM_FOLDERS: &[&str] = &[
     "extra_emer",
     "extra_photo",
 ];
+const WOLFBOX_MIN_MATCH: usize = 3;
 
-const MIN_FOLDER_MATCH: usize = 3;
+/// Thinkware folder names. Only 4 candidates total so the threshold is
+/// relaxed — users may not record in every mode (e.g. parking-only users
+/// won't have `manual_rec`).
+const THINKWARE_FOLDERS: &[&str] = &["cont_rec", "evt_rec", "manual_rec", "parking_rec"];
+const THINKWARE_MIN_MATCH: usize = 2;
 
 /// System directories to skip during file counting.
 const SKIPPED_DIRS: &[&str] = &["system volume information", "$recycle.bin"];
@@ -28,8 +34,9 @@ pub(crate) fn is_skipped_dir(name: &str) -> bool {
     SKIPPED_DIRS.iter().any(|&s| s == lower)
 }
 
-/// Discover removable drives that look like Wolfbox dashcam SD cards.
-/// Returns a list of sources with file counts and total sizes.
+/// Discover removable drives that look like dashcam SD cards. Recognizes
+/// Wolf Box and Thinkware layouts; Miltona's folder structure is unknown
+/// so those cards must be opened manually.
 #[cfg(windows)]
 pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
     use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
@@ -56,9 +63,10 @@ pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
             continue;
         }
 
-        if !is_dashcam_root(Path::new(&root)) {
-            continue;
-        }
+        let detected_kind = match detect_dashcam_kind(Path::new(&root)) {
+            Some(k) => k,
+            None => continue,
+        };
 
         let (file_count, total_bytes) = count_files_and_size(Path::new(&root));
 
@@ -68,6 +76,7 @@ pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
             read_only: !is_writable(Path::new(&root)),
             file_count,
             total_bytes,
+            detected_kind: Some(detected_kind),
         });
     }
 
@@ -79,28 +88,35 @@ pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
     Ok(Vec::new())
 }
 
-/// Check if a directory contains at least MIN_FOLDER_MATCH known dashcam folders.
-pub fn is_dashcam_root(path: &Path) -> bool {
-    let entries = match fs::read_dir(path) {
-        Ok(e) => e,
-        Err(_) => return false,
+/// Return the dashcam brand whose folder signature matches this directory,
+/// or `None` if it doesn't look like any supported SD card.
+pub fn detect_dashcam_kind(path: &Path) -> Option<CameraKind> {
+    let dir_names: Vec<String> = match fs::read_dir(path) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.metadata().map(|m| m.is_dir()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().to_lowercase())
+            .collect(),
+        Err(_) => return None,
     };
 
-    let mut count = 0;
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        if !meta.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if DASHCAM_FOLDERS.iter().any(|&df| df == name) {
-            count += 1;
-        }
+    let wolfbox_count = WOLFBOX_FOLDERS
+        .iter()
+        .filter(|f| dir_names.iter().any(|d| d == **f))
+        .count();
+    if wolfbox_count >= WOLFBOX_MIN_MATCH {
+        return Some(CameraKind::WolfBox);
     }
 
-    count >= MIN_FOLDER_MATCH
+    let thinkware_count = THINKWARE_FOLDERS
+        .iter()
+        .filter(|f| dir_names.iter().any(|d| d == **f))
+        .count();
+    if thinkware_count >= THINKWARE_MIN_MATCH {
+        return Some(CameraKind::Thinkware);
+    }
+
+    None
 }
 
 /// Test if a path is writable by creating and deleting a temp file.
@@ -156,7 +172,7 @@ mod tests {
         fs::create_dir(dir.path().join("front_norm")).unwrap();
         fs::create_dir(dir.path().join("rear_norm")).unwrap();
         fs::create_dir(dir.path().join("extra_norm")).unwrap();
-        assert!(is_dashcam_root(dir.path()));
+        assert_eq!(detect_dashcam_kind(dir.path()), Some(CameraKind::WolfBox));
     }
 
     #[test]
@@ -164,7 +180,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("front_norm")).unwrap();
         fs::create_dir(dir.path().join("rear_norm")).unwrap();
-        assert!(!is_dashcam_root(dir.path()));
+        assert!(detect_dashcam_kind(dir.path()).is_none());
     }
 
     #[test]
@@ -173,7 +189,51 @@ mod tests {
         fs::create_dir(dir.path().join("FRONT_NORM")).unwrap();
         fs::create_dir(dir.path().join("Rear_Norm")).unwrap();
         fs::create_dir(dir.path().join("extra_PHOTO")).unwrap();
-        assert!(is_dashcam_root(dir.path()));
+        assert!(detect_dashcam_kind(dir.path()).is_some());
+    }
+
+    #[test]
+    fn test_thinkware_folder_signature_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("cont_rec")).unwrap();
+        fs::create_dir(dir.path().join("evt_rec")).unwrap();
+        fs::create_dir(dir.path().join("manual_rec")).unwrap();
+        assert_eq!(detect_dashcam_kind(dir.path()), Some(CameraKind::Thinkware));
+    }
+
+    #[test]
+    fn test_thinkware_two_folder_minimum() {
+        // Only `cont_rec` — below threshold.
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("cont_rec")).unwrap();
+        assert_eq!(detect_dashcam_kind(dir.path()), None);
+
+        // cont_rec + evt_rec — at threshold.
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("cont_rec")).unwrap();
+        fs::create_dir(dir.path().join("evt_rec")).unwrap();
+        assert_eq!(detect_dashcam_kind(dir.path()), Some(CameraKind::Thinkware));
+    }
+
+    #[test]
+    fn test_thinkware_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("Cont_Rec")).unwrap();
+        fs::create_dir(dir.path().join("EVT_REC")).unwrap();
+        assert_eq!(detect_dashcam_kind(dir.path()), Some(CameraKind::Thinkware));
+    }
+
+    #[test]
+    fn test_wolfbox_wins_over_thinkware_when_both_signatures_present() {
+        // Pathological mixed drive — Wolf Box signature is stronger (3 folder
+        // minimum vs 2), so it takes precedence when both are present.
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("front_norm")).unwrap();
+        fs::create_dir(dir.path().join("rear_norm")).unwrap();
+        fs::create_dir(dir.path().join("extra_norm")).unwrap();
+        fs::create_dir(dir.path().join("cont_rec")).unwrap();
+        fs::create_dir(dir.path().join("evt_rec")).unwrap();
+        assert_eq!(detect_dashcam_kind(dir.path()), Some(CameraKind::WolfBox));
     }
 
     #[test]

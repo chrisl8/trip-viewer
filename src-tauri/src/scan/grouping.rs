@@ -77,6 +77,9 @@ fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
         .min()
         .expect("bucket is non-empty by construction");
     let event_mode = bucket[0].parsed.event_mode;
+    // Camera kind is a per-parser property. All files in a bucket come
+    // from the same group_key and thus the same parser, so this is stable.
+    let camera_kind = bucket[0].parsed.camera_kind;
 
     let mut channels: Vec<Channel> = bucket.into_iter().map(make_channel).collect();
     // Canonical order: Front, Interior, Rear, then others alphabetically.
@@ -92,6 +95,8 @@ fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
         duration_s: 0.0,
         is_event: matches!(event_mode, EventMode::Event),
         channels,
+        gps_supported: camera_kind.gps_supported(),
+        camera_kind,
     }
 }
 

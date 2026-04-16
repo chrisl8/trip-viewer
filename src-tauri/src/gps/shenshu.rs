@@ -1,3 +1,11 @@
+//! Wolf Box ShenShu MetaData GPS decoder.
+//!
+//! The Wolf Box firmware embeds GPS in a custom binary "meta" track. The
+//! layout below was reverse-engineered — there's no upstream spec. Each MP4
+//! sample is 1000 bytes and contains one GPS fix at 1 Hz (the track claims
+//! 5 Hz via timescale/duration, but the GPS H:M:S field advances by one
+//! second per sample, so we trust that rather than the track-level timing).
+
 use crate::error::AppError;
 use crate::model::GpsPoint;
 use std::fs::File;
@@ -5,8 +13,6 @@ use std::io::BufReader;
 use std::path::Path;
 
 // ShenShu MetaData binary struct offsets (all LE i32 at 4-byte alignment).
-// Each 1000-byte MP4 sample contains one GPS fix at 1Hz (the track claims 5Hz
-// via timescale/duration, but the GPS H:M:S field advances by 1 second per sample).
 const OFF_STATUS: usize = 0x00;
 const OFF_LAT: usize = 0x28;
 const OFF_LAT_SCALE: usize = 0x30;

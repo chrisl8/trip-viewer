@@ -71,7 +71,7 @@ fn main() {
 
     // Now try actual extraction
     println!("\n=== Running extract...");
-    match tripviewer_lib::gps::decoder::extract(path) {
+    match tripviewer_lib::gps::shenshu::extract(path) {
         Ok(pts) => {
             println!("{} GPS points", pts.len());
             for p in pts.iter().take(5) {

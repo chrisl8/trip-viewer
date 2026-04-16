@@ -24,9 +24,9 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
         )));
     }
 
-    let files = walker::find_mp4_files(root);
+    let files = walker::find_video_files(root);
     eprintln!(
-        "scan_folder: found {} mp4 files under {}",
+        "scan_folder: found {} video files under {}",
         files.len(),
         root.display()
     );

@@ -1,6 +1,6 @@
 //! Filename parsing with auto-detection across multiple dashcam formats.
 //!
-//! We try each parser in order (Wolf Box → Thinkware → Generic4Channel)
+//! We try each parser in order (Wolf Box → Thinkware → Miltona → Generic4Channel)
 //! and use the first one that recognizes the filename. This lets the app
 //! accept footage from any supported dashcam without the user having to
 //! configure anything or rename files.
@@ -8,12 +8,46 @@
 use crate::error::AppError;
 use crate::model::{LABEL_FRONT, LABEL_INTERIOR, LABEL_REAR};
 use chrono::NaiveDateTime;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventMode {
     Normal,
     Event,
     Other(u8),
+}
+
+/// Which dashcam produced a file. Derived from the filename shape by the
+/// parser that matched. Flows through to `Segment` so the frontend can
+/// make brand-aware decisions (notably: hide the map panel for cameras
+/// that don't record GPS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CameraKind {
+    WolfBox,
+    Thinkware,
+    Miltona,
+    Generic,
+}
+
+impl CameraKind {
+    /// Does this camera record GPS data we know how to decode? Used to
+    /// decide whether to render the map panel or collapse it with a caption.
+    ///
+    /// Thinkware is `false` because the only sample we have contains no GPS
+    /// track at all (just a g-sensor/CAN text track). If a Thinkware model
+    /// with GPS shows up, flip this and add a decoder.
+    pub fn gps_supported(self) -> bool {
+        match self {
+            CameraKind::WolfBox => true,
+            CameraKind::Miltona => true,
+            CameraKind::Thinkware => false,
+            // Unknown cameras: optimistically try — we'll get empty points
+            // if there's nothing to extract and the UI will show "No GPS data"
+            // (which correctly reflects our uncertainty).
+            CameraKind::Generic => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +58,8 @@ pub struct ParsedName {
     pub channel_label: String,
     /// All channels of the same segment share this key. Used for grouping.
     pub group_key: String,
+    /// Which dashcam brand matched this file.
+    pub camera_kind: CameraKind,
 }
 
 /// A filename-format recognizer. Each parser knows one vendor's convention
@@ -46,19 +82,26 @@ pub fn parse(filename: &str) -> Result<ParsedName, AppError> {
 
 fn parsers() -> Vec<Box<dyn FilenameParser>> {
     // Order matters: put the most specific formats first, most generic last.
-    // Wolf Box and Thinkware have very distinct shapes so they can't conflict;
-    // the generic 4-channel parser runs last so it only catches leftovers.
+    // Wolf Box, Thinkware, and Miltona all have very distinct shapes so they
+    // can't conflict; the generic 4-channel parser runs last so it only
+    // catches leftovers.
     vec![
         Box::new(WolfBoxParser),
         Box::new(ThinkwareParser),
+        Box::new(MiltonaParser),
         Box::new(Generic4ChannelParser),
     ]
 }
 
-fn strip_mp4(filename: &str) -> Option<&str> {
-    filename
-        .strip_suffix(".MP4")
-        .or_else(|| filename.strip_suffix(".mp4"))
+/// Strip a recognized video extension (`.mp4` / `.MP4` / `.mov` / `.MOV`)
+/// and return the stem. Returns `None` if the extension isn't one we accept.
+fn strip_video_ext(filename: &str) -> Option<&str> {
+    for ext in [".MP4", ".mp4", ".MOV", ".mov"] {
+        if let Some(stem) = filename.strip_suffix(ext) {
+            return Some(stem);
+        }
+    }
+    None
 }
 
 // ── Wolf Box ────────────────────────────────────────────────────────────────
@@ -72,7 +115,7 @@ struct WolfBoxParser;
 
 impl FilenameParser for WolfBoxParser {
     fn parse(&self, filename: &str) -> Option<ParsedName> {
-        let stem = strip_mp4(filename)?;
+        let stem = strip_video_ext(filename)?;
         let parts: Vec<&str> = stem.split('_').collect();
         if parts.len() != 6 {
             return None;
@@ -105,6 +148,7 @@ impl FilenameParser for WolfBoxParser {
             event_mode,
             channel_label,
             group_key,
+            camera_kind: CameraKind::WolfBox,
         })
     }
 }
@@ -128,7 +172,7 @@ struct ThinkwareParser;
 
 impl FilenameParser for ThinkwareParser {
     fn parse(&self, filename: &str) -> Option<ParsedName> {
-        let stem = strip_mp4(filename)?;
+        let stem = strip_video_ext(filename)?;
         let parts: Vec<&str> = stem.split('_').collect();
         if parts.len() != 8 {
             return None;
@@ -167,6 +211,96 @@ impl FilenameParser for ThinkwareParser {
             event_mode,
             channel_label,
             group_key,
+            camera_kind: CameraKind::Thinkware,
+        })
+    }
+}
+
+// ── Miltona ─────────────────────────────────────────────────────────────────
+//
+// Format: `FILE{YYMMDD}-{HHMMSS}-{SSSSSSS}{C}.MOV`
+// Example: `FILE211202-151504-000406F.MOV`
+//   YY = two-digit year (2000-based — the brand launched well after 2000)
+//   SSSSSSS = 6-digit monotonic serial (disambiguates same-second clips)
+//   C = channel letter (F observed; the MNCD60 is a single-channel dashcam
+//       but we accept R/I defensively for hypothetical future dual-channel
+//       variants)
+//
+// Container is QuickTime (.MOV) — the `mp4` crate handles it.
+
+struct MiltonaParser;
+
+impl FilenameParser for MiltonaParser {
+    fn parse(&self, filename: &str) -> Option<ParsedName> {
+        let stem = strip_video_ext(filename)?;
+        // Must start with "FILE" and have three `-`-separated parts after it.
+        let rest = stem.strip_prefix("FILE")?;
+        let parts: Vec<&str> = rest.split('-').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+
+        let date = parts[0];
+        let time = parts[1];
+        let tail = parts[2];
+
+        // Date: 6 digits YYMMDD.
+        if date.len() != 6 || !date.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        // Time: 6 digits HHMMSS.
+        if time.len() != 6 || !time.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        // Tail: one or more digits + one channel letter.
+        if tail.len() < 2 {
+            return None;
+        }
+        let (serial, chan) = tail.split_at(tail.len() - 1);
+        if serial.is_empty() || !serial.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+
+        // YY → 20YY. The brand's first firmware-dated recordings are from
+        // ~2021; two-digit years won't wrap until 2100.
+        let yy: i32 = date[0..2].parse().ok()?;
+        let mo: u32 = date[2..4].parse().ok()?;
+        let da: u32 = date[4..6].parse().ok()?;
+        let hh: u32 = time[0..2].parse().ok()?;
+        let mi: u32 = time[2..4].parse().ok()?;
+        let se: u32 = time[4..6].parse().ok()?;
+
+        let dt_str = format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            2000 + yy,
+            mo,
+            da,
+            hh,
+            mi,
+            se
+        );
+        let start_time =
+            NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%dT%H:%M:%S").ok()?;
+
+        let channel_label = match chan {
+            "F" => LABEL_FRONT.to_string(),
+            "R" => LABEL_REAR.to_string(),
+            "I" => LABEL_INTERIOR.to_string(),
+            _ => return None,
+        };
+
+        // Include the serial in the group_key so two clips at the exact same
+        // second (hypothetical — Miltona writes one clip per ≥1-minute window)
+        // don't collide. Different channels of the same recording share the
+        // serial by design.
+        let group_key = format!("mt:{date}_{time}_{serial}");
+
+        Some(ParsedName {
+            start_time,
+            event_mode: EventMode::Normal,
+            channel_label,
+            group_key,
+            camera_kind: CameraKind::Miltona,
         })
     }
 }
@@ -188,7 +322,7 @@ struct Generic4ChannelParser;
 
 impl FilenameParser for Generic4ChannelParser {
     fn parse(&self, filename: &str) -> Option<ParsedName> {
-        let stem = strip_mp4(filename)?;
+        let stem = strip_video_ext(filename)?;
         let parts: Vec<&str> = stem.split('_').collect();
         if parts.len() < 2 {
             return None;
@@ -221,6 +355,7 @@ impl FilenameParser for Generic4ChannelParser {
             event_mode: EventMode::Normal,
             channel_label,
             group_key,
+            camera_kind: CameraKind::Generic,
         })
     }
 }
@@ -265,6 +400,7 @@ mod tests {
         let p = parse("2026_03_23_094634_00_F.MP4").unwrap();
         assert_eq!(p.channel_label, LABEL_FRONT);
         assert_eq!(p.event_mode, EventMode::Normal);
+        assert_eq!(p.camera_kind, CameraKind::WolfBox);
         assert_eq!(
             p.start_time,
             NaiveDate::from_ymd_opt(2026, 3, 23)
@@ -310,6 +446,7 @@ mod tests {
         let p = parse("REC_2026_03_06_07_25_52_F.MP4").unwrap();
         assert_eq!(p.channel_label, LABEL_FRONT);
         assert_eq!(p.event_mode, EventMode::Normal);
+        assert_eq!(p.camera_kind, CameraKind::Thinkware);
         assert_eq!(
             p.start_time,
             NaiveDate::from_ymd_opt(2026, 3, 6)
@@ -376,12 +513,85 @@ mod tests {
             .is_none());
     }
 
+    // ── Miltona ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parses_miltona_front_mov() {
+        let p = parse("FILE211202-151504-000406F.MOV").unwrap();
+        assert_eq!(p.channel_label, LABEL_FRONT);
+        assert_eq!(p.event_mode, EventMode::Normal);
+        assert_eq!(p.camera_kind, CameraKind::Miltona);
+        assert_eq!(
+            p.start_time,
+            NaiveDate::from_ymd_opt(2021, 12, 2)
+                .unwrap()
+                .and_hms_opt(15, 15, 4)
+                .unwrap()
+        );
+        assert!(p.group_key.starts_with("mt:"));
+    }
+
+    #[test]
+    fn parses_miltona_lowercase_mov_extension() {
+        let p = parse("FILE211202-151504-000406F.mov").unwrap();
+        assert_eq!(p.camera_kind, CameraKind::Miltona);
+    }
+
+    #[test]
+    fn miltona_serial_distinguishes_same_second_clips() {
+        let a = parse("FILE211202-151504-000406F.MOV").unwrap();
+        let b = parse("FILE211202-151504-000407F.MOV").unwrap();
+        assert_ne!(
+            a.group_key, b.group_key,
+            "different serials must produce different group keys"
+        );
+    }
+
+    #[test]
+    fn miltona_future_2100_boundary_documented() {
+        // Two-digit year is interpreted as 20YY. This will wrap at 2100 —
+        // not a realistic concern for this brand. The test documents the
+        // decision so it shows up if someone greps for "2100".
+        let p = parse("FILE991202-151504-000406F.MOV").unwrap();
+        assert_eq!(p.start_time.date(),
+            NaiveDate::from_ymd_opt(2099, 12, 2).unwrap());
+    }
+
+    #[test]
+    fn miltona_rejects_malformed() {
+        // Missing FILE prefix
+        assert!(parse("211202-151504-000406F.MOV").is_err());
+        // Wrong segment count
+        assert!(parse("FILE211202-000406F.MOV").is_err());
+        // Non-digit date
+        assert!(parse("FILExxxxxx-151504-000406F.MOV").is_err());
+        // No channel letter
+        assert!(parse("FILE211202-151504-000406.MOV").is_err());
+    }
+
+    #[test]
+    fn miltona_does_not_collide_with_other_parsers() {
+        assert!(WolfBoxParser
+            .parse("FILE211202-151504-000406F.MOV")
+            .is_none());
+        assert!(ThinkwareParser
+            .parse("FILE211202-151504-000406F.MOV")
+            .is_none());
+        assert!(MiltonaParser
+            .parse("2026_03_15_173951_02_F.MP4")
+            .is_none());
+        assert!(MiltonaParser
+            .parse("REC_2026_03_06_07_25_52_F.MP4")
+            .is_none());
+    }
+
     // ── Generic 4-channel ──────────────────────────────────────────────────
 
     #[test]
     fn parses_generic_4channel_letter() {
         let p = parse("2026_03_06_072552_A.MP4").unwrap();
         assert_eq!(p.channel_label, "Channel A");
+        assert_eq!(p.camera_kind, CameraKind::Generic);
         assert!(p.group_key.starts_with("g4:"));
     }
 
