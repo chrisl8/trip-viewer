@@ -34,12 +34,12 @@ export function HeadingReadout({ gpsPoints, activeSegment }: Props) {
 
   return (
     <div
-      className={`rounded-md bg-black/70 px-3 py-2 text-right backdrop-blur ${interp.stale ? "opacity-40" : ""}`}
+      className={`min-w-[4.25rem] rounded-md bg-black/70 px-3 py-2 text-center backdrop-blur ${interp.stale ? "opacity-40" : ""}`}
     >
       <div className="text-2xl font-bold text-white">
         {degreesToCompass(interp.headingDeg)}
       </div>
-      <div className="text-[10px] font-medium uppercase tracking-wider text-neutral-400">
+      <div className="text-[10px] font-medium uppercase tabular-nums tracking-wider text-neutral-400">
         {Math.round(interp.headingDeg)}&deg;
       </div>
     </div>

@@ -22,7 +22,7 @@ export function SpeedReadout({ gpsPoints, activeSegment }: Props) {
 
   return (
     <div
-      className={`rounded-md bg-black/70 px-3 py-2 text-right backdrop-blur ${interp.stale ? "opacity-40" : ""}`}
+      className={`min-w-[3.75rem] rounded-md bg-black/70 px-3 py-2 text-center backdrop-blur ${interp.stale ? "opacity-40" : ""}`}
     >
       <div className="text-2xl font-bold tabular-nums text-white">
         {Math.round(mph)}
