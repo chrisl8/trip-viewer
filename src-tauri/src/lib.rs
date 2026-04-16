@@ -6,6 +6,7 @@ mod model;
 pub mod scan;
 #[cfg(target_os = "linux")]
 mod video_server;
+mod window_fit;
 
 /// Tauri state wrapping the loopback video server port.
 /// On non-Linux platforms this is always 0 and the frontend falls back to
@@ -37,6 +38,15 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(import::ImportState::new())
         .manage(VideoPort(video_port))
+        .setup(|app| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(e) = window_fit::fit_to_work_area(&window) {
+                    eprintln!("[window-fit] failed to clamp window to work area: {e}");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             scan::scan_folder,
             metadata::probe_file,
