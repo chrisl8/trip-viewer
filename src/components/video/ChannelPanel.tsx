@@ -47,6 +47,13 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
   function ChannelPanel({ label, src, isMaster, onClick, onDoubleClick }, ref) {
     const [error, setError] = useState<string | null>(null);
     const [ready, setReady] = useState(false);
+    // `showLoading` is `!ready` debounced by LOADING_OVERLAY_DELAY_MS.
+    // Fast loads (the common case on Windows/Chromium and on macOS now
+    // that the loopback HTTP server feeds AVFoundation moov immediately)
+    // complete before this flips true, so the user sees a smooth cut
+    // from one segment's last frame to the next segment's first frame
+    // without a flash of "Loading…". Genuinely slow loads still show it.
+    const [showLoading, setShowLoading] = useState(false);
     const localRef = useRef<HTMLVideoElement | null>(null);
 
     // Merge the forwarded ref with our local ref so we can attach debug
@@ -67,6 +74,35 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
         console.log(`[media/${label}] boundary src=…${src.slice(-50)}`);
       }
     }, [src, label]);
+
+    // The loading overlay covers the <video> until `loadeddata` fires,
+    // so the user sees "Loading…" rather than the black <video> element
+    // while the decoder is preparing the first frame.
+    useEffect(() => {
+      const video = localRef.current;
+      if (!video) return;
+
+      const onLoaded = () => setReady(true);
+      video.addEventListener("loadeddata", onLoaded);
+      if (video.readyState >= 2) setReady(true);
+
+      return () => {
+        video.removeEventListener("loadeddata", onLoaded);
+      };
+    }, [src]);
+
+    // Debounce the overlay. If `ready` flips back to true within the
+    // delay window (almost always, on a healthy machine), the timer is
+    // cleared and the overlay never paints.
+    useEffect(() => {
+      if (ready) {
+        setShowLoading(false);
+        return;
+      }
+      const LOADING_OVERLAY_DELAY_MS = 150;
+      const t = window.setTimeout(() => setShowLoading(true), LOADING_OVERLAY_DELAY_MS);
+      return () => window.clearTimeout(t);
+    }, [ready]);
 
     useEffect(() => {
       if (!DEBUG_MEDIA && !DEBUG_MEDIA_VERBOSE) return;
@@ -178,7 +214,6 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           muted={!isMaster}
           preload="auto"
           playsInline
-          onLoadedData={() => setReady(true)}
           onError={(e) => {
             const video = e.currentTarget as HTMLVideoElement;
             const code = video.error?.code ?? 0;
@@ -221,8 +256,8 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           )}
         </div>
 
-        {!ready && !error && (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-neutral-500">
+        {showLoading && !error && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black text-xs text-neutral-500">
             Loading…
           </div>
         )}
