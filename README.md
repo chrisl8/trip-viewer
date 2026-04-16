@@ -62,7 +62,8 @@ Trip Viewer auto-detects common dashcam filename formats at import time. You jus
 Currently recognized formats:
 
 - **Wolf Box** (3-channel: front / interior / rear) — filenames like `2026_03_15_173951_02_F.MP4`. Full GPS support via the ShenShu metadata parser.
-- **Thinkware** (2-channel: front / rear) — filenames like `REC_2026_03_06_07_25_52_F.MP4` or `EVT_...` for event recordings. GPS extraction for Thinkware's format is not yet implemented; footage plays but the map won't populate.
+- **Thinkware** (2-channel: front / rear) — filenames like `REC_2026_03_06_07_25_52_F.MP4` or `EVT_...` for event recordings. SD cards with Thinkware folder structure (`cont_rec/`, `evt_rec/`, etc.) are auto-detected at import. The tested Thinkware model does not record GPS, so the map panel is hidden and replaced with a compact caption — no wasted screen space. If a GPS-equipped Thinkware model turns up, GPS support can be added.
+- **Miltona MNCD60** (single-channel) — filenames like `FILE211202-151504-000406F.MOV`. GPS support via the proprietary `gps0` atom (NovaTek-family chipset), with speed readout from the embedded km/h byte. GPS coordinates were ground-truthed against seven on-screen overlay readings from a reference clip.
 - **Generic 4-channel** (best-effort) — filenames like `2026_03_06_072552_A.MP4` through `..._D.MP4` (or `_1` through `_4`). Labeled "Channel A" through "Channel D". GPS not yet implemented for this format.
 
 If your dashcam uses a different naming convention, [open an issue](https://github.com/chrisl8/trip-viewer/issues) with a few example filenames (and ideally a sample file) and I'll add support. The parser architecture is modular and new format support is a small, low-risk addition.
@@ -115,7 +116,7 @@ First build compiles the Rust backend (~2 minutes). Subsequent builds use increm
 | Maps | Leaflet + react-leaflet + OpenStreetMap |
 | Video sync | `requestVideoFrameCallback` API |
 | Container parsing | `mp4` crate (pure Rust, no ffprobe) |
-| GPS decoding | Custom ShenShu MetaData binary parser |
+| GPS decoding | Custom ShenShu MetaData (Wolf Box) + NovaTek gps0 atom (Miltona) parsers |
 | File hashing | SHA-256 via `sha2` crate |
 | CI/CD | GitHub Actions + NSIS (Windows) + AppImage (Linux) + auto-updater |
 
