@@ -23,9 +23,9 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: lts/*
 
@@ -68,5 +68,50 @@ jobs:
           releaseBody: 'Download the `.exe` (Windows), `.AppImage` (Linux), or `.dmg` (macOS) below to install or update.'
           releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      - name: Verify updater artifact signature
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ matrix.platform }}" in
+            windows-latest)
+              curl -fsSL -o "$RUNNER_TEMP/minisign.zip" https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-win64.zip
+              unzip -q "$RUNNER_TEMP/minisign.zip" -d "$RUNNER_TEMP"
+              MINISIGN="$RUNNER_TEMP/minisign-win64/minisign.exe"
+              ARTIFACT_GLOB="src-tauri/target/release/bundle/nsis/*_x64-setup.exe"
+              ;;
+            ubuntu-22.04)
+              sudo apt install -y minisign
+              MINISIGN=minisign
+              ARTIFACT_GLOB="src-tauri/target/release/bundle/appimage/*_amd64.AppImage"
+              ;;
+            macos-13|macos-latest)
+              brew install minisign
+              MINISIGN=minisign
+              ARTIFACT_GLOB="src-tauri/target/release/bundle/dmg/*.dmg"
+              ;;
+            *)
+              echo "::warning::Unknown platform ${{ matrix.platform }}, skipping verify"
+              exit 0
+              ;;
+          esac
+
+          ARTIFACT=$(ls -1 $ARTIFACT_GLOB 2>/dev/null | head -n 1 || true)
+          if [ -z "${ARTIFACT:-}" ] || [ ! -f "$ARTIFACT" ]; then
+            echo "::warning::No artifact matched $ARTIFACT_GLOB — skipping verify"
+            exit 0
+          fi
+          SIG="${ARTIFACT}.sig"
+          if [ ! -f "$SIG" ]; then
+            echo "::warning::No .sig next to $ARTIFACT — updater not enabled for this target"
+            exit 0
+          fi
+
+          jq -r .plugins.updater.pubkey src-tauri/tauri.conf.json | base64 -d > "$RUNNER_TEMP/pk.txt"
+          base64 -d "$SIG" > "$RUNNER_TEMP/artifact.minisig"
+
+          echo "Verifying $(basename "$ARTIFACT") against its .sig"
+          "$MINISIGN" -Vm "$ARTIFACT" -x "$RUNNER_TEMP/artifact.minisig" -p "$RUNNER_TEMP/pk.txt"
