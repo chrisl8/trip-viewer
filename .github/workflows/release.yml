@@ -91,7 +91,7 @@ jobs:
             macos-15-intel|macos-latest)
               brew install minisign
               MINISIGN=minisign
-              ARTIFACT_GLOB="src-tauri/target/release/bundle/dmg/*.dmg"
+              ARTIFACT_GLOB="src-tauri/target/release/bundle/macos/*.app.tar.gz"
               ;;
             *)
               echo "::warning::Unknown platform ${{ matrix.platform }}, skipping verify"
