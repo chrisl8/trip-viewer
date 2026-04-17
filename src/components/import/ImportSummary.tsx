@@ -20,7 +20,7 @@ export function ImportSummary() {
 
   if (importStatus !== "complete" || !result) return null;
 
-  async function handleClose() {
+  function handleClose() {
     let videosPath = localStorage.getItem(LAST_FOLDER_KEY);
 
     // First-time import: no folder was previously open.
@@ -38,17 +38,18 @@ export function ImportSummary() {
       localStorage.setItem(LAST_FOLDER_KEY, videosPath);
     }
 
-    // Rescan so new trips appear
+    // Dismiss the modal first so the click feels responsive. The rescan runs
+    // in the background; the sidebar's "Scanning…" indicator (status="loading")
+    // shows progress, and the trip list updates when the scan resolves.
+    resetImport();
     if (videosPath) {
       setStatus("loading");
-      try {
-        const scanResult = await scanFolder(videosPath);
-        setScanResult(scanResult);
-      } catch {
-        // Ignore scan errors on close
-      }
+      scanFolder(videosPath)
+        .then(setScanResult)
+        .catch(() => {
+          // Ignore scan errors on close
+        });
     }
-    resetImport();
   }
 
   return (
