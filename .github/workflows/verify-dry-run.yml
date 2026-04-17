@@ -85,3 +85,28 @@ jobs:
         env:
           TAURI_CONF: ${{ env.SANDBOX }}/src-tauri/tauri.conf.json
         run: bash scripts/verify-updater.sh "${SANDBOX}/stub.bin"
+
+      - name: Install npm deps (for tauri CLI)
+        shell: bash
+        run: npm ci
+
+      - name: Run scripts/check-signing-key.sh against throwaway keypair
+        # Exercises the release-workflow preflight end-to-end on every push.
+        # Uses a throwaway tauri-generated keypair + a stub tauri.conf.json so
+        # a passing run proves the script works on this platform without
+        # needing access to the real TAURI_SIGNING_PRIVATE_KEY secret.
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: preflight-test-pw
+        run: |
+          set -euo pipefail
+          CHK="${SANDBOX}/check-signing-key"
+          mkdir -p "$CHK/src-tauri"
+
+          npx tauri signer generate --ci -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" -w "$CHK/test.key" -f
+          PUB=$(tr -d '\r\n' < "$CHK/test.key.pub")
+          printf '{"plugins":{"updater":{"pubkey":"%s"}}}\n' "$PUB" > "$CHK/src-tauri/tauri.conf.json"
+
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$CHK/test.key"
+          export TAURI_CONF="$CHK/src-tauri/tauri.conf.json"
+          bash scripts/check-signing-key.sh

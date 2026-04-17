@@ -36,11 +36,27 @@ Go to [github.com/chrisl8/trip-viewer](https://github.com/chrisl8/trip-viewer) >
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions.
 
+### 3. Rotating the updater signing key
+
+**Rotation invalidates auto-update for every existing install.** A shipped binary embeds one pubkey forever; the new key's signatures cannot be verified by anything built with the old pubkey. So only rotate when you must (lost key, compromised key, or cleaning up a broken deployment like v0.1.14 — see commit `4e97198`), and plan the rollout:
+
+1. Generate the new keypair with `npx tauri signer generate -w ~/.tauri/trip-viewer.key -f`.
+2. Replace the `pubkey` in `src-tauri/tauri.conf.json` with the contents of the new `.key.pub`.
+3. Update both GitHub secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) **before** pushing the config change.
+4. Before tagging the first release with the new key, run `bash scripts/check-signing-key.sh` locally (or rely on the release-workflow preflight) to confirm key and config agree. The preflight fails the release job in seconds if they don't.
+5. The first release after rotation must include a manual-reinstall callout in its GitHub Release notes — existing installs cannot auto-update across the rotation. Suggested wording:
+   > **One-time manual update required if you are on an older build.** The auto-updater signing key was rotated; your current install can't verify new signatures. Download the installer below and run it once; auto-updates will work normally from that point on.
+
 ## Before tagging: pre-flight check
 
-The `Verify updater (dry run)` workflow runs on every push to `main` and every PR. It signs and verifies a throwaway stub artifact on all four matrix platforms — if that job is green on `main`, the verify step in the release workflow will also be green on a tag push. Check it at [github.com/chrisl8/trip-viewer/actions/workflows/verify-dry-run.yml](https://github.com/chrisl8/trip-viewer/actions/workflows/verify-dry-run.yml) before tagging.
+Two checks run automatically on every push to `main` and every PR, in the `Verify updater (dry run)` workflow:
 
-You can also run the verify step locally after `npm run tauri build`:
+- Signs and verifies a throwaway stub artifact end-to-end via `scripts/verify-updater.sh`.
+- Exercises `scripts/check-signing-key.sh` against a throwaway tauri-generated keypair — the same script the release workflow runs against the real GitHub secret before building.
+
+If that job is green on `main`, both the preflight and the post-build verify step on a tag push will also be green. Check it at [github.com/chrisl8/trip-viewer/actions/workflows/verify-dry-run.yml](https://github.com/chrisl8/trip-viewer/actions/workflows/verify-dry-run.yml) before tagging.
+
+You can also run the post-build verify locally after `npm run tauri build`:
 
 ```bash
 bash scripts/verify-updater.sh
