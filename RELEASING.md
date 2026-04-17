@@ -99,8 +99,8 @@ The draft will have these assets attached:
 
 **Windows:**
 
-- `tripviewer_X.Y.Z_x64-setup.exe` — the NSIS installer
-- `tripviewer_X.Y.Z_x64-setup.exe.sig` — updater signature
+- `Trip Viewer_X.Y.Z_x64-setup.exe` — the NSIS installer
+- `Trip Viewer_X.Y.Z_x64-setup.exe.sig` — updater signature
 
 **Linux:**
 
