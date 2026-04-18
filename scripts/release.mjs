@@ -29,6 +29,24 @@ function runInherit(cmd) {
   return execSync(cmd, { cwd: repo, stdio: "inherit" });
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function runInheritWithRetry(cmd, { attempts = 3, delayMs = 1500 } = {}) {
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return execSync(cmd, { cwd: repo, stdio: "inherit" });
+    } catch (err) {
+      if (i === attempts) throw err;
+      console.log(
+        `\x1b[33m!\x1b[0m \`${cmd}\` failed (attempt ${i}/${attempts}), retrying in ${delayMs}ms...`,
+      );
+      sleepSync(delayMs);
+    }
+  }
+}
+
 function bail(msg) {
   console.error(`\n\x1b[31mERROR:\x1b[0m ${msg}\n`);
   process.exit(1);
@@ -160,9 +178,16 @@ run(`git tag -a ${tag} -m "Release ${newVersion}"`);
 
 // ── Push ────────────────────────────────────────────────────────────────────
 
-info("Pushing commit and tag to origin...");
-runInherit("git push origin main");
-runInherit(`git push origin ${tag}`);
+info("Pushing commit and tag to origin (with retry)...");
+try {
+  runInheritWithRetry("git push origin main");
+  runInheritWithRetry(`git push origin ${tag}`);
+} catch {
+  bail(
+    `Push failed after retries. Commit and tag are local — resume with:\n` +
+      `  git push origin main && git push origin ${tag}`,
+  );
+}
 
 ok(`Released ${tag}`);
 console.log(
