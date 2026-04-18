@@ -4,7 +4,7 @@ description = "Multi-channel dashcam viewer with GPS tracking"
 edition = "2021"
 license = "MIT"
 name = "tripviewer"
-version = "0.1.23"
+version = "0.1.24"
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
