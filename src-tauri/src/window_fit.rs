@@ -132,12 +132,10 @@ fn work_area_logical(
     window: &WebviewWindow,
     scale: f64,
 ) -> tauri::Result<Option<(f64, f64)>> {
-    // Tauri's setup hook runs on the AppKit main thread on macOS, which
-    // NSScreen class methods require. MainThreadMarker::new() returns Some
-    // only when that invariant holds.
-    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
-        return fallback_monitor_work_area(window, scale);
-    };
+    // SAFETY: fit_to_work_area is only called from Tauri's setup hook, which
+    // Tauri guarantees runs on the AppKit main thread on macOS. objc2-foundation
+    // 0.2.2 exposes only the unchecked constructor for MainThreadMarker.
+    let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
 
     // NSScreen returns points (logical pixels), matching our contract.
     // mainScreen returns None when the process has no window server.
@@ -157,7 +155,7 @@ fn work_area_logical(
 ) -> tauri::Result<Option<(f64, f64)>> {
     // MonitorExt provides workarea(); WidgetExt provides window() and display().
     // monitor_at_window is an inherent method on gdk::Display.
-    use gtk::prelude::{MonitorExt as _, WidgetExt as _};
+    use gtk::prelude::{MonitorExt as _, WidgetExt};
 
     if let Ok(gtk_window) = window.gtk_window() {
         if let Some(gdk_window) = WidgetExt::window(&gtk_window) {
