@@ -15,8 +15,9 @@
         "title": "Trip Viewer",
         "width": 1280,
         "height": 760,
-        "minWidth": 960,
+        "minWidth": 720,
         "minHeight": 600,
+        "center": true,
         "visible": false
       }
     ],

@@ -28,6 +28,7 @@ tauri = {version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-window-state = "2"
 thiserror = "1"
 uuid = {version = "1", features = ["v4", "serde"] }
 walkdir = "2.5.0"
@@ -40,6 +41,17 @@ windows-sys = {version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# NSScreen::visibleFrame() for true work-area detection (menu bar + Dock).
+# The NSScreen feature on objc2-app-kit transitively enables NSGeometry on
+# objc2-foundation; we depend on the latter directly only for MainThreadMarker.
+objc2-app-kit = {version = "0.2", features = ["NSScreen"] }
+objc2-foundation = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# gdk::Monitor::workarea() for true work-area detection (panels/docks).
+gtk = {version = "0.18", features = ["v3_24"] }
 
 # Optimize crypto even in dev builds so SD card import speed isn't bottlenecked by hashing
 [profile.dev.package.sha2]

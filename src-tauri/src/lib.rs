@@ -35,17 +35,43 @@ pub fn run() {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let video_port: u16 = 0;
 
+    // Persist window size/position across runs. Skip VISIBLE so a window
+    // closed while hidden (e.g., after a crash) doesn't come back invisible.
+    let window_state_flags =
+        tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::VISIBLE;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(
+            // `skip_initial_state` prevents the plugin's auto-restore in
+            // on_window_ready; we restore explicitly in `setup` below so the
+            // order (restore → fit → show) is deterministic.
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(window_state_flags)
+                .skip_initial_state("main")
+                .build(),
+        )
         .manage(import::ImportState::new())
         .manage(VideoPort(video_port))
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::Manager;
+            use tauri_plugin_window_state::WindowExt;
             if let Some(window) = app.get_webview_window("main") {
+                // 1. Restore saved position/size/maximized first so the fit
+                //    clamp runs against the real geometry the user expects.
+                if let Err(e) = window.restore_state(window_state_flags) {
+                    eprintln!("[window-state] failed to restore: {e}");
+                }
+                // 2. Clamp to the current monitor's work area if the restored
+                //    (or default) size is too large. A no-op when maximized.
                 if let Err(e) = window_fit::fit_to_work_area(&window) {
-                    eprintln!("[window-fit] failed to clamp window to work area: {e}");
+                    eprintln!("[window-fit] failed to clamp window: {e}");
+                }
+                // 3. Show last, so the user never sees an intermediate state.
+                if let Err(e) = window.show() {
+                    eprintln!("[window] failed to show: {e}");
                 }
             }
             Ok(())

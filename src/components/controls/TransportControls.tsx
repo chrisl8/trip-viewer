@@ -41,18 +41,18 @@ export function TransportControls({ engine }: Props) {
   };
 
   return (
-    <div className="flex items-center gap-4 border-t border-neutral-800 bg-neutral-950 px-4 py-2">
+    <div className="flex flex-wrap items-center gap-2 border-t border-neutral-800 bg-neutral-950 px-4 py-2 sm:gap-4">
       <button
         onClick={onToggle}
         disabled={disabled}
-        className="w-20 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+        className="w-20 shrink-0 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {isPlaying ? "Pause" : "Play"}
       </button>
 
       <SpeedControls engine={engine} />
 
-      <div className="ml-auto font-mono text-xs tabular-nums text-neutral-400">
+      <div className="ml-auto shrink-0 font-mono text-xs tabular-nums text-neutral-400">
         {formatTime(tripTime)} / {formatTime(totalDuration)}
       </div>
     </div>

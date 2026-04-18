@@ -13,7 +13,7 @@ export function SpeedControls({ engine }: Props) {
   const setSpeed = useStore((s) => s.setSpeed);
 
   return (
-    <div className="flex gap-1">
+    <div className="flex shrink-0 gap-1">
       {SPEEDS.map((s) => (
         <button
           key={s}
