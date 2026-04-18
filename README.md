@@ -16,7 +16,7 @@ Hardware video decoding keeps playback smooth even at high resolution, and Trip 
 
 ## How to install
 
-**Trip Viewer runs on Windows 10/11, macOS 11 (Big Sur) or later, and modern Linux distributions.** No developer tools required.
+**Trip Viewer runs on Windows 10/11, macOS 11 (Big Sur) or later, and modern Linux distributions (tested on Ubuntu 22.04+).** No developer tools required.
 
 ### Windows
 
@@ -25,7 +25,7 @@ Hardware video decoding keeps playback smooth even at high resolution, and Trip 
 3. Run the installer — Windows may show a SmartScreen warning since the app is new and unsigned. Click **"More info"** then **"Run anyway"**
 4. Launch **Trip Viewer** from your Start Menu
 
-**One extra requirement on Windows:** Your dashcam probably records in HEVC (H.265) format. Windows needs a decoder for this. Trip Viewer will check on startup and link you to the Microsoft Store if it's missing. The [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) is a one-time install.
+**One extra requirement on Windows:** Your dashcam probably records in HEVC (H.265) format. Windows needs a decoder for this. Trip Viewer will check on startup and link you to the Microsoft Store if it's missing. The [HEVC Video Extension](https://apps.microsoft.com/detail/9n4wgh0z6vhq) is a one-time install.
 
 ### macOS
 
@@ -53,14 +53,6 @@ sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad
 
 By default on Linux, only the primary channel is shown — press **M** to enable multi-channel view. This is opt-in because on some older integrated GPUs, multiple concurrent HEVC streams can overwhelm video memory. On typical modern hardware it works fine.
 
-### Auto-updates
-
-Trip Viewer auto-checks for updates on launch (Windows, macOS DMG, and Linux AppImage builds), so you'll always have the latest version.
-
-## Known limitations
-
-- **Linux / older AMD integrated GPUs** — On older AMD integrated GPUs (e.g. Raven Ridge / Vega 11), segment transitions may briefly stall (~8 seconds) due to WebKitGTK/VAAPI pipeline behaviour. Playback recovers automatically. Newer hardware is not affected.
-
 ## What it does
 
 - **Multi-channel synchronized playback (1–4 channels)** — every camera on your dashcam plays in lockstep. Click a side view to make it the main view. Double-click the main view for fullscreen.
@@ -85,10 +77,6 @@ Currently recognized formats:
 
 If your dashcam uses a different naming convention, [open an issue](https://github.com/chrisl8/trip-viewer/issues) with a few example filenames (and ideally a sample file) and I'll add support. The parser architecture is modular and new format support is a small, low-risk addition.
 
-## Platform support
-
-Trip Viewer runs on **Windows 10/11**, **macOS 11 (Big Sur) or later** (both Apple Silicon and Intel Macs — separate signed DMGs), and **Linux** (tested on Ubuntu 22.04+ via AppImage; should work on any modern distro with WebKitGTK 4.1 and GStreamer).
-
 ## Built with AI
 
 This project was built with significant help from [Claude Code](https://claude.ai/claude-code) (Anthropic's AI coding assistant). I'm a full-time software developer, and Claude Code was an excellent collaborator — it helped with architecture decisions, wrote the Rust backend and React frontend, reverse-engineered the dashcam GPS format, and built the entire SD card import pipeline. The result is a codebase I understand fully and maintain myself, with AI as a force multiplier.
@@ -103,6 +91,10 @@ I actively maintain this project and I'm interested in making it better. If you:
 - **Want a feature** — [open an issue](https://github.com/chrisl8/trip-viewer/issues) describing what you'd like. Some ideas I'm already thinking about: audio source selection, clip export, GPX track export, camera view flipping, and AI-powered footage search
 - **Have a different dashcam** — I'd love to add support for it. Open an issue with your dashcam model and, if possible, a sample file
 
+### If an update breaks things
+
+If a new release breaks something for you, uninstall it via your OS and reinstall the previous version from the [Releases page](https://github.com/chrisl8/trip-viewer/releases). Please also file a bug report. Auto-update prompts can be dismissed if you want to stay on a working version.
+
 ## Development
 
 If you want to build Trip Viewer from source or contribute:
@@ -111,7 +103,7 @@ If you want to build Trip Viewer from source or contribute:
 
 - Node.js 20+
 - Rust 1.70+ (via [rustup](https://rustup.rs/))
-- **Windows:** [HEVC Video Extension](ms-windows-store://pdp/?productid=9N4WGH0Z6VHQ) for HEVC playback
+- **Windows:** HEVC Video Extension (see [Windows install](#windows) above)
 - **macOS:** Xcode Command Line Tools (`xcode-select --install`). HEVC playback works natively via AVFoundation — no extra codecs needed. Local `npm run tauri build` produces a DMG for the host architecture only; CI uses a matrix build for both Intel and Apple Silicon.
 - **Linux:** `webkit2gtk-4.1`, `gstreamer1.0-libav`, `gstreamer1.0-plugins-bad`, plus Tauri's standard build deps (see [Tauri prerequisites](https://tauri.app/start/prerequisites/))
 
@@ -127,16 +119,16 @@ First build compiles the Rust backend (~2 minutes). Subsequent builds use increm
 
 ### Tech stack
 
-| Layer | Technology |
-|-------|------------|
-| App framework | Tauri v2 (Rust backend, WebView2 on Windows / WKWebView on macOS / WebKitGTK 4.1 on Linux) |
-| Frontend | React 19, TypeScript, Tailwind CSS v4, Zustand |
-| Maps | Leaflet + react-leaflet + OpenStreetMap |
-| Video sync | `requestVideoFrameCallback` API |
-| Container parsing | `mp4` crate (pure Rust, no ffprobe) |
-| GPS decoding | Custom ShenShu MetaData (Wolf Box) + NovaTek gps0 atom (Miltona) parsers |
-| File hashing | SHA-256 via `sha2` crate |
-| CI/CD | GitHub Actions + NSIS (Windows) + DMG (macOS, dual-arch) + AppImage (Linux) + auto-updater |
+| Layer             | Technology                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| App framework     | Tauri v2 (Rust backend, WebView2 on Windows / WKWebView on macOS / WebKitGTK 4.1 on Linux) |
+| Frontend          | React 19, TypeScript, Tailwind CSS v4, Zustand                                             |
+| Maps              | Leaflet + react-leaflet + OpenStreetMap                                                    |
+| Video sync        | `requestVideoFrameCallback` API                                                            |
+| Container parsing | `mp4` crate (pure Rust, no ffprobe)                                                        |
+| GPS decoding      | Custom ShenShu MetaData (Wolf Box) + NovaTek gps0 atom (Miltona) parsers                   |
+| File hashing      | SHA-256 via `sha2` crate                                                                   |
+| CI/CD             | GitHub Actions + NSIS (Windows) + DMG (macOS, dual-arch) + AppImage (Linux) + auto-updater |
 
 See [DESIGN.md](DESIGN.md) for architecture decisions and [RELEASING.md](RELEASING.md) for release instructions.
 
