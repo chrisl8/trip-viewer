@@ -14,6 +14,21 @@ function formatSpeed(bps: number): string {
   return bps.toFixed(0) + " B/s";
 }
 
+function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  if (seconds >= 99 * 3600) return "~≥ 99h";
+  const s = Math.round(seconds);
+  if (s < 60) return `~${s}s`;
+  if (s < 3600) {
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `~${m}m ${rem}s`;
+  }
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `~${h}h ${m}m`;
+}
+
 export function ImportProgress() {
   const importStatus = useStore((s) => s.importStatus);
   const phase = useStore((s) => s.importPhase);
@@ -59,6 +74,17 @@ export function ImportProgress() {
             {progress.speedBps > 0 && (
               <span>{formatSpeed(progress.speedBps)}</span>
             )}
+            {progress.phase === "staging" &&
+              progress.speedBps > 0 &&
+              progress.bytesTotal > 0 &&
+              progress.bytesDone < progress.bytesTotal && (
+                <span>
+                  {formatEta(
+                    (progress.bytesTotal - progress.bytesDone) /
+                      progress.speedBps,
+                  )}
+                </span>
+              )}
           </div>
 
           {progress.currentFile && (
