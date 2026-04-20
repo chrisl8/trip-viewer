@@ -1,3 +1,4 @@
+pub mod errors;
 pub mod grouping;
 pub mod naming;
 pub mod walker;
@@ -5,11 +6,40 @@ pub mod walker;
 use crate::error::AppError;
 use crate::metadata::mp4_probe;
 use crate::model::{ScanError, ScanResult, Segment, Trip};
+use crate::scan::errors::classify;
 use crate::scan::grouping::{GroupingInput, DEFAULT_TRIP_GAP_SECONDS};
-use chrono::{Duration, NaiveDateTime};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+/// Best-effort read of file size and last-modified time. Returns `(None, None)`
+/// if the path is gone or unreadable — these fields are decorative, not load-bearing.
+fn file_stats(path: &Path) -> (Option<u64>, Option<i64>) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return (None, None);
+    };
+    let size = Some(meta.len());
+    let modified = meta
+        .modified()
+        .ok()
+        .map(DateTime::<Utc>::from)
+        .map(|dt| dt.timestamp_millis());
+    (size, modified)
+}
+
+fn make_scan_error(path: &Path, err: &AppError) -> ScanError {
+    let (size_bytes, modified_ms) = file_stats(path);
+    let c = classify(err);
+    ScanError {
+        path: path.to_string_lossy().into_owned(),
+        kind: c.kind,
+        message: c.message,
+        detail: c.detail,
+        size_bytes,
+        modified_ms,
+    }
+}
 
 #[tauri::command]
 pub async fn scan_folder(path: String) -> Result<ScanResult, AppError> {
@@ -44,10 +74,7 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
                 path: file,
                 parsed,
             }),
-            Err(e) => errors.push(ScanError {
-                path: file.to_string_lossy().into_owned(),
-                reason: e.to_string(),
-            }),
+            Err(e) => errors.push(make_scan_error(&file, &e)),
         }
     }
 
@@ -55,7 +82,6 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
     // count (1–N) is accepted.
     let group_out = grouping::group(parsed_inputs, DEFAULT_TRIP_GAP_SECONDS);
     let mut trips = group_out.trips;
-    let unmatched = group_out.unmatched;
 
     // Stage 3: parallel probe every channel file → fill metadata + real
     // durations. The master (first channel in canonical order) provides
@@ -104,7 +130,6 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
 
     Ok(ScanResult {
         trips: final_trips,
-        unmatched,
         errors,
     })
 }
@@ -145,10 +170,7 @@ fn probe_segment(paths: &[PathBuf]) -> SegmentProbe {
                 });
             }
             Err(e) => {
-                out.errors.push(ScanError {
-                    path: path.to_string_lossy().into_owned(),
-                    reason: e.to_string(),
-                });
+                out.errors.push(make_scan_error(path, &e));
                 out.channels.push(ProbedChannel::default());
             }
         }

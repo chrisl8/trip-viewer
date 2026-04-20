@@ -1,6 +1,7 @@
 mod error;
 pub mod gps;
 mod import;
+mod issues;
 mod metadata;
 mod model;
 pub mod scan;
@@ -42,6 +43,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(
@@ -85,6 +87,7 @@ pub fn run() {
             import::start_import,
             import::cancel_import,
             import::resolve_unknowns,
+            issues::issues_delete_to_trash,
             get_video_port,
         ])
         .run(tauri::generate_context!())

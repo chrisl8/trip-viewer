@@ -12,18 +12,20 @@ import { ImportConfirmDialog } from "./components/import/ImportConfirmDialog";
 import { ImportProgress } from "./components/import/ImportProgress";
 import { UnknownFilesDialog } from "./components/import/UnknownFilesDialog";
 import { ImportSummary } from "./components/import/ImportSummary";
+import { IssuesView } from "./components/issues/IssuesView";
 import { useStore } from "./state/store";
+import { KIND_META, kindCounts } from "./utils/issueKinds";
 
 function App() {
   const trips = useStore((s) => s.trips);
-  const unmatched = useStore((s) => s.unmatched);
   const scanErrors = useStore((s) => s.scanErrors);
   const status = useStore((s) => s.status);
   const error = useStore((s) => s.error);
   const importError = useStore((s) => s.importError);
   const resetImport = useStore((s) => s.resetImport);
   const setVideoPort = useStore((s) => s.setVideoPort);
-  const [showIssues, setShowIssues] = useState(false);
+  const mainView = useStore((s) => s.mainView);
+  const setMainView = useStore((s) => s.setMainView);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [version, setVersion] = useState("");
 
@@ -34,7 +36,9 @@ function App() {
       .catch((e) => console.error("get_video_port failed", e));
   }, [setVideoPort]);
 
-  const hasIssues = unmatched.length > 0 || scanErrors.length > 0;
+  const issueCount = scanErrors.length;
+  const issuesOpen = mainView === "issues";
+  const issueBreakdown = kindCounts(scanErrors);
 
   return (
     <HevcSupportGate>
@@ -53,17 +57,36 @@ function App() {
             </div>
           )}
           {status === "ready" && trips.length > 0 && (
-            <div className="text-xs text-neutral-500">
-              {trips.length} trips ·{" "}
-              {trips.reduce((n, t) => n + t.segments.length, 0)} segments
-              {hasIssues && (
-                <button
-                  onClick={() => setShowIssues(!showIssues)}
-                  className="ml-1 text-yellow-500 hover:text-yellow-400"
-                >
-                  · {scanErrors.length + unmatched.length} issues{" "}
-                  {showIssues ? "▾" : "▸"}
-                </button>
+            <div className="flex flex-col gap-0.5 text-xs text-neutral-500">
+              <div>
+                {trips.length} trips ·{" "}
+                {trips.reduce((n, t) => n + t.segments.length, 0)} segments
+                {issueCount > 0 && (
+                  <button
+                    onClick={() => setMainView(issuesOpen ? "player" : "issues")}
+                    className={
+                      issuesOpen
+                        ? "ml-1 text-yellow-300 hover:text-yellow-200"
+                        : "ml-1 text-yellow-500 hover:text-yellow-400"
+                    }
+                    title={issuesOpen ? "Close issues view" : "Open issues view"}
+                  >
+                    · {issueCount} {issueCount === 1 ? "issue" : "issues"}{" "}
+                    {issuesOpen ? "◧" : "▸"}
+                  </button>
+                )}
+              </div>
+              {issueCount > 0 && issueBreakdown.length > 0 && (
+                <div className="flex flex-wrap gap-x-2 text-[11px] text-neutral-600">
+                  {issueBreakdown.slice(0, 3).map(({ kind, count }) => (
+                    <span key={kind}>
+                      {count} {KIND_META[kind].label.toLowerCase()}
+                    </span>
+                  ))}
+                  {issueBreakdown.length > 3 && (
+                    <span>+{issueBreakdown.length - 3} more</span>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -76,44 +99,6 @@ function App() {
           {error && (
             <div className="rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
               {error}
-            </div>
-          )}
-          {showIssues && hasIssues && (
-            <div className="max-h-40 overflow-y-auto rounded-md bg-neutral-900 p-2 text-[11px] text-neutral-400">
-              {scanErrors.length > 0 && (
-                <div className="mb-2">
-                  <div className="font-semibold text-red-400">
-                    {scanErrors.length} parse errors
-                  </div>
-                  {scanErrors.slice(0, 10).map((e, i) => (
-                    <div key={i} className="truncate" title={e.reason}>
-                      {e.path.split(/[\\/]/).pop()} — {e.reason}
-                    </div>
-                  ))}
-                  {scanErrors.length > 10 && (
-                    <div className="text-neutral-500">
-                      …and {scanErrors.length - 10} more
-                    </div>
-                  )}
-                </div>
-              )}
-              {unmatched.length > 0 && (
-                <div>
-                  <div className="font-semibold text-yellow-400">
-                    {unmatched.length} unmatched files
-                  </div>
-                  {unmatched.slice(0, 10).map((u, i) => (
-                    <div key={i} className="truncate">
-                      {u.split(/[\\/]/).pop()}
-                    </div>
-                  ))}
-                  {unmatched.length > 10 && (
-                    <div className="text-neutral-500">
-                      …and {unmatched.length - 10} more
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
         </header>
@@ -131,7 +116,7 @@ function App() {
       </aside>
 
       <main className="flex flex-1 flex-col">
-        <PlayerShell />
+        {mainView === "issues" ? <IssuesView /> : <PlayerShell />}
       </main>
     </div>
     {showShortcuts && (

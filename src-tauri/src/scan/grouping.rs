@@ -30,7 +30,6 @@ pub struct GroupingInput {
 #[derive(Debug, Clone)]
 pub struct GroupingOutput {
     pub trips: Vec<Trip>,
-    pub unmatched: Vec<String>,
 }
 
 pub fn group(items: Vec<GroupingInput>, trip_gap_s: i64) -> GroupingOutput {
@@ -44,7 +43,10 @@ pub fn group(items: Vec<GroupingInput>, trip_gap_s: i64) -> GroupingOutput {
             .push(item);
     }
 
-    // Each bucket becomes one segment. No minimum channel count.
+    // Each bucket becomes one segment. No minimum channel count. With the
+    // group-key approach, a file either parses (and becomes a 1+ channel
+    // segment) or doesn't parse at all (and is already in `errors`
+    // upstream) — there is no separate "unmatched" category anymore.
     let mut segments: Vec<Segment> = Vec::with_capacity(buckets.len());
     for (_, bucket) in buckets {
         segments.push(make_segment(bucket));
@@ -58,13 +60,7 @@ pub fn group(items: Vec<GroupingInput>, trip_gap_s: i64) -> GroupingOutput {
     let segments = merge_fuzzy_neighbors(segments);
 
     let trips = merge_into_trips(segments, trip_gap_s);
-    GroupingOutput {
-        trips,
-        // With the group-key approach, a file either parses (and becomes
-        // a 1+ channel segment) or doesn't parse at all (and is already
-        // in `errors` upstream). There's no more "unmatched" category.
-        unmatched: Vec::new(),
-    }
+    GroupingOutput { trips }
 }
 
 fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
@@ -253,7 +249,6 @@ mod tests {
         let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 1);
-        assert!(out.unmatched.is_empty());
     }
 
     #[test]

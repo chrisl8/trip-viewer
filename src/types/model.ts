@@ -65,14 +65,34 @@ export interface GpsBatchItem {
   points: GpsPoint[];
 }
 
+/**
+ * Category of scan failure. Mirrors the Rust `ScanErrorKind` enum with
+ * camelCase serde renaming applied.
+ */
+export type ScanErrorKind =
+  | "invalidFilename"
+  | "fileUnreadable"
+  | "mp4MoovMissing"
+  | "mp4BoxOverflow"
+  | "mp4NoVideoTrack"
+  | "mp4Other";
+
 export interface ScanError {
   path: string;
-  reason: string;
+  kind: ScanErrorKind;
+  /** Short, human-readable one-liner for the Reason column. */
+  message: string;
+  /** Raw technical detail, if any. Not displayed in v1; kept for a future
+   *  row-expand UI so the data shape doesn't have to change twice. */
+  detail: string | null;
+  /** File size in bytes if fs::metadata succeeded on the scan side. */
+  sizeBytes: number | null;
+  /** Last-modified time as Unix epoch milliseconds. */
+  modifiedMs: number | null;
 }
 
 export interface ScanResult {
   trips: Trip[];
-  unmatched: string[];
   errors: ScanError[];
 }
 

@@ -6,8 +6,10 @@ use std::path::Path;
 
 pub fn probe(path: &Path) -> Result<ChannelMeta, AppError> {
     let file = File::open(path)?;
-    let mp4 =
-        read_mp4(file).map_err(|e| AppError::Parse(format!("mp4 parse {path:?}: {e}")))?;
+    // Intentionally *not* prefixing with the path — callers carry the
+    // path separately (see `ScanError.path`), and the scan classifier
+    // substring-matches the raw mp4-crate message to pick a category.
+    let mp4 = read_mp4(file).map_err(|e| AppError::Parse(e.to_string()))?;
 
     let tracks = mp4.tracks();
 

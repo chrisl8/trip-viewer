@@ -37,22 +37,13 @@ fn main() {
     println!("  elapsed:    {elapsed:.2?}");
     println!("  trips:      {}", result.trips.len());
     println!("  segments:   {segments}  ({normal} normal + {events} event)");
-    println!("  unmatched:  {}", result.unmatched.len());
     println!("  errors:     {}", result.errors.len());
 
     if !result.errors.is_empty() {
         println!();
         println!("first 5 errors:");
         for e in result.errors.iter().take(5) {
-            println!("  {} — {}", e.path, e.reason);
-        }
-    }
-
-    if !result.unmatched.is_empty() {
-        println!();
-        println!("first 5 unmatched:");
-        for u in result.unmatched.iter().take(5) {
-            println!("  {u}");
+            println!("  {} — {:?}: {}", e.path, e.kind, e.message);
         }
     }
 

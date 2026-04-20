@@ -11,10 +11,11 @@ import type {
 
 export type AppStatus = "idle" | "loading" | "ready" | "error";
 
+export type MainView = "player" | "issues";
+
 export interface LibrarySlice {
   trips: Trip[];
   selectedTripId: string | null;
-  unmatched: string[];
   scanErrors: ScanError[];
   gpsByFile: Record<string, GpsPoint[]>;
 }
@@ -76,15 +77,22 @@ export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice {
   status: AppStatus;
   error: string | null;
   videoPort: number | null;
+  /** Which component fills the main pane right now. Reset to "player" on
+   *  every new scan — loading a new folder should never strand the user
+   *  on a stale issues list. */
+  mainView: MainView;
 
   setStatus: (s: AppStatus) => void;
   setError: (e: string | null) => void;
   setVideoPort: (p: number | null) => void;
+  setMainView: (v: MainView) => void;
   setScanResult: (args: {
     trips: Trip[];
-    unmatched: string[];
     errors: ScanError[];
   }) => void;
+  /** Remove scan errors whose paths are in the given set. Used to reflect
+   *  successful deletions in the UI without re-running scan_folder. */
+  removeScanErrors: (paths: string[]) => void;
   selectTrip: (tripId: string | null) => void;
   setActiveSegmentId: (id: string | null) => void;
   setCurrentTime: (t: number) => void;
@@ -100,7 +108,6 @@ export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice {
 export const useStore = create<AppState>((set) => ({
   trips: [],
   selectedTripId: null,
-  unmatched: [],
   scanErrors: [],
   gpsByFile: {},
 
@@ -131,6 +138,7 @@ export const useStore = create<AppState>((set) => ({
   status: "idle",
   error: null,
   videoPort: null,
+  mainView: "player",
 
   setImportStatus: (importStatus) => set({ importStatus }),
   setImportSources: (importSources) => set({ importSources }),
@@ -161,14 +169,21 @@ export const useStore = create<AppState>((set) => ({
   setStatus: (status) => set({ status }),
   setError: (error) => set({ error, status: error ? "error" : "idle" }),
   setVideoPort: (videoPort) => set({ videoPort }),
-  setScanResult: ({ trips, unmatched, errors }) =>
+  setMainView: (mainView) => set({ mainView }),
+  setScanResult: ({ trips, errors }) =>
     set({
       trips,
-      unmatched,
       scanErrors: errors,
       status: "ready",
       selectedTripId: trips[trips.length - 1]?.id ?? null,
+      mainView: "player",
     }),
+  removeScanErrors: (paths) => {
+    const drop = new Set(paths);
+    set((s) => ({
+      scanErrors: s.scanErrors.filter((e) => !drop.has(e.path)),
+    }));
+  },
   selectTrip: (tripId) =>
     set({
       selectedTripId: tripId,
@@ -178,9 +193,18 @@ export const useStore = create<AppState>((set) => ({
       isPlaying: false,
       // Reset to null; VideoGrid will set it to the new segment's master.
       primaryChannel: null,
+      // Picking a trip implies the user wants to watch it — bail out of
+      // the issues view if they were reading it.
+      mainView: "player",
     }),
   setActiveSegmentId: (activeSegmentId) =>
-    set({ activeSegmentId, currentTime: 0, isPlaying: false, primaryChannel: null }),
+    set({
+      activeSegmentId,
+      currentTime: 0,
+      isPlaying: false,
+      primaryChannel: null,
+      mainView: "player",
+    }),
   setCurrentTime: (currentTime) => set({ currentTime }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),
   setSpeed: (speed) => set({ speed }),

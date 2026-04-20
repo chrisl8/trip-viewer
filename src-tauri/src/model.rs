@@ -87,18 +87,52 @@ pub struct GpsBatchItem {
     pub points: Vec<GpsPoint>,
 }
 
+/// Category of scan failure. Each kind comes with a short user-facing
+/// message produced by `scan::errors::classify`; the UI renders this as
+/// a colored pill so the user can tell at a glance whether the file is
+/// repairable (e.g. missing moov) vs structurally corrupt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ScanErrorKind {
+    /// No filename parser matched. Usually a stray non-dashcam file.
+    InvalidFilename,
+    /// Open/read failed — permissions, drive disconnected mid-scan, etc.
+    FileUnreadable,
+    /// MP4 parsed but has no `moov` atom. File was not closed properly;
+    /// underlying media bytes are usually intact and can often be recovered
+    /// with external tools given a reference file from the same camera.
+    Mp4MoovMissing,
+    /// A box header declares more bytes than the file contains. Truncated
+    /// mid-box-write. Recovery difficulty depends on which box was hit.
+    Mp4BoxOverflow,
+    /// MP4 structurally valid but no video track found.
+    Mp4NoVideoTrack,
+    /// Any other mp4-crate parse failure.
+    Mp4Other,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanError {
     pub path: String,
-    pub reason: String,
+    pub kind: ScanErrorKind,
+    /// Short, human-readable one-liner for the Reason column.
+    pub message: String,
+    /// Raw technical detail (original mp4-crate / IO error text) preserved
+    /// for a future row-expand UI. None when the short message already says
+    /// everything useful.
+    pub detail: Option<String>,
+    /// File size in bytes if `fs::metadata` succeeded. None if the file
+    /// disappeared between walk and probe or metadata access was denied.
+    pub size_bytes: Option<u64>,
+    /// Last-modified time as Unix epoch milliseconds.
+    pub modified_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanResult {
     pub trips: Vec<Trip>,
-    pub unmatched: Vec<String>,
     pub errors: Vec<ScanError>,
 }
 
