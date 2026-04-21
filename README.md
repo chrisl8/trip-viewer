@@ -59,8 +59,15 @@ By default on Linux, only the primary channel is shown — press **M** to enable
 - **Live GPS map** — an OpenStreetMap view tracks your vehicle position in real time as the video plays, with a trail showing where you've been.
 - **Speed and heading display** — real-time readouts overlaid on the map so you can see how fast you were going at any moment.
 - **Timeline with speed graph** — scrub through footage visually. The speed graph shows interesting moments (hard braking, acceleration) so you can jump right to them.
-- **SD card import** — pull footage directly off your dashcam's SD card. Files are copied with SHA-256 integrity verification, then organized into your library. The SD card is wiped after a successful verified transfer, ready to go back in your dashcam.
+- **SD card import** — pull footage directly off your dashcam's SD card. Files are copied with SHA-256 integrity verification — with an estimated time remaining during staging — then organized into your library. The SD card is wiped after a successful verified transfer, ready to go back in your dashcam.
 - **Trip detection** — automatically groups your footage into trips based on recording timestamps. No manual organization needed.
+- **Auto-tagging scan pipeline** — a background scan analyses your library and tags segments as `event` (camera event flag from the dashcam), `stationary` (GPS shows the vehicle isn't moving), `silent` / `no_audio` (quiet or missing audio track), and any saved-place matches. Run it from the **Scan** button in the sidebar; progress streams inline.
+- **Places** — save a named location (lat/lon + radius) either manually or with one click from the player using the current segment's GPS. The next scan auto-tags any segment whose GPS track enters that place, turning "everything filmed at home" into a one-click filter.
+- **Review view** — a full-library table with tag-based filtering and bulk actions. Mark segments as **Keep** (hidden from the default filter so repeat review sessions only surface unreviewed material), or select a batch and bulk-delete the clips you don't want.
+- **In-player selection mode** — open selection mode from the tag bar above the timeline, then click — or shift-click for a range — to select segments directly on the timeline. A single bulk-delete action trashes every channel file for the whole selection. A one-segment delete button is right there too for quick cleanup as you watch.
+- **Issues view** — a classified triage list for any file the scanner couldn't ingest. Each row is tagged by reason (invalid filename, unreadable, missing `moov`, corrupt box structure, no video track, other) with per-row reveal-in-folder, copy-path, and move-to-trash actions, plus a filter-gated bulk delete.
+- **Deletes go to the OS recycle bin** — everything the app deletes (segments, issue files, places) goes to your system trash, so nothing is permanently gone until you empty it yourself.
+- **Window state is remembered** — the app restores its last size, position, and maximized state across launches.
 - **Keyboard shortcuts** — Space to play/pause, arrow keys to seek, brackets to change speed. Click "Keyboard shortcuts" in the sidebar footer for the full list.
 - **Auto-updates** — the app checks for new versions on startup and offers a one-click update.
 
@@ -127,7 +134,10 @@ First build compiles the Rust backend (~2 minutes). Subsequent builds use increm
 | Video sync        | `requestVideoFrameCallback` API                                                            |
 | Container parsing | `mp4` crate (pure Rust, no ffprobe)                                                        |
 | GPS decoding      | Custom ShenShu MetaData (Wolf Box) + NovaTek gps0 atom (Miltona) parsers                   |
+| Audio analysis    | `symphonia` (pure Rust decoder, AAC / MP3 / ISO-MP4) for silence detection                 |
 | File hashing      | SHA-256 via `sha2` crate                                                                   |
+| Tag + Place store | SQLite via `rusqlite` (bundled) + `rusqlite_migration`                                     |
+| File deletion     | `trash` crate — OS recycle bin (recoverable)                                               |
 | CI/CD             | GitHub Actions + NSIS (Windows) + DMG (macOS, dual-arch) + AppImage (Linux) + auto-updater |
 
 See [DESIGN.md](DESIGN.md) for architecture decisions and [RELEASING.md](RELEASING.md) for release instructions.
