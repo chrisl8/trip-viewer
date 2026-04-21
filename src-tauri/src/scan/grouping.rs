@@ -11,7 +11,6 @@ use crate::scan::naming::{EventMode, ParsedName};
 use chrono::{Duration, NaiveDateTime};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use uuid::Uuid;
 
 pub const DEFAULT_TRIP_GAP_SECONDS: i64 = 120;
 pub const ASSUMED_SEGMENT_DURATION_S: f64 = 180.0;
@@ -85,8 +84,9 @@ fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
     // show up in one bucket, keep the first after canonical sort.
     channels.dedup_by(|a, b| a.label == b.label);
 
+    let id = crate::model::derive_segment_id(&channels[0].file_path, start_time);
     Segment {
-        id: Uuid::new_v4(),
+        id,
         start_time,
         duration_s: 0.0,
         is_event: matches!(event_mode, EventMode::Event),
@@ -190,8 +190,9 @@ fn close_trip(segments: Vec<Segment>) -> Trip {
         ASSUMED_SEGMENT_DURATION_S
     };
     let end_time = last.start_time + Duration::seconds(last_duration as i64);
+    let id = crate::model::derive_trip_id(segments[0].id);
     Trip {
-        id: Uuid::new_v4(),
+        id,
         start_time,
         end_time,
         segments,

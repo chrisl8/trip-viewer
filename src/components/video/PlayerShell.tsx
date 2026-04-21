@@ -6,6 +6,7 @@ import { KeyboardShortcuts } from "../controls/KeyboardShortcuts";
 import { TransportControls } from "../controls/TransportControls";
 import { DriftHud } from "../hud/DriftHud";
 import { MapPanel } from "../map/MapPanel";
+import { SegmentTagBar } from "../review/SegmentTagBar";
 import { Timeline } from "../timeline/Timeline";
 import { VideoGrid } from "./VideoGrid";
 
@@ -141,8 +142,11 @@ export function PlayerShell() {
           This camera model doesn&rsquo;t record GPS data.
         </div>
       )}
-      <div className="border-t border-neutral-800 bg-neutral-950 px-4 pt-2">
-        <Timeline onSeekTripTime={seekToTripTime} />
+      <div className="border-t border-neutral-800 bg-neutral-950">
+        {activeSegment && <SegmentTagBar segment={activeSegment} />}
+        <div className="px-4 pt-1">
+          <Timeline onSeekTripTime={seekToTripTime} />
+        </div>
       </div>
       <TransportControls engine={engine} />
       <KeyboardShortcuts engine={engine} />

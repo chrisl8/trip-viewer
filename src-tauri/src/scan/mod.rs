@@ -11,7 +11,6 @@ use crate::scan::grouping::{GroupingInput, DEFAULT_TRIP_GAP_SECONDS};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 
 /// Best-effort read of file size and last-modified time. Returns `(None, None)`
 /// if the path is gone or unreadable — these fields are decorative, not load-bearing.
@@ -42,8 +41,20 @@ fn make_scan_error(path: &Path, err: &AppError) -> ScanError {
 }
 
 #[tauri::command]
-pub async fn scan_folder(path: String) -> Result<ScanResult, AppError> {
-    scan_folder_sync(Path::new(&path))
+pub async fn scan_folder(
+    path: String,
+    db: tauri::State<'_, crate::db::DbHandle>,
+) -> Result<ScanResult, AppError> {
+    let result = scan_folder_sync(Path::new(&path))?;
+    let scan_started_ms = chrono::Utc::now().timestamp_millis();
+    // Persistence is best-effort; a DB failure must not block the user
+    // from seeing their scan results, they just won't have tags yet.
+    if let Ok(mut conn) = db.lock() {
+        if let Err(e) = crate::db::segments::persist_and_gc(&mut conn, &result.trips, scan_started_ms) {
+            eprintln!("[db] persist_and_gc failed: {e}");
+        }
+    }
+    Ok(result)
 }
 
 pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
@@ -228,8 +239,9 @@ fn close_trip(segments: Vec<Segment>) -> Trip {
         180.0
     };
     let end_time = last.start_time + Duration::seconds(last_duration as i64);
+    let id = crate::model::derive_trip_id(segments[0].id);
     Trip {
-        id: Uuid::new_v4(),
+        id,
         start_time,
         end_time,
         segments,

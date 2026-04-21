@@ -53,7 +53,7 @@ pub async fn dump_miltona_gps_debug(path: String) -> Result<String, AppError> {
     Ok(out.to_string_lossy().into_owned())
 }
 
-fn extract_for_kind(path: &Path, kind: CameraKind) -> Result<Vec<GpsPoint>, AppError> {
+pub fn extract_for_kind(path: &Path, kind: CameraKind) -> Result<Vec<GpsPoint>, AppError> {
     match kind {
         CameraKind::WolfBox => shenshu::extract(path),
         CameraKind::Miltona => miltona::extract(path),

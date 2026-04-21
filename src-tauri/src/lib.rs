@@ -1,10 +1,14 @@
+mod db;
 mod error;
 pub mod gps;
 mod import;
 mod issues;
 mod metadata;
 mod model;
+mod places;
 pub mod scan;
+mod scans;
+mod tags;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod video_server;
 mod window_fit;
@@ -57,9 +61,21 @@ pub fn run() {
         )
         .manage(import::ImportState::new())
         .manage(VideoPort(video_port))
+        .manage(scans::worker::new_shared_state())
         .setup(move |app| {
             use tauri::Manager;
             use tauri_plugin_window_state::WindowExt;
+            let app_data_dir = app.path().app_data_dir()
+                .expect("resolve app_data_dir");
+            let db_path = app_data_dir.join("tripviewer.db");
+            match db::open(&db_path) {
+                Ok(handle) => {
+                    app.manage(handle);
+                }
+                Err(e) => {
+                    eprintln!("[db] failed to open {}: {e}", db_path.display());
+                }
+            }
             if let Some(window) = app.get_webview_window("main") {
                 // 1. Restore saved position/size/maximized first so the fit
                 //    clamp runs against the real geometry the user expects.
@@ -88,6 +104,20 @@ pub fn run() {
             import::cancel_import,
             import::resolve_unknowns,
             issues::issues_delete_to_trash,
+            tags::commands::get_tags_for_trip,
+            tags::commands::get_tag_counts_by_trip,
+            tags::commands::get_all_tags,
+            tags::commands::list_user_applicable_tags,
+            tags::commands::add_user_tag,
+            tags::commands::remove_user_tag,
+            tags::commands::delete_segments_to_trash,
+            scans::commands::list_scans,
+            scans::commands::start_scan,
+            scans::commands::cancel_scan,
+            places::commands::list_places,
+            places::commands::add_place,
+            places::commands::update_place,
+            places::commands::delete_place,
             get_video_port,
         ])
         .run(tauri::generate_context!())

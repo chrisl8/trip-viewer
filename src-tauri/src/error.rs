@@ -23,6 +23,21 @@ pub enum AppError {
 
     #[error("no import in progress")]
     NoImportRunning,
+
+    #[error("database error: {0}")]
+    Db(String),
+}
+
+impl From<rusqlite::Error> for AppError {
+    fn from(err: rusqlite::Error) -> Self {
+        AppError::Db(err.to_string())
+    }
+}
+
+impl From<rusqlite_migration::Error> for AppError {
+    fn from(err: rusqlite_migration::Error) -> Self {
+        AppError::Db(format!("migration: {err}"))
+    }
 }
 
 impl Serialize for AppError {

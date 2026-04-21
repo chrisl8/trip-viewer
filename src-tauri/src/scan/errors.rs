@@ -44,7 +44,7 @@ pub fn classify(err: &AppError) -> Classification {
         },
         // These shouldn't surface from the scan pipeline, but keep them
         // mapped so an exhaustive match is future-proof.
-        AppError::ImportAlreadyRunning | AppError::NoImportRunning => Classification {
+        AppError::ImportAlreadyRunning | AppError::NoImportRunning | AppError::Db(_) => Classification {
             kind: ScanErrorKind::Mp4Other,
             message: "Unexpected error during scan.".to_string(),
             detail: Some(err.to_string()),

@@ -3,6 +3,28 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Fixed UUID namespace for deriving deterministic segment and trip IDs
+/// via UUIDv5. Changing this value invalidates every previously-stored
+/// tag in the DB, so treat it as load-bearing.
+const TRIPVIEWER_ID_NS: Uuid = Uuid::from_bytes([
+    0x5d, 0x11, 0x77, 0x2f, 0x8e, 0x3a, 0x4c, 0x22,
+    0xa1, 0x9d, 0xf5, 0x6c, 0x3b, 0x8d, 0x7a, 0x4e,
+]);
+
+/// Derive a stable segment ID from its master file path plus start time.
+/// The same (path, start) always yields the same UUID, so tags persisted
+/// in the DB re-attach on folder rescans as long as neither changed.
+pub fn derive_segment_id(master_path: &str, start_time: NaiveDateTime) -> Uuid {
+    let key = format!("seg|{}|{}", master_path, start_time.and_utc().timestamp_millis());
+    Uuid::new_v5(&TRIPVIEWER_ID_NS, key.as_bytes())
+}
+
+/// Derive a trip ID from its first segment's ID so trip-level user tags
+/// survive folder rescans.
+pub fn derive_trip_id(first_segment_id: Uuid) -> Uuid {
+    Uuid::new_v5(&TRIPVIEWER_ID_NS, first_segment_id.as_bytes())
+}
+
 /// Canonical channel labels for common cases. Used for ordering and for
 /// the built-in parsers, but `Channel.label` is free-form so new cameras
 /// can introduce arbitrary labels without a schema change.

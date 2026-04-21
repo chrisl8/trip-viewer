@@ -41,6 +41,13 @@ export interface Segment {
    * "No GPS data" placeholder that eats screen real estate.
    */
   gpsSupported: boolean;
+  /**
+   * Tags attached to this segment. Present when the caller has loaded
+   * tags into the trip — live-updating state lives in the tagsSlice,
+   * so renderers that need to react to scan/user-tag changes should
+   * read from the slice keyed by segment.id rather than this field.
+   */
+  tags?: Tag[];
 }
 
 export interface Trip {
@@ -48,6 +55,8 @@ export interface Trip {
   startTime: string;
   endTime: string;
   segments: Segment[];
+  /** Trip-level tags. Same caveat as `Segment.tags` re: slice vs. field. */
+  tags?: Tag[];
 }
 
 export interface GpsPoint {
@@ -104,4 +113,53 @@ export interface ChannelMeta {
   fpsDen: number;
   codec: string;
   hasGpmdTrack: boolean;
+}
+
+/**
+ * Category a tag belongs to. Drives color mapping in the timeline,
+ * sidebar badges, and tag pills. Mirrors the Rust `TagCategory` enum.
+ */
+export type TagCategory =
+  | "event"
+  | "motion"
+  | "audio"
+  | "quality"
+  | "user"
+  | "place";
+
+/**
+ * Where a tag came from. `system` tags are emitted by scans and get
+ * replaced when the scan re-runs. `camera` tags come from firmware-level
+ * metadata (e.g. Wolf Box EE flag). `user` tags are applied manually
+ * and are never touched by scans.
+ */
+export type TagSource = "system" | "camera" | "user";
+
+export interface Tag {
+  id: number | null;
+  segmentId: string | null;
+  tripId: string | null;
+  name: string;
+  category: TagCategory;
+  source: TagSource;
+  scanId: string | null;
+  scanVersion: number | null;
+  confidence: number | null;
+  startMs: number | null;
+  endMs: number | null;
+  note: string | null;
+  metadataJson: string | null;
+  createdMs: number;
+}
+
+/**
+ * Progress event payload emitted by the Rust scan worker. Batched every
+ * ~250ms to avoid flooding IPC.
+ */
+export interface ScanProgress {
+  total: number;
+  done: number;
+  failed: number;
+  currentSegmentId: string | null;
+  currentScanId: string | null;
 }

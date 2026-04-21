@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { extractGpsBatch } from "../../ipc/gps";
 import { useStore } from "../../state/store";
 import type { Trip } from "../../types/model";
+import { TripBadges } from "../sidebar/TripBadges";
 
 function formatTripLabel(trip: Trip): string {
   const start = new Date(trip.startTime);
@@ -84,6 +85,7 @@ export function TripList() {
               <div className="text-xs text-neutral-500">
                 {trip.segments.length} segments · {formatDuration(trip)}
               </div>
+              <TripBadges tripId={trip.id} />
             </button>
           </li>
         );

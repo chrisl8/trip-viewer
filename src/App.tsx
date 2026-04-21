@@ -13,8 +13,16 @@ import { ImportProgress } from "./components/import/ImportProgress";
 import { UnknownFilesDialog } from "./components/import/UnknownFilesDialog";
 import { ImportSummary } from "./components/import/ImportSummary";
 import { IssuesView } from "./components/issues/IssuesView";
+import { ScanView } from "./components/scan/ScanView";
+import { ReviewView } from "./components/review/ReviewView";
+import { PlacesView } from "./components/places/PlacesView";
 import { useStore } from "./state/store";
 import { KIND_META, kindCounts } from "./utils/issueKinds";
+import {
+  onScanStart,
+  onScanProgress,
+  onScanDone,
+} from "./ipc/scanner";
 
 function App() {
   const trips = useStore((s) => s.trips);
@@ -26,6 +34,8 @@ function App() {
   const setVideoPort = useStore((s) => s.setVideoPort);
   const mainView = useStore((s) => s.mainView);
   const setMainView = useStore((s) => s.setMainView);
+  const scanRunning = useStore((s) => s.scanRunning);
+  const scanProgress = useStore((s) => s.scanProgress);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [version, setVersion] = useState("");
 
@@ -34,7 +44,57 @@ function App() {
     invoke<number>("get_video_port")
       .then((port) => setVideoPort(port))
       .catch((e) => console.error("get_video_port failed", e));
+    void useStore.getState().loadUserApplicableTags();
+    void useStore.getState().refreshPlaces();
   }, [setVideoPort]);
+
+  // Attach scan-pipeline event listeners at the app root so progress
+  // updates keep flowing even when the user navigates away from ScanView.
+  useEffect(() => {
+    const unlisteners: Promise<() => void>[] = [];
+    unlisteners.push(
+      onScanStart((e) => {
+        useStore.setState({
+          scanRunning: true,
+          scanStartTotal: e.total,
+          scanStartMs: Date.now(),
+          scanProgress: {
+            total: e.total,
+            done: 0,
+            failed: 0,
+            currentSegmentId: null,
+            currentScanId: null,
+          },
+          scanLastResult: null,
+        });
+      }),
+    );
+    unlisteners.push(
+      onScanProgress((p) => {
+        useStore.setState({ scanProgress: p });
+      }),
+    );
+    unlisteners.push(
+      onScanDone((result) => {
+        useStore.setState({
+          scanRunning: false,
+          scanLastResult: result,
+        });
+        // Fresh tags landed — refresh sidebar badges and the selected
+        // trip's per-segment tags if one is open.
+        const state = useStore.getState();
+        void state.refreshTripTagCounts();
+        if (state.selectedTripId) {
+          void state.refreshTripTags(state.selectedTripId);
+        }
+      }),
+    );
+    return () => {
+      for (const p of unlisteners) {
+        p.then((unlisten) => unlisten());
+      }
+    };
+  }, []);
 
   const issueCount = scanErrors.length;
   const issuesOpen = mainView === "issues";
@@ -88,6 +148,59 @@ function App() {
                   )}
                 </div>
               )}
+              <div className="mt-1 flex gap-1">
+                <button
+                  onClick={() =>
+                    setMainView(mainView === "scan" ? "player" : "scan")
+                  }
+                  className={
+                    mainView === "scan"
+                      ? "rounded border border-sky-500 px-2 py-0.5 text-xs text-sky-300 hover:bg-neutral-800"
+                      : "rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-sky-500 hover:text-sky-300"
+                  }
+                  title={
+                    mainView === "scan" ? "Close scan view" : "Open scan view"
+                  }
+                >
+                  {scanRunning
+                    ? `Scanning… ${scanProgress?.done ?? 0}/${scanProgress?.total ?? "?"}`
+                    : "Scan"}
+                </button>
+                <button
+                  onClick={() =>
+                    setMainView(mainView === "review" ? "player" : "review")
+                  }
+                  className={
+                    mainView === "review"
+                      ? "rounded border border-emerald-500 px-2 py-0.5 text-xs text-emerald-300 hover:bg-neutral-800"
+                      : "rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-500 hover:text-emerald-300"
+                  }
+                  title={
+                    mainView === "review"
+                      ? "Close review view"
+                      : "Open review view"
+                  }
+                >
+                  Review
+                </button>
+                <button
+                  onClick={() =>
+                    setMainView(mainView === "places" ? "player" : "places")
+                  }
+                  className={
+                    mainView === "places"
+                      ? "rounded border border-rose-500 px-2 py-0.5 text-xs text-rose-300 hover:bg-neutral-800"
+                      : "rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-rose-500 hover:text-rose-300"
+                  }
+                  title={
+                    mainView === "places"
+                      ? "Close places view"
+                      : "Open places view"
+                  }
+                >
+                  Places
+                </button>
+              </div>
             </div>
           )}
           {status === "ready" && trips.length === 0 && (
@@ -116,7 +229,17 @@ function App() {
       </aside>
 
       <main className="flex flex-1 flex-col">
-        {mainView === "issues" ? <IssuesView /> : <PlayerShell />}
+        {mainView === "issues" ? (
+          <IssuesView />
+        ) : mainView === "scan" ? (
+          <ScanView />
+        ) : mainView === "review" ? (
+          <ReviewView />
+        ) : mainView === "places" ? (
+          <PlacesView />
+        ) : (
+          <PlayerShell />
+        )}
       </main>
     </div>
     {showShortcuts && (

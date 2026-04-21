@@ -1,0 +1,8 @@
+CREATE TABLE places (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    radius_m REAL NOT NULL DEFAULT 100.0,
+    created_ms INTEGER NOT NULL
+);
