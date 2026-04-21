@@ -142,6 +142,15 @@ First build compiles the Rust backend (~2 minutes). Subsequent builds use increm
 
 See [DESIGN.md](DESIGN.md) for architecture decisions and [RELEASING.md](RELEASING.md) for release instructions.
 
+## Support
+
+Trip Viewer is free and always will be. If it's been useful to you and you'd like to say thanks, there are two low-key ways:
+
+- ⭐ **[Star the repo](https://github.com/chrisl8/trip-viewer)** — it's a signal that people are actually using it, which keeps me motivated to keep going.
+- ☕ **[Buy me a coffee](https://buymeacoffee.com/chrisl8)** — if you'd like to chip in toward development, this is the place.
+
+Either one is appreciated. Neither is expected.
+
 ## License
 
 [MIT](LICENSE)
