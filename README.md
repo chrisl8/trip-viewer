@@ -112,7 +112,7 @@ If you want to build Trip Viewer from source or contribute:
 - Rust 1.70+ (via [rustup](https://rustup.rs/))
 - **Windows:** HEVC Video Extension (see [Windows install](#windows) above)
 - **macOS:** Xcode Command Line Tools (`xcode-select --install`). HEVC playback works natively via AVFoundation — no extra codecs needed. Local `npm run tauri build` produces a DMG for the host architecture only; CI uses a matrix build for both Intel and Apple Silicon.
-- **Linux:** `webkit2gtk-4.1`, `gstreamer1.0-libav`, `gstreamer1.0-plugins-bad`, plus Tauri's standard build deps (see [Tauri prerequisites](https://tauri.app/start/prerequisites/))
+- **Linux:** `webkit2gtk-4.1`, `gstreamer1.0-libav`, `gstreamer1.0-plugins-bad`, plus Tauri's standard build deps (see [Tauri prerequisites](https://tauri.app/start/prerequisites/)). For full distro-specific setup — including the distrobox path for atomic distros like Bazzite/Silverblue — see [LINUX_DEV_SETUP.md](LINUX_DEV_SETUP.md).
 
 ### Build and run
 

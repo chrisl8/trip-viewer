@@ -82,4 +82,5 @@ The import pipeline emits 5 event types via `app.emit()`. Progress events are **
 
 - **DESIGN.md** — architecture decisions, ruled-out options, tech stack, future roadmap
 - **RELEASING.md** — how to cut a release, version bumping, GitHub Actions workflow, SignPath code signing roadmap
+- **LINUX_DEV_SETUP.md** — Linux dev environment setup (distrobox recipe for atomic distros like Bazzite/Silverblue, plus direct-install steps for Fedora/Ubuntu/Arch)
 - **README.md** — user-facing documentation
