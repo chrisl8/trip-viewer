@@ -80,3 +80,47 @@ function lerpAngle(a: number, b: number, t: number): number {
   let diff = ((b - a + 540) % 360) - 180;
   return ((a + diff * t) % 360 + 360) % 360;
 }
+
+/** Below this, GPS heading is dominated by receiver noise rather than
+ *  vehicle motion — it can drift by tens of degrees per second with no
+ *  real change in orientation. Matches the moving-filter threshold in
+ *  `src-tauri/src/timelapse/events.rs::MOVING_MPS`. */
+export const HEADING_HOLD_THRESHOLD_MPS = 2.0;
+
+/**
+ * Heading from the most recent GPS sample at-or-before `tOffsetS`
+ * whose speed was at or above `HEADING_HOLD_THRESHOLD_MPS`. Used to
+ * "freeze" the displayed compass on the last trustworthy heading
+ * while the vehicle is stopped or creeping, so the readout doesn't
+ * flicker through GPS heading noise at zero speed.
+ *
+ * Returns `null` if the trip is empty or the vehicle has not yet
+ * exceeded the threshold by `tOffsetS`.
+ */
+export function lastMovingHeading(
+  points: GpsPoint[],
+  tOffsetS: number,
+): number | null {
+  if (points.length === 0) return null;
+  if (tOffsetS < points[0].tOffsetS) return null;
+
+  // Binary search for the latest index at-or-before tOffsetS.
+  let lo = 0;
+  let hi = points.length - 1;
+  if (tOffsetS >= points[hi].tOffsetS) {
+    lo = hi;
+  } else {
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (points[mid].tOffsetS <= tOffsetS) lo = mid;
+      else hi = mid;
+    }
+  }
+
+  for (let i = lo; i >= 0; i--) {
+    if (points[i].speedMps >= HEADING_HOLD_THRESHOLD_MPS) {
+      return points[i].headingDeg;
+    }
+  }
+  return null;
+}

@@ -1,5 +1,9 @@
 import { useMemo } from "react";
-import { interpolateGps } from "../../engine/interpolate";
+import {
+  HEADING_HOLD_THRESHOLD_MPS,
+  interpolateGps,
+  lastMovingHeading,
+} from "../../engine/interpolate";
 import type { GpsPoint, Segment } from "../../types/model";
 
 interface Props {
@@ -34,17 +38,28 @@ export function HeadingReadout({
     [gpsPoints, interpolationTime, activeSegment],
   );
 
-  if (!interp) return null;
+  // GPS-derived heading is unreliable below the moving threshold —
+  // it jitters across the dial as the receiver chases position noise.
+  // Hold the last trustworthy heading while stopped or creeping so the
+  // readout doesn't flicker. Falls back to the live (jittery) value
+  // only if the vehicle hasn't yet moved at all on this trip.
+  const displayHeading = useMemo(() => {
+    if (!interp) return null;
+    if (interp.speedMps >= HEADING_HOLD_THRESHOLD_MPS) return interp.headingDeg;
+    return lastMovingHeading(gpsPoints, interpolationTime) ?? interp.headingDeg;
+  }, [interp, gpsPoints, interpolationTime]);
+
+  if (!interp || displayHeading === null) return null;
 
   return (
     <div
       className={`min-w-[4.25rem] rounded-md bg-black/70 px-3 py-2 text-center backdrop-blur ${interp.stale ? "opacity-40" : ""}`}
     >
       <div className="text-2xl font-bold text-white">
-        {degreesToCompass(interp.headingDeg)}
+        {degreesToCompass(displayHeading)}
       </div>
       <div className="text-[10px] font-medium uppercase tabular-nums tracking-wider text-neutral-400">
-        {Math.round(interp.headingDeg)}&deg;
+        {Math.round(displayHeading)}&deg;
       </div>
     </div>
   );
