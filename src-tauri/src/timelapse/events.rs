@@ -64,7 +64,7 @@ pub const EVENT_TRAIL_S: f64 = 10.0;
 //   traffic cluster:    5+ stop-cycles in a minute
 
 const HARD_BRAKE_MPS2: f64 = -4.0;
-const HARD_ACCEL_MPS2: f64 = 3.5;
+const HARD_ACCEL_MPS2: f64 = 4.0;
 const SHARP_TURN_DEG_PER_S: f64 = 30.0;
 const LONG_STOP_MPS: f64 = 1.0;
 const LONG_STOP_MIN_S: f64 = 120.0;
@@ -414,7 +414,10 @@ mod diagnostics {
         // Dump every brake candidate with its context regardless of
         // threshold, so we can see how marginal each trigger is.
         eprintln!("\n=== Raw deceleration / acceleration events ===");
-        eprintln!("Thresholds: brake < -3.0 m/s², accel > +3.5 m/s² (current)");
+        eprintln!(
+            "Thresholds: brake ≤ {:.1} m/s², accel ≥ {:+.1} m/s² (current)",
+            HARD_BRAKE_MPS2, HARD_ACCEL_MPS2
+        );
         eprintln!(
             "{:>10}  {:>8}  {:>8}  {:>8}  {:>10}  {}",
             "time", "dv/dt", "v-before", "v-after", "|Δh|/s", "kind"
@@ -431,9 +434,9 @@ mod diagnostics {
             let dv = (b.speed_mps - a.speed_mps) / dt;
             let heading_rate = angular_delta(a.heading_deg, b.heading_deg).abs() / dt;
 
-            let kind = if dv <= -3.0 {
+            let kind = if dv <= HARD_BRAKE_MPS2 {
                 "HARD_BRAKE"
-            } else if dv >= 3.5 {
+            } else if dv >= HARD_ACCEL_MPS2 {
                 "HARD_ACCEL"
             } else if dv.abs() >= 2.0 {
                 "(moderate)"
