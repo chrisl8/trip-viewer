@@ -1,9 +1,19 @@
+import { useMemo } from "react";
 import type { SyncEngine } from "../../engine/SyncEngine";
+import type { PlaybackSlice } from "../../state/store";
 import { useStore } from "../../state/store";
+import { computeTripTime, tripTotalDuration } from "../../utils/tripTime";
+import { SourceControls, type SourceOption } from "./SourceControls";
 import { SpeedControls } from "./SpeedControls";
+
+type SourceMode = PlaybackSlice["sourceMode"];
 
 interface Props {
   engine: SyncEngine | null;
+  /** Invoked when the user picks a different source. PlayerShell owns
+   *  the trip-time preservation + curve load + video-seek coordination;
+   *  this component just surfaces the pick. */
+  onSourceChange: (mode: SourceMode) => void;
 }
 
 function formatTime(s: number): string {
@@ -13,32 +23,92 @@ function formatTime(s: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-export function TransportControls({ engine }: Props) {
+/** Trip-local status of a tier's encode jobs, used for the source picker. */
+function tierAvailability(
+  jobs: ReturnType<typeof useStore.getState>["timelapseJobs"],
+  tripId: string | null,
+  tier: "8x" | "16x" | "60x",
+): SourceOption {
+  if (!tripId) {
+    return {
+      mode: tier,
+      enabled: false,
+      disabledReason: "Load a trip first",
+    };
+  }
+  const forTrip = jobs.filter((j) => j.tripId === tripId && j.tier === tier);
+  if (forTrip.length === 0) {
+    return {
+      mode: tier,
+      enabled: false,
+      disabledReason: `${tier} not yet encoded for this trip`,
+    };
+  }
+  const running = forTrip.some((j) => j.status === "running");
+  const done = forTrip.filter((j) => j.status === "done");
+  if (done.length === 0 && running) {
+    return {
+      mode: tier,
+      enabled: false,
+      disabledReason: `${tier} encoding in progress`,
+    };
+  }
+  if (done.length === 0) {
+    return {
+      mode: tier,
+      enabled: false,
+      disabledReason: `${tier} not yet encoded for this trip`,
+    };
+  }
+  // At least one channel done — tier is playable (partial-tier
+  // availability shows missing channels as a placeholder in VideoGrid).
+  return { mode: tier, enabled: true };
+}
+
+export function TransportControls({ engine, onSourceChange }: Props) {
   const isPlaying = useStore((s) => s.isPlaying);
   const currentTime = useStore((s) => s.currentTime);
   const trips = useStore((s) => s.trips);
   const loadedTripId = useStore((s) => s.loadedTripId);
   const activeSegmentId = useStore((s) => s.activeSegmentId);
+  const speed = useStore((s) => s.speed);
+  const sourceMode = useStore((s) => s.sourceMode);
+  const activeSpeedCurve = useStore((s) => s.activeSpeedCurve);
+  const timelapseJobs = useStore((s) => s.timelapseJobs);
   const disabled = !engine;
 
   const trip = trips.find((t) => t.id === loadedTripId);
-  let tripTime = 0;
-  let totalDuration = 0;
-  if (trip) {
-    const activeId = activeSegmentId ?? trip.segments[0]?.id;
-    for (const seg of trip.segments) {
-      if (seg.id === activeId) {
-        tripTime = totalDuration + currentTime;
-      }
-      totalDuration += seg.durationS;
-    }
-  }
+  const tripTime = computeTripTime(
+    trip,
+    activeSegmentId,
+    currentTime,
+    sourceMode,
+    activeSpeedCurve,
+  );
+  const totalDuration = tripTotalDuration(trip);
+
+  const sourceOptions: SourceOption[] = useMemo(
+    () => [
+      { mode: "original", enabled: Boolean(trip) },
+      tierAvailability(timelapseJobs, loadedTripId, "8x"),
+      tierAvailability(timelapseJobs, loadedTripId, "16x"),
+      tierAvailability(timelapseJobs, loadedTripId, "60x"),
+    ],
+    [trip, timelapseJobs, loadedTripId],
+  );
 
   const onToggle = () => {
     if (!engine) return;
     if (isPlaying) engine.pause();
     else void engine.play();
   };
+
+  // Effective-speed label: hidden in Original mode (it'd always read
+  // the same as the speed picker and look noisy).
+  const tierRate =
+    sourceMode === "8x" ? 8 : sourceMode === "16x" ? 16 : sourceMode === "60x" ? 60 : 1;
+  const effectiveRate = tierRate * speed;
+  const showEffective = sourceMode !== "original";
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-neutral-800 bg-neutral-950 px-4 py-2 sm:gap-4">
@@ -50,7 +120,21 @@ export function TransportControls({ engine }: Props) {
         {isPlaying ? "Pause" : "Play"}
       </button>
 
+      <SourceControls
+        current={sourceMode}
+        options={sourceOptions}
+        onChange={onSourceChange}
+        disabled={disabled}
+      />
+
       <SpeedControls engine={engine} />
+
+      {showEffective && (
+        <span className="shrink-0 text-[11px] text-neutral-500">
+          Effective:{" "}
+          <span className="text-neutral-300">{effectiveRate}x</span>
+        </span>
+      )}
 
       <div className="ml-auto shrink-0 font-mono text-xs tabular-nums text-neutral-400">
         {formatTime(tripTime)} / {formatTime(totalDuration)}

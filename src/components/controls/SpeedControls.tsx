@@ -2,7 +2,7 @@ import clsx from "clsx";
 import type { SyncEngine } from "../../engine/SyncEngine";
 import { useStore } from "../../state/store";
 
-const SPEEDS: Array<0.5 | 1 | 2 | 4 | 8> = [0.5, 1, 2, 4, 8];
+const SPEEDS: Array<0.5 | 1 | 2 | 4> = [0.5, 1, 2, 4];
 
 interface Props {
   engine: SyncEngine | null;

@@ -10,6 +10,7 @@ import type {
 } from "../types/import";
 import type { TagsSlice } from "./tagsSlice";
 import type { ScanSlice } from "./scanSlice";
+import type { TimelapseSlice } from "./timelapseSlice";
 import {
   getTagsForTrip,
   getTagCountsByTrip,
@@ -20,10 +21,23 @@ import {
   startAnalysisScan as ipcStartScan,
   cancelAnalysisScan as ipcCancelScan,
 } from "../ipc/scanner";
+import {
+  cancelTimelapse as ipcCancelTimelapse,
+  getTimelapseSettings as ipcGetTimelapseSettings,
+  listTimelapseJobs as ipcListTimelapseJobs,
+  startTimelapse as ipcStartTimelapse,
+} from "../ipc/timelapse";
+import type { CurveSegment } from "../utils/speedCurve";
 
 export type AppStatus = "idle" | "loading" | "ready" | "error";
 
-export type MainView = "player" | "issues" | "scan" | "review" | "places";
+export type MainView =
+  | "player"
+  | "issues"
+  | "scan"
+  | "review"
+  | "places"
+  | "timelapse";
 
 export interface LibrarySlice {
   trips: Trip[];
@@ -36,8 +50,20 @@ export interface PlaybackSlice {
   loadedTripId: string | null;
   activeSegmentId: string | null;
   isPlaying: boolean;
+  /** Segment-local time in Original mode; file-time in tiered mode. */
   currentTime: number;
-  speed: 0.5 | 1 | 2 | 4 | 8;
+  // Browser playback-rate. 8x+ is handled by pre-rendered timelapse
+  // files (selected via sourceMode) rather than <video>.playbackRate —
+  // the browser's decoder stutters above 4x on multi-channel 4K.
+  speed: 0.5 | 1 | 2 | 4;
+  /** Playback source. "original" walks the segment stack as before.
+   *  "8x" / "16x" / "60x" play a pre-rendered single-file-per-channel
+   *  timelapse, with a speed curve mapping file-time ↔ concat-time. */
+  sourceMode: "original" | "8x" | "16x" | "60x";
+  /** The piecewise speed curve for the current (trip, tier), or null
+   *  in Original mode. Loaded from `timelapse_jobs.speed_curve_json`
+   *  when a tier is selected. */
+  activeSpeedCurve: CurveSegment[] | null;
   volume: number;
   muted: boolean;
   showDriftHud: boolean;
@@ -85,7 +111,13 @@ export interface ImportSlice {
   resetImport: () => void;
 }
 
-export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice, TagsSlice, ScanSlice {
+export interface AppState
+  extends LibrarySlice,
+    PlaybackSlice,
+    ImportSlice,
+    TagsSlice,
+    ScanSlice,
+    TimelapseSlice {
   status: AppStatus;
   error: string | null;
   videoPort: number | null;
@@ -140,6 +172,14 @@ export interface AppState extends LibrarySlice, PlaybackSlice, ImportSlice, Tags
   setPrimaryChannel: (label: string | null) => void;
   setMultiChannelEnabled: (v: boolean) => void;
   toggleMultiChannelEnabled: () => void;
+  /** Switch the playback source. Pass `mode="original"` with a null
+   *  curve to go back to the segment-walking stack. Passing a tier
+   *  (`"8x"/"16x"/"60x"`) requires the caller to have already loaded
+   *  the trip's speed curve for that tier. */
+  setSourceMode: (
+    mode: PlaybackSlice["sourceMode"],
+    curve: CurveSegment[] | null,
+  ) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -161,6 +201,8 @@ export const useStore = create<AppState>((set) => ({
   // it to channels[0].label (the canonical master) on first render.
   primaryChannel: null,
   multiChannelEnabled: false,
+  sourceMode: "original",
+  activeSpeedCurve: null,
 
   importStatus: "idle",
   importSources: [],
@@ -185,6 +227,14 @@ export const useStore = create<AppState>((set) => ({
   scanStartMs: null,
   scanProgress: null,
   scanLastResult: null,
+
+  timelapseRunning: false,
+  timelapseProgress: null,
+  timelapseLastResult: null,
+  timelapseStartMs: null,
+  timelapseJobs: [],
+  ffmpegPath: null,
+  ffmpegCapabilities: null,
 
   selectionMode: false,
   selectedSegmentIds: new Set<string>(),
@@ -336,6 +386,10 @@ export const useStore = create<AppState>((set) => ({
       isPlaying: false,
       // Reset to null; VideoGrid will set it to the new segment's master.
       primaryChannel: null,
+      // Trip change always returns to Original source. Each trip has
+      // its own speed curves (different tiers, different event windows).
+      sourceMode: "original",
+      activeSpeedCurve: null,
       // Picking a trip implies the user wants to watch it — bail out of
       // the issues view if they were reading it.
       mainView: "player",
@@ -368,6 +422,14 @@ export const useStore = create<AppState>((set) => ({
   setMultiChannelEnabled: (multiChannelEnabled) => set({ multiChannelEnabled }),
   toggleMultiChannelEnabled: () =>
     set((s) => ({ multiChannelEnabled: !s.multiChannelEnabled })),
+  /** Switch between Original and a pre-rendered tier. The caller is
+   *  responsible for converting the current playback position into
+   *  the new mode's time axis *before* calling this — that extra
+   *  trip-time/seek choreography lives in the SourceControls UI and
+   *  in PlayerShell's seekTripTime helper. This action just swaps
+   *  the flags atomically. */
+  setSourceMode: (sourceMode, activeSpeedCurve) =>
+    set({ sourceMode, activeSpeedCurve }),
 
   refreshTripTags: async (tripId) => {
     set({ tagsLoadingTripId: tripId });
@@ -436,6 +498,43 @@ export const useStore = create<AppState>((set) => ({
   },
   cancelAnalysisScan: async () => {
     await ipcCancelScan();
+  },
+
+  refreshTimelapseSettings: async () => {
+    try {
+      const s = await ipcGetTimelapseSettings();
+      set({
+        ffmpegPath: s.ffmpegPath,
+        ffmpegCapabilities: s.capabilities,
+      });
+    } catch (e) {
+      console.error("refreshTimelapseSettings failed", e);
+    }
+  },
+  refreshTimelapseJobs: async () => {
+    try {
+      const jobs = await ipcListTimelapseJobs();
+      set({ timelapseJobs: jobs });
+    } catch (e) {
+      console.error("refreshTimelapseJobs failed", e);
+    }
+  },
+  startTimelapseRun: async (args) => {
+    set({
+      timelapseRunning: true,
+      timelapseProgress: null,
+      timelapseLastResult: null,
+    });
+    try {
+      await ipcStartTimelapse(args);
+    } catch (e) {
+      console.error("startTimelapseRun failed", e);
+      set({ timelapseRunning: false });
+      throw e;
+    }
+  },
+  cancelTimelapseRun: async () => {
+    await ipcCancelTimelapse();
   },
 
   clearTags: () =>

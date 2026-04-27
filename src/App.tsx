@@ -16,6 +16,7 @@ import { IssuesView } from "./components/issues/IssuesView";
 import { ScanView } from "./components/scan/ScanView";
 import { ReviewView } from "./components/review/ReviewView";
 import { PlacesView } from "./components/places/PlacesView";
+import { TimelapseView } from "./components/timelapse/TimelapseView";
 import { useStore } from "./state/store";
 import { KIND_META, kindCounts } from "./utils/issueKinds";
 import {
@@ -23,6 +24,11 @@ import {
   onScanProgress,
   onScanDone,
 } from "./ipc/scanner";
+import {
+  onTimelapseStart,
+  onTimelapseProgress,
+  onTimelapseDone,
+} from "./ipc/timelapse";
 
 function App() {
   const trips = useStore((s) => s.trips);
@@ -36,6 +42,8 @@ function App() {
   const setMainView = useStore((s) => s.setMainView);
   const scanRunning = useStore((s) => s.scanRunning);
   const scanProgress = useStore((s) => s.scanProgress);
+  const timelapseRunning = useStore((s) => s.timelapseRunning);
+  const timelapseProgress = useStore((s) => s.timelapseProgress);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [version, setVersion] = useState("");
 
@@ -46,6 +54,11 @@ function App() {
       .catch((e) => console.error("get_video_port failed", e));
     void useStore.getState().loadUserApplicableTags();
     void useStore.getState().refreshPlaces();
+    // Load ffmpeg path + capabilities eagerly so that by the time the
+    // user navigates into TimelapseView the store already reflects the
+    // persisted value. Without this, the config modal auto-opens on a
+    // racing null value and *looks* like persistence is broken.
+    void useStore.getState().refreshTimelapseSettings();
   }, [setVideoPort]);
 
   // Attach scan-pipeline event listeners at the app root so progress
@@ -87,6 +100,50 @@ function App() {
         if (state.selectedTripId) {
           void state.refreshTripTags(state.selectedTripId);
         }
+      }),
+    );
+    return () => {
+      for (const p of unlisteners) {
+        p.then((unlisten) => unlisten());
+      }
+    };
+  }, []);
+
+  // Timelapse-pipeline listeners. Keeps progress flowing even when the
+  // user navigates away from TimelapseView.
+  useEffect(() => {
+    const unlisteners: Promise<() => void>[] = [];
+    unlisteners.push(
+      onTimelapseStart((e) => {
+        useStore.setState({
+          timelapseRunning: true,
+          timelapseStartMs: Date.now(),
+          timelapseProgress: {
+            total: e.total,
+            done: 0,
+            failed: 0,
+            currentTripId: null,
+            currentTier: null,
+            currentChannel: null,
+          },
+          timelapseLastResult: null,
+        });
+      }),
+    );
+    unlisteners.push(
+      onTimelapseProgress((p) => {
+        useStore.setState({ timelapseProgress: p });
+      }),
+    );
+    unlisteners.push(
+      onTimelapseDone((result) => {
+        useStore.setState({
+          timelapseRunning: false,
+          timelapseLastResult: result,
+        });
+        // Jobs list may have new rows — refresh so the trip table
+        // reflects the latest statuses.
+        void useStore.getState().refreshTimelapseJobs();
       }),
     );
     return () => {
@@ -200,6 +257,27 @@ function App() {
                 >
                   Places
                 </button>
+                <button
+                  onClick={() =>
+                    setMainView(
+                      mainView === "timelapse" ? "player" : "timelapse",
+                    )
+                  }
+                  className={
+                    mainView === "timelapse"
+                      ? "rounded border border-violet-500 px-2 py-0.5 text-xs text-violet-300 hover:bg-neutral-800"
+                      : "rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-violet-500 hover:text-violet-300"
+                  }
+                  title={
+                    mainView === "timelapse"
+                      ? "Close timelapse view"
+                      : "Open timelapse view"
+                  }
+                >
+                  {timelapseRunning
+                    ? `Encoding… ${timelapseProgress?.done ?? 0}/${timelapseProgress?.total ?? "?"}`
+                    : "Timelapse"}
+                </button>
               </div>
             </div>
           )}
@@ -237,6 +315,8 @@ function App() {
           <ReviewView />
         ) : mainView === "places" ? (
           <PlacesView />
+        ) : mainView === "timelapse" ? (
+          <TimelapseView />
         ) : (
           <PlayerShell />
         )}

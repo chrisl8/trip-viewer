@@ -2,8 +2,9 @@ import { useEffect } from "react";
 import type { SyncEngine } from "../../engine/SyncEngine";
 import { useStore } from "../../state/store";
 import type { PlaybackSlice } from "../../state/store";
+import { concatToFile, fileToConcat } from "../../utils/speedCurve";
 
-const SPEEDS: PlaybackSlice["speed"][] = [0.5, 1, 2, 4, 8];
+const SPEEDS: PlaybackSlice["speed"][] = [0.5, 1, 2, 4];
 
 export function KeyboardShortcuts({ engine }: { engine: SyncEngine | null }) {
   useEffect(() => {
@@ -28,6 +29,21 @@ export function KeyboardShortcuts({ engine }: { engine: SyncEngine | null }) {
 
       if (!engine) return;
 
+      // In tiered mode, arrows step in CONCAT-TIME (trip seconds),
+      // not file-time. Without this, "jump 5 s" would move only
+      // 5 / tier_rate seconds of trip content — imperceptible at 60x.
+      // We convert currentTime (file-time) to concat-time, add the
+      // step, and map back to file-time for the engine seek.
+      const stepSec = (forward: boolean) => {
+        const delta = (e.shiftKey ? 30 : 5) * (forward ? 1 : -1);
+        if (store.sourceMode === "original" || !store.activeSpeedCurve) {
+          return store.currentTime + delta;
+        }
+        const concatNow = fileToConcat(store.currentTime, store.activeSpeedCurve);
+        const concatTarget = concatNow + delta;
+        return concatToFile(concatTarget, store.activeSpeedCurve);
+      };
+
       switch (e.code) {
         case "Space":
           e.preventDefault();
@@ -37,12 +53,12 @@ export function KeyboardShortcuts({ engine }: { engine: SyncEngine | null }) {
 
         case "ArrowLeft":
           e.preventDefault();
-          engine.seek(store.currentTime - (e.shiftKey ? 30 : 5));
+          engine.seek(stepSec(false));
           break;
 
         case "ArrowRight":
           e.preventDefault();
-          engine.seek(store.currentTime + (e.shiftKey ? 30 : 5));
+          engine.seek(stepSec(true));
           break;
 
         case "BracketLeft": {

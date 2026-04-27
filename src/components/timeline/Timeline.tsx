@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef } from "react";
 import { useStore } from "../../state/store";
 import type { GpsPoint, Segment, TagCategory, Trip } from "../../types/model";
 import { CATEGORY_COLORS } from "../../utils/tagColors";
+import { computeTripTime, tripTotalDuration } from "../../utils/tripTime";
 
 interface Props {
   onSeekTripTime: (tripTime: number) => void;
@@ -42,21 +43,16 @@ export function Timeline({ onSeekTripTime }: Props) {
     [trips, loadedTripId],
   );
 
-  const totalDuration = useMemo(
-    () => trip?.segments.reduce((sum, s) => sum + s.durationS, 0) ?? 0,
-    [trip],
-  );
+  const totalDuration = useMemo(() => tripTotalDuration(trip), [trip]);
 
-  const tripTime = useMemo(() => {
-    if (!trip) return 0;
-    const activeId = activeSegmentId ?? trip.segments[0]?.id;
-    let cumulative = 0;
-    for (const seg of trip.segments) {
-      if (seg.id === activeId) return cumulative + currentTime;
-      cumulative += seg.durationS;
-    }
-    return cumulative + currentTime;
-  }, [trip, activeSegmentId, currentTime]);
+  // Trip-time via the shared helper. Phase B keeps this on the
+  // "original" branch unconditionally; Phase C wires up sourceMode +
+  // activeSpeedCurve from the store so this single call handles
+  // tiered playback as well.
+  const tripTime = useMemo(
+    () => computeTripTime(trip, activeSegmentId, currentTime, "original", null),
+    [trip, activeSegmentId, currentTime],
+  );
 
   const speedPoints: { x: number; speed: number }[] = useMemo(() => {
     if (!trip || totalDuration <= 0) return [];

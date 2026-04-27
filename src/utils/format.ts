@@ -30,3 +30,23 @@ export function basename(path: string): string {
   const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return i >= 0 ? path.slice(i + 1) : path;
 }
+
+/**
+ * Sidebar-style trip label: short month/day + 12-hour time, no year,
+ * no seconds (e.g. "Mar 22 4:41 PM"). Used anywhere a trip's start
+ * time is shown so the different views don't each roll their own
+ * format and fall out of sync.
+ */
+export function formatTripStart(startTime: string): string {
+  const d = new Date(startTime);
+  if (Number.isNaN(d.getTime())) return startTime;
+  const date = d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  const time = d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${date} ${time}`;
+}

@@ -6,17 +6,26 @@ import type { GpsPoint, Segment } from "../../types/model";
 
 interface Props {
   gpsPoints: GpsPoint[];
+  /** Time to interpolate at. The caller decides whether this is
+   *  segment-local seconds (matching `gpsPoints` from the active
+   *  segment) in Original mode, or concat-time seconds (matching
+   *  the trip-stitched `gpsPoints`) in tiered mode. */
+  interpolationTime: number;
   activeSegment: Segment | null;
 }
 
-export function VehicleMarker({ gpsPoints, activeSegment }: Props) {
-  const currentTime = useStore((s) => s.currentTime);
+export function VehicleMarker({
+  gpsPoints,
+  interpolationTime,
+  activeSegment,
+}: Props) {
   const map = useMap();
   const hasFitRef = useRef<string | null>(null);
 
   const interp = useMemo(
-    () => (activeSegment ? interpolateGps(gpsPoints, currentTime) : null),
-    [gpsPoints, currentTime, activeSegment],
+    () =>
+      activeSegment ? interpolateGps(gpsPoints, interpolationTime) : null,
+    [gpsPoints, interpolationTime, activeSegment],
   );
 
   // Fit map bounds on first GPS load per trip

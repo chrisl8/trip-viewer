@@ -1,19 +1,19 @@
 import { useMemo } from "react";
-import { useStore } from "../../state/store";
 import { interpolateGps } from "../../engine/interpolate";
 import type { GpsPoint, Segment } from "../../types/model";
 
 interface Props {
   gpsPoints: GpsPoint[];
+  /** Time to interpolate at — segment-local in Original mode, concat-time in tiered. */
+  interpolationTime: number;
   activeSegment: Segment | null;
 }
 
-export function SpeedReadout({ gpsPoints, activeSegment }: Props) {
-  const currentTime = useStore((s) => s.currentTime);
-
+export function SpeedReadout({ gpsPoints, interpolationTime, activeSegment }: Props) {
   const interp = useMemo(
-    () => (activeSegment ? interpolateGps(gpsPoints, currentTime) : null),
-    [gpsPoints, currentTime, activeSegment],
+    () =>
+      activeSegment ? interpolateGps(gpsPoints, interpolationTime) : null,
+    [gpsPoints, interpolationTime, activeSegment],
   );
 
   if (!interp) return null;

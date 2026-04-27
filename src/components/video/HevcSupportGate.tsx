@@ -31,6 +31,14 @@ export function HevcSupportGate({ children }: { children: React.ReactNode }) {
 
   const platform = detectPlatform();
 
+  // The AppImage bundles GStreamer codec plugins, but canPlayType() inside
+  // bundled WebKitGTK gives unreliable false negatives. Let real playback
+  // failures surface naturally instead of blocking every Linux user.
+  if (platform === "linux") {
+    console.warn("[hevc-gate] canPlayType returned false on Linux; allowing through");
+    return <>{children}</>;
+  }
+
   return (
     <div className="flex h-full items-center justify-center bg-neutral-950 p-8">
       <div className="max-w-md rounded-lg border border-yellow-800 bg-yellow-950/50 p-6 text-center">
@@ -59,27 +67,6 @@ export function HevcSupportGate({ children }: { children: React.ReactNode }) {
             </div>
             <p className="mt-4 text-xs text-neutral-500">
               After installing the extension, restart Trip Viewer.
-            </p>
-          </>
-        ) : platform === "linux" ? (
-          <>
-            <p className="mt-3 text-sm text-neutral-300">
-              Your dashcam files use HEVC (H.265) encoding. Linux needs
-              GStreamer's libav plugin to decode H.265 through WebKitGTK.
-            </p>
-            <p className="mt-3 overflow-x-auto rounded-md bg-neutral-900 p-2 text-left font-mono text-xs text-neutral-300">
-              sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad
-            </p>
-            <button
-              onClick={() => setDismissed(true)}
-              className="mt-4 rounded-md px-4 py-2 text-sm text-neutral-400 transition-colors hover:text-neutral-200"
-            >
-              Continue anyway
-            </button>
-            <p className="mt-4 text-xs text-neutral-500">
-              After installing the packages, restart Trip Viewer. If you're
-              running the Flatpak build, HEVC should already work — report this
-              as a bug.
             </p>
           </>
         ) : (

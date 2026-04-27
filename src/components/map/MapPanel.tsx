@@ -8,6 +8,7 @@ import { VehicleMarker } from "./VehicleMarker";
 import { TrackPolyline } from "./TrackPolyline";
 import { SpeedReadout } from "../hud/SpeedReadout";
 import { HeadingReadout } from "../hud/HeadingReadout";
+import { computeTripTime } from "../../utils/tripTime";
 import "leaflet/dist/leaflet.css";
 
 /**
@@ -67,12 +68,19 @@ interface Props {
   activeSegment: Segment | null;
 }
 
-function GpsMissingRibbon({ gpsPoints, activeSegment }: { gpsPoints: GpsPoint[]; activeSegment: Segment | null }) {
-  const currentTime = useStore((s) => s.currentTime);
-
+function GpsMissingRibbon({
+  gpsPoints,
+  interpolationTime,
+  activeSegment,
+}: {
+  gpsPoints: GpsPoint[];
+  interpolationTime: number;
+  activeSegment: Segment | null;
+}) {
   const interp = useMemo(
-    () => (activeSegment ? interpolateGps(gpsPoints, currentTime) : null),
-    [gpsPoints, currentTime, activeSegment],
+    () =>
+      activeSegment ? interpolateGps(gpsPoints, interpolationTime) : null,
+    [gpsPoints, interpolationTime, activeSegment],
   );
 
   if (!activeSegment) return null;
@@ -93,6 +101,22 @@ export function MapPanel({ activeSegment }: Props) {
   const gpsByFile = useStore((s) => s.gpsByFile);
   const loadedTripId = useStore((s) => s.loadedTripId);
   const trips = useStore((s) => s.trips);
+  const currentTime = useStore((s) => s.currentTime);
+  const activeSegmentId = useStore((s) => s.activeSegmentId);
+  const sourceMode = useStore((s) => s.sourceMode);
+  const activeSpeedCurve = useStore((s) => s.activeSpeedCurve);
+
+  // Interpolation inputs vary by source:
+  //  - Original: per-segment GPS + segment-local currentTime
+  //  - Tiered:   trip-stitched GPS + concat-time derived via the curve
+  //
+  // The readouts and markers are agnostic to which axis is in play;
+  // MapPanel picks the right pair once and propagates it.
+  const trip = trips.find((t) => t.id === loadedTripId);
+  const isTiered = sourceMode !== "original";
+  const concatTime = isTiered
+    ? computeTripTime(trip, activeSegmentId, currentTime, sourceMode, activeSpeedCurve)
+    : 0;
 
   const tripGpsPoints: GpsPoint[] = useMemo(() => {
     const trip = trips.find((t) => t.id === loadedTripId);
@@ -120,6 +144,12 @@ export function MapPanel({ activeSegment }: Props) {
     if (!front) return [];
     return gpsByFile[front.filePath] ?? [];
   }, [activeSegment, gpsByFile]);
+
+  // Pick which pair feeds the marker + readouts: tiered mode uses the
+  // full trip trace indexed by concat-time; Original uses per-segment
+  // GPS indexed by segment-local time.
+  const consumerGpsPoints = isTiered ? tripGpsPoints : segmentGpsPoints;
+  const consumerInterpTime = isTiered ? concatTime : currentTime;
 
   const center = useMemo((): [number, number] => {
     if (tripGpsPoints.length > 0) {
@@ -157,21 +187,31 @@ export function MapPanel({ activeSegment }: Props) {
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <TrackPolyline points={tripGpsPoints} />
         <VehicleMarker
-          gpsPoints={segmentGpsPoints}
+          gpsPoints={consumerGpsPoints}
+          interpolationTime={consumerInterpTime}
           activeSegment={activeSegment}
         />
       </MapContainer>
 
       <GpsMissingRibbon
-        gpsPoints={segmentGpsPoints}
+        gpsPoints={consumerGpsPoints}
+        interpolationTime={consumerInterpTime}
         activeSegment={activeSegment}
       />
 
       {activeSegment && <MiltonaDebugButton segment={activeSegment} />}
 
       <div className="pointer-events-none absolute bottom-3 right-3 z-[1000] flex gap-2">
-        <SpeedReadout gpsPoints={segmentGpsPoints} activeSegment={activeSegment} />
-        <HeadingReadout gpsPoints={segmentGpsPoints} activeSegment={activeSegment} />
+        <SpeedReadout
+          gpsPoints={consumerGpsPoints}
+          interpolationTime={consumerInterpTime}
+          activeSegment={activeSegment}
+        />
+        <HeadingReadout
+          gpsPoints={consumerGpsPoints}
+          interpolationTime={consumerInterpTime}
+          activeSegment={activeSegment}
+        />
       </div>
     </div>
   );

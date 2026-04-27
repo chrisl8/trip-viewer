@@ -1,8 +1,8 @@
 import { CSSProperties, MutableRefObject, useEffect } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Segment } from "../../types/model";
 import { ChannelPanel } from "./ChannelPanel";
 import { useStore } from "../../state/store";
+import { videoSrcFor } from "../../utils/videoSrc";
 
 // Both Linux and macOS need the tiny loopback HTTP server
 // (src-tauri/src/video_server.rs) for <video> playback, for different
@@ -31,13 +31,6 @@ const IS_LINUX =
 const IS_MAC =
   typeof navigator !== "undefined" &&
   navigator.userAgent.includes("Mac OS X");
-
-function videoSrcFor(filePath: string, videoPort: number | null): string {
-  if (videoPort && videoPort > 0) {
-    return `http://127.0.0.1:${videoPort}${encodeURI(filePath)}`;
-  }
-  return convertFileSrc(filePath);
-}
 
 interface Props {
   /** Shared map of label → <video> element, populated by callback refs.
