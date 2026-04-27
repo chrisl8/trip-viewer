@@ -1,5 +1,8 @@
 import { useMemo } from "react";
-import { interpolateGps } from "../../engine/interpolate";
+import {
+  STOPPED_DISPLAY_THRESHOLD_MPS,
+  interpolateGps,
+} from "../../engine/interpolate";
 import type { GpsPoint, Segment } from "../../types/model";
 
 interface Props {
@@ -18,7 +21,11 @@ export function SpeedReadout({ gpsPoints, interpolationTime, activeSegment }: Pr
 
   if (!interp) return null;
 
-  const mph = interp.speedMps * 2.23694;
+  // Snap to a clean 0 below the stopped threshold so position-noise
+  // doesn't flicker the rounded readout between 0 and 1 mph at a stop.
+  const effectiveMps =
+    interp.speedMps < STOPPED_DISPLAY_THRESHOLD_MPS ? 0 : interp.speedMps;
+  const mph = effectiveMps * 2.23694;
 
   return (
     <div

@@ -87,6 +87,12 @@ function lerpAngle(a: number, b: number, t: number): number {
  *  `src-tauri/src/timelapse/events.rs::MOVING_MPS`. */
 export const HEADING_HOLD_THRESHOLD_MPS = 2.0;
 
+/** Below this, the receiver still reports small non-zero speeds from
+ *  sub-meter position drift — enough to flicker the rounded mph readout
+ *  between 0 and 1 at a full stop. Snap the displayed speed to zero
+ *  below this floor. Matches `LONG_STOP_MPS` in the events detector. */
+export const STOPPED_DISPLAY_THRESHOLD_MPS = 1.0;
+
 /**
  * Heading from the most recent GPS sample at-or-before `tOffsetS`
  * whose speed was at or above `HEADING_HOLD_THRESHOLD_MPS`. Used to
