@@ -42,7 +42,7 @@ export function SourceControls({ current, options, onChange, disabled }: Props) 
   return (
     <div className="flex shrink-0 items-center gap-1">
       <span className="mr-1 text-[10px] uppercase tracking-wide text-neutral-500">
-        Source
+        Mode
       </span>
       {options.map((opt) => {
         const active = opt.mode === current;
