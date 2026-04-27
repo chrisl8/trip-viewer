@@ -17,7 +17,7 @@ const TIER_OPTIONS: {
   {
     value: "8x",
     label: "8x — daily review",
-    hint: "Fixed 8x. Smooth replacement for the browser's stuttery 8x playback.",
+    hint: "Fixed 8x throughout, no slowdowns. Steady fast-forward review — skim a half-hour trip in about four minutes.",
   },
   {
     value: "16x",
@@ -27,7 +27,7 @@ const TIER_OPTIONS: {
   {
     value: "60x",
     label: "60x — year in review",
-    hint: "Base 60x, drops to 8x during events. Cinematic pacing for month- and year-scale browsing.",
+    hint: "Base 60x, drops to 8x during the same GPS-detected events. Cinematic pacing for month- and year-scale browsing.",
   },
 ];
 
@@ -92,7 +92,9 @@ export function TimelapseView() {
   const setSourceMode = useStore((s) => s.setSourceMode);
 
   const [showConfig, setShowConfig] = useState(false);
-  const [tiers, setTiers] = useState<Set<TimelapseTier>>(new Set(["8x"]));
+  const [tiers, setTiers] = useState<Set<TimelapseTier>>(
+    new Set(["8x", "16x", "60x"]),
+  );
   const [channels, setChannels] = useState<Set<TimelapseChannel>>(
     new Set(["F", "I", "R"]),
   );
