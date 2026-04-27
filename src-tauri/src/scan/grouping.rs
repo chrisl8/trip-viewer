@@ -246,9 +246,14 @@ pub fn find_sibling_file(
     let mut best: Option<(i64, PathBuf)> = None;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path == front_path {
-            continue;
-        }
+        // Note: don't skip `path == front_path`. When the caller is
+        // asking for a channel that *equals* the anchor's channel
+        // (e.g. the timelapse worker's Front job probing a Front
+        // master for its own F sibling), the master itself IS the
+        // sibling — returning None there would force a false-negative
+        // placeholder. For different-channel lookups the channel-label
+        // filter below excludes the anchor anyway, so allowing self
+        // through has no effect on cross-channel callers.
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };

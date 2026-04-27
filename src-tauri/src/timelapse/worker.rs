@@ -623,19 +623,20 @@ pub enum SiblingResolution {
     },
 }
 
-/// Resolve sources for one (trip, channel) pair. For Front, always
-/// returns `Complete`. For Interior/Rear, reports whether siblings
-/// are all-present / all-missing / partially-missing so the caller
-/// can produce a correct-or-skip outcome instead of a silently-
-/// desynced output.
+/// Resolve sources for one (trip, channel) pair. Walks the trip's
+/// master_paths and probes the requested channel's sibling at each
+/// position, classifying the trip as all-present / all-missing /
+/// partially-missing. The Front channel goes through the same path
+/// as Interior/Rear: when a master happens to be a non-Front file
+/// (e.g. the front camera wasn't recording for the first segment of
+/// a trip), the Front job correctly gets a placeholder for that slot
+/// instead of accidentally concatenating a wrong-channel/wrong-
+/// resolution file into the F output.
 fn resolve_channel_sources(
     front_sources: &[String],
     front_durations: &[f64],
     channel: Channel,
 ) -> Result<SiblingResolution, AppError> {
-    if channel == Channel::Front {
-        return Ok(SiblingResolution::Complete(front_sources.to_vec()));
-    }
     debug_assert_eq!(front_sources.len(), front_durations.len());
 
     let mut entries: Vec<ConcatEntry> = Vec::with_capacity(front_sources.len());
@@ -901,13 +902,86 @@ mod tests {
     }
 
     #[test]
-    fn resolve_channel_sources_front_is_always_complete() {
-        let srcs = vec!["a".to_string(), "b".to_string()];
+    fn resolve_channel_sources_front_complete_when_all_masters_are_front() {
+        // The common case: master_paths are all F files; the F job's
+        // sibling lookup finds each master as its own F sibling and
+        // we get Complete back with the same paths.
+        let dir = unique_dir("front-complete");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let front_a = dir.join("2026_04_22_103001_00_F.MP4");
+        let front_b = dir.join("2026_04_22_103300_00_F.MP4");
+        fs::write(&front_a, b"").unwrap();
+        fs::write(&front_b, b"").unwrap();
+
+        let sources = vec![
+            front_a.to_string_lossy().to_string(),
+            front_b.to_string_lossy().to_string(),
+        ];
         let durations = vec![180.0, 180.0];
-        match resolve_channel_sources(&srcs, &durations, Channel::Front).unwrap() {
-            SiblingResolution::Complete(got) => assert_eq!(got, srcs),
-            _ => panic!("front should always resolve Complete"),
+        match resolve_channel_sources(&sources, &durations, Channel::Front).unwrap() {
+            SiblingResolution::Complete(got) => {
+                assert_eq!(got.len(), 2);
+                assert!(got.iter().any(|s| s.ends_with("103001_00_F.MP4")));
+                assert!(got.iter().any(|s| s.ends_with("103300_00_F.MP4")));
+            }
+            other => panic!("expected Complete, got {other:?}"),
         }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_channel_sources_front_pads_when_a_master_is_not_front() {
+        // The 9:43 AM trip case: the first segment's master is a Rear
+        // file (no F existed at that timestamp). The F job for that
+        // trip must place a black-frame placeholder for that slot,
+        // not concatenate the wrong-channel rear file into the F
+        // output (which it used to do via the Front short-circuit and
+        // which trivially fails with filter-reinit -40 because the F
+        // and R cameras record at different resolutions).
+        let dir = unique_dir("front-pads-when-master-is-r");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Segment 1: only a Rear file on disk.
+        let rear_only = dir.join("2026_03_23_094334_00_R.MP4");
+        // Segment 2: Front file on disk (Interior/Rear may also exist
+        // but we only care about Front for this test).
+        let front_b = dir.join("2026_03_23_094634_00_F.MP4");
+        fs::write(&rear_only, b"").unwrap();
+        fs::write(&front_b, b"").unwrap();
+
+        let sources = vec![
+            rear_only.to_string_lossy().to_string(),
+            front_b.to_string_lossy().to_string(),
+        ];
+        let durations = vec![180.0, 180.0];
+        match resolve_channel_sources(&sources, &durations, Channel::Front).unwrap() {
+            SiblingResolution::PadWithBlack {
+                entries,
+                missing_count,
+                reference_sibling,
+            } => {
+                assert_eq!(missing_count, 1);
+                assert_eq!(entries.len(), 2);
+                // Slot 0 has no F on disk → placeholder.
+                match &entries[0] {
+                    ConcatEntry::MissingPlaceholder { duration_s } => {
+                        assert!((duration_s - 180.0).abs() < 1e-9);
+                    }
+                    other => panic!("expected MissingPlaceholder at slot 0, got {other:?}"),
+                }
+                // Slot 1 has a real F file.
+                assert!(matches!(entries[1], ConcatEntry::Real(_)));
+                // Reference for placeholder dimensions/fps comes from
+                // the real F file, so placeholders match the F camera's
+                // resolution rather than the rear camera's.
+                assert!(reference_sibling.ends_with("_F.MP4"));
+            }
+            other => panic!("expected PadWithBlack, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
