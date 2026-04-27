@@ -164,6 +164,33 @@ export function TimelapseView() {
     }
   }
 
+  async function onRebuildTrip(tripId: string) {
+    setError(null);
+    try {
+      await startRun({
+        tripIds: [tripId],
+        tiers: Array.from(tiers),
+        channels: Array.from(channels),
+        // newOnly would no-op for an already-done trip, which is the
+        // opposite of what "Rebuild" means. Coerce to rebuildAll; pass
+        // failedOnly/rebuildAll through unchanged.
+        scope: scope === "newOnly" ? "rebuildAll" : scope,
+      });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  const rebuildDisabledReason = !configured
+    ? "Configure ffmpeg first"
+    : running
+      ? "Encoding in progress"
+      : tiers.size === 0
+        ? "Pick at least one tier"
+        : channels.size === 0
+          ? "Pick at least one channel"
+          : null;
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-neutral-950 text-neutral-100">
       <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
@@ -368,6 +395,7 @@ export function TimelapseView() {
                     <th className="px-3 py-2 text-left">Segments</th>
                     <th className="px-3 py-2 text-left">Status</th>
                     <th className="px-3 py-2 text-left">Play</th>
+                    <th className="px-3 py-2 text-left">Rebuild</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -498,6 +526,26 @@ export function TimelapseView() {
                               );
                             })}
                           </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            onClick={() => void onRebuildTrip(t.id)}
+                            disabled={rebuildDisabledReason !== null}
+                            className={clsx(
+                              "rounded px-2 py-1 text-xs font-medium transition-colors",
+                              rebuildDisabledReason === null
+                                ? "bg-neutral-700 text-neutral-100 hover:bg-neutral-600"
+                                : "cursor-not-allowed bg-neutral-800 text-neutral-600",
+                            )}
+                            title={
+                              rebuildDisabledReason ??
+                              (scope === "newOnly"
+                                ? "Rebuild this trip with the selected tiers and channels (forces re-encode — scope is set to New & unfinished, which would otherwise skip done jobs)"
+                                : `Rebuild this trip with the selected tiers and channels (scope: ${scope === "failedOnly" ? "Retry failed" : "Rebuild all"})`)
+                            }
+                          >
+                            ↻
+                          </button>
                         </td>
                       </tr>
                     );
