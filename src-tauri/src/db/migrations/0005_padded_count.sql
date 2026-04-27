@@ -1,0 +1,1 @@
+ALTER TABLE timelapse_jobs ADD COLUMN padded_count INTEGER NOT NULL DEFAULT 0;

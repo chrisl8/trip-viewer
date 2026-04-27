@@ -6,11 +6,12 @@
 //! exactly three (F/I/R), which blocked users of 2-channel and 4-channel
 //! dashcams.
 
+use crate::error::AppError;
 use crate::model::{label_rank, Channel, Segment, Trip};
-use crate::scan::naming::{EventMode, ParsedName};
+use crate::scan::naming::{self, EventMode, ParsedName};
 use chrono::{Duration, NaiveDateTime};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_TRIP_GAP_SECONDS: i64 = 120;
 pub const ASSUMED_SEGMENT_DURATION_S: f64 = 180.0;
@@ -197,6 +198,83 @@ fn close_trip(segments: Vec<Segment>) -> Trip {
         end_time,
         segments,
     }
+}
+
+/// Find the sibling file for a given front-channel file in its parent
+/// directory.
+///
+/// Mirrors the scanner's Stage 1 (`group_key` bucketing) + Stage 2
+/// (`merge_fuzzy_neighbors`) matching — but for the common "I have one
+/// front file, find its rear" case used by the timelapse encoder. We
+/// *cannot* just swap the channel letter in the filename: Wolf Box
+/// routinely records per-channel timestamps skewed by 1-2 seconds
+/// (the scanner tolerates this via `SEGMENT_FUZZY_WINDOW_S`), and a
+/// naive string swap produces paths that don't exist when skew is
+/// present.
+///
+/// Returns the candidate with the smallest time delta within the
+/// fuzzy window, or `None` if nothing qualifies. Deterministic: same
+/// input → same output across runs.
+pub fn find_sibling_file(
+    front_path: &Path,
+    target_channel_label: &str,
+) -> Result<Option<PathBuf>, AppError> {
+    // Parse the front file to get the anchor.
+    let front_name = match front_path.file_name().and_then(|s| s.to_str()) {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let Ok(anchor) = naming::parse(front_name) else {
+        return Ok(None);
+    };
+
+    let Some(parent) = front_path.parent() else {
+        return Ok(None);
+    };
+
+    // Single directory listing; we match by filename without touching
+    // file contents. Cheap — O(files in this folder).
+    let entries = match std::fs::read_dir(parent) {
+        Ok(it) => it,
+        Err(e) => {
+            // Surface unreadable directories as errors so the caller
+            // can mark the job failed rather than silently "not found".
+            return Err(AppError::Io(e));
+        }
+    };
+
+    let mut best: Option<(i64, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == front_path {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(candidate) = naming::parse(name) else {
+            continue;
+        };
+        if candidate.camera_kind != anchor.camera_kind {
+            continue;
+        }
+        if candidate.channel_label != target_channel_label {
+            continue;
+        }
+        if candidate.event_mode != anchor.event_mode {
+            continue;
+        }
+        let delta = (candidate.start_time - anchor.start_time)
+            .num_seconds()
+            .abs();
+        if delta > SEGMENT_FUZZY_WINDOW_S {
+            continue;
+        }
+        if best.as_ref().map(|(d, _)| delta < *d).unwrap_or(true) {
+            best = Some((delta, path));
+        }
+    }
+    Ok(best.map(|(_, p)| p))
 }
 
 #[cfg(test)]

@@ -5,9 +5,20 @@ use crate::error::AppError;
 
 const M0001: &str = include_str!("migrations/0001_init.sql");
 const M0002: &str = include_str!("migrations/0002_places.sql");
+const M0003: &str = include_str!("migrations/0003_timelapse_jobs.sql");
+const M0004: &str = include_str!("migrations/0004_settings.sql");
+const M0005: &str = include_str!("migrations/0005_padded_count.sql");
+const M0006: &str = include_str!("migrations/0006_speed_curve.sql");
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(M0001), M::up(M0002)])
+    Migrations::new(vec![
+        M::up(M0001),
+        M::up(M0002),
+        M::up(M0003),
+        M::up(M0004),
+        M::up(M0005),
+        M::up(M0006),
+    ])
 }
 
 pub fn apply(conn: &mut Connection) -> Result<(), AppError> {
@@ -25,11 +36,11 @@ mod tests {
         apply(&mut conn).unwrap();
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('segments','trips','tags','scan_runs','places')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('segments','trips','tags','scan_runs','places','timelapse_jobs','settings')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 5);
+        assert_eq!(count, 7);
     }
 }

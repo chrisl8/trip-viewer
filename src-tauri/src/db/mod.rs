@@ -8,7 +8,9 @@ use crate::error::AppError;
 mod migrations;
 pub mod places;
 pub mod segments;
+pub mod settings;
 pub mod tags;
+pub mod timelapse_jobs;
 
 pub type DbHandle = Arc<Mutex<Connection>>;
 

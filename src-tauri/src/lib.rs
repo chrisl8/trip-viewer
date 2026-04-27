@@ -9,6 +9,7 @@ mod places;
 pub mod scan;
 mod scans;
 mod tags;
+mod timelapse;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod video_server;
 mod window_fit;
@@ -62,20 +63,39 @@ pub fn run() {
         .manage(import::ImportState::new())
         .manage(VideoPort(video_port))
         .manage(scans::worker::new_shared_state())
+        .manage(timelapse::worker::new_shared_state())
         .setup(move |app| {
             use tauri::Manager;
+            use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
             use tauri_plugin_window_state::WindowExt;
             let app_data_dir = app.path().app_data_dir()
                 .expect("resolve app_data_dir");
             let db_path = app_data_dir.join("tripviewer.db");
-            match db::open(&db_path) {
-                Ok(handle) => {
-                    app.manage(handle);
-                }
+            let handle = match db::open(&db_path) {
+                Ok(h) => h,
                 Err(e) => {
                     eprintln!("[db] failed to open {}: {e}", db_path.display());
+                    // Without a managed DB, every command that takes
+                    // tauri::State<DbHandle> would error with the opaque
+                    // "state not managed" message. Show the user the real
+                    // error and bail cleanly instead.
+                    app.dialog()
+                        .message(format!(
+                            "Trip Viewer can't open its database:\n\n{e}\n\n\
+                             If this database was created by a newer version of Trip Viewer, \
+                             upgrade or move the file aside:\n\n{}",
+                            db_path.display()
+                        ))
+                        .kind(MessageDialogKind::Error)
+                        .title("Trip Viewer — Database error")
+                        .blocking_show();
+                    return Err(Box::new(e));
                 }
+            };
+            if let Err(e) = timelapse::cleanup::cleanup_stale_jobs(&handle) {
+                eprintln!("[timelapse] cleanup failed at startup: {e}");
             }
+            app.manage(handle);
             if let Some(window) = app.get_webview_window("main") {
                 // 1. Restore saved position/size/maximized first so the fit
                 //    clamp runs against the real geometry the user expects.
@@ -114,6 +134,11 @@ pub fn run() {
             scans::commands::list_scans,
             scans::commands::start_scan,
             scans::commands::cancel_scan,
+            timelapse::commands::get_timelapse_settings,
+            timelapse::commands::test_ffmpeg,
+            timelapse::commands::start_timelapse,
+            timelapse::commands::cancel_timelapse,
+            timelapse::commands::list_timelapse_jobs,
             places::commands::list_places,
             places::commands::add_place,
             places::commands::update_place,

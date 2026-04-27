@@ -34,6 +34,7 @@ Trip Viewer is a **Tauri v2** desktop app: Rust backend (`src-tauri/src/`) commu
 - **`gps/`** — custom binary parser for the **ShenShu MetaData format** used by Wolf Box firmware. This was reverse-engineered — no upstream spec exists. Decodes NMEA DDMM.MMMM coordinates from the `gpmd` track.
 - **`metadata/`** — MP4 probe using the `mp4` crate (pure Rust, **no ffprobe dependency** — this is a locked decision, see DESIGN.md).
 - **`import/`** — SD card import pipeline (10 submodules). **Safety-critical**: files are SHA-256 hashed during copy, re-hashed on the destination, and the source is only wiped after every file is verified. See "Import pipeline invariants" below.
+- **`timelapse/`** — background ffmpeg-driven pre-render pipeline that produces 8x / 16x / 60x fast-playback MP4s per (trip, tier, channel). ffmpeg is an opt-in user dependency (configured via the `settings` table, not bundled). NVENC + NVDEC path is used when available; see `ffmpeg.rs::Encoder::needs_cuda_hwaccel`. **Event-detection thresholds for the variable-speed 16x/60x tiers live in `events.rs` — see that module's top-of-file doc comment for how to verify the slowdown behavior after a run and how to tune thresholds.**
 - **`error.rs`** — `AppError` enum with `thiserror`; implements `Serialize` for automatic JSON conversion to the frontend.
 
 ### Frontend structure
