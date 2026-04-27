@@ -28,11 +28,14 @@ interface Props {
   disabled?: boolean;
 }
 
+// Descriptive labels match the TimelapseView tier copy so the picker
+// reads the same in both places — "8× Daily" here is the same thing
+// you ticked "8x — daily review" for in the library view.
 const LABEL: Record<SourceMode, string> = {
   original: "Original",
-  "8x": "8x",
-  "16x": "16x",
-  "60x": "60x",
+  "8x": "8× Daily",
+  "16x": "16× Quick",
+  "60x": "60× Year",
 };
 
 export function SourceControls({ current, options, onChange, disabled }: Props) {

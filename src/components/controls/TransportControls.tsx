@@ -103,12 +103,13 @@ export function TransportControls({ engine, onSourceChange }: Props) {
     else void engine.play();
   };
 
-  // Effective-speed label: hidden in Original mode (it'd always read
-  // the same as the speed picker and look noisy).
+  // Effective playback rate = source-tier × speed. Always shown so
+  // the user can see the composition every time, including 1× ×1 in
+  // Original mode (which reads as "1× effective" — boring but it
+  // makes the multiplicative model unmistakable).
   const tierRate =
     sourceMode === "8x" ? 8 : sourceMode === "16x" ? 16 : sourceMode === "60x" ? 60 : 1;
   const effectiveRate = tierRate * speed;
-  const showEffective = sourceMode !== "original";
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-neutral-800 bg-neutral-950 px-4 py-2 sm:gap-4">
@@ -129,12 +130,10 @@ export function TransportControls({ engine, onSourceChange }: Props) {
 
       <SpeedControls engine={engine} />
 
-      {showEffective && (
-        <span className="shrink-0 text-[11px] text-neutral-500">
-          Effective:{" "}
-          <span className="text-neutral-300">{effectiveRate}x</span>
-        </span>
-      )}
+      <span className="shrink-0 text-[11px] text-neutral-500">
+        →{" "}
+        <span className="text-neutral-300">{effectiveRate}×</span> effective
+      </span>
 
       <div className="ml-auto shrink-0 font-mono text-xs tabular-nums text-neutral-400">
         {formatTime(tripTime)} / {formatTime(totalDuration)}

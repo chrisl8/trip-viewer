@@ -13,7 +13,10 @@ export function SpeedControls({ engine }: Props) {
   const setSpeed = useStore((s) => s.setSpeed);
 
   return (
-    <div className="flex shrink-0 gap-1">
+    <div className="flex shrink-0 items-center gap-1">
+      <span className="mr-1 text-[10px] uppercase tracking-wide text-neutral-500">
+        Speed
+      </span>
       {SPEEDS.map((s) => (
         <button
           key={s}
@@ -28,7 +31,7 @@ export function SpeedControls({ engine }: Props) {
               : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700",
           )}
         >
-          {s}x
+          ×{s}
         </button>
       ))}
     </div>
