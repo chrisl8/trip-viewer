@@ -32,6 +32,8 @@ export function Timeline({ onSeekTripTime }: Props) {
   const loadedTripId = useStore((s) => s.loadedTripId);
   const activeSegmentId = useStore((s) => s.activeSegmentId);
   const currentTime = useStore((s) => s.currentTime);
+  const sourceMode = useStore((s) => s.sourceMode);
+  const activeSpeedCurve = useStore((s) => s.activeSpeedCurve);
   const gpsByFile = useStore((s) => s.gpsByFile);
   const tagsBySegmentId = useStore((s) => s.tagsBySegmentId);
   const selectionMode = useStore((s) => s.selectionMode);
@@ -45,13 +47,16 @@ export function Timeline({ onSeekTripTime }: Props) {
 
   const totalDuration = useMemo(() => tripTotalDuration(trip), [trip]);
 
-  // Trip-time via the shared helper. Phase B keeps this on the
-  // "original" branch unconditionally; Phase C wires up sourceMode +
-  // activeSpeedCurve from the store so this single call handles
-  // tiered playback as well.
   const tripTime = useMemo(
-    () => computeTripTime(trip, activeSegmentId, currentTime, "original", null),
-    [trip, activeSegmentId, currentTime],
+    () =>
+      computeTripTime(
+        trip,
+        activeSegmentId,
+        currentTime,
+        sourceMode,
+        activeSpeedCurve,
+      ),
+    [trip, activeSegmentId, currentTime, sourceMode, activeSpeedCurve],
   );
 
   const speedPoints: { x: number; speed: number }[] = useMemo(() => {
