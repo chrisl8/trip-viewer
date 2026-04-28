@@ -21,6 +21,19 @@ export function startImport(
   return invoke("start_import", { rootPath, sources });
 }
 
+/**
+ * Non-destructive variant of startImport: copy MP4/MOV files from an
+ * arbitrary folder into the library, leaving the source folder intact.
+ * Same hash-while-copy + verified-destination guarantees as the SD-card
+ * flow; emits the same `import:*` events.
+ */
+export function startFolderImport(
+  rootPath: string,
+  sourcePath: string,
+): Promise<void> {
+  return invoke("start_folder_import", { rootPath, sourcePath });
+}
+
 export function cancelImport(): Promise<void> {
   return invoke("cancel_import");
 }

@@ -121,6 +121,7 @@ pub fn run() {
             gps::extract_gps_batch,
             import::discover_sources,
             import::start_import,
+            import::start_folder_import,
             import::cancel_import,
             import::resolve_unknowns,
             issues::issues_delete_to_trash,
