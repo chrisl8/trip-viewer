@@ -40,6 +40,59 @@ pub struct CurveSegment {
     pub rate: u32,
 }
 
+/// Current persisted-curve schema version. Bump when the segment shape
+/// or curve semantics change in a way readers can't transparently
+/// absorb. Old rows lacking a `version` field (the bare-array form,
+/// pre-versioning) are accepted by `deserialize_curve` and treated as
+/// v1 — that's the only legacy shape in the wild.
+pub const CURRENT_CURVE_VERSION: u32 = 1;
+
+/// On-disk envelope around the segment list. Adds a `version` tag so a
+/// future segment-shape change can be detected and either migrated or
+/// rejected by a reader that doesn't recognize the version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CurveEnvelope {
+    version: u32,
+    segments: Vec<CurveSegment>,
+}
+
+/// Serialize a curve to its persisted JSON form (versioned envelope).
+/// Use this everywhere we write `timelapse_jobs.speed_curve_json` so
+/// every fresh row carries a version tag.
+pub fn serialize_curve(segments: &[CurveSegment]) -> String {
+    let envelope = CurveEnvelope {
+        version: CURRENT_CURVE_VERSION,
+        segments: segments.to_vec(),
+    };
+    // The envelope shape is fixed — serialization can only fail under
+    // exotic conditions (a number that doesn't round-trip), and the
+    // empty-array fallback keeps callers from having to handle errors
+    // for what is effectively infallible.
+    serde_json::to_string(&envelope).unwrap_or_else(|_| {
+        format!("{{\"version\":{CURRENT_CURVE_VERSION},\"segments\":[]}}")
+    })
+}
+
+/// Parse a persisted curve JSON. Accepts both:
+///  - Versioned envelope: `{"version": N, "segments": [...]}` (current
+///    writers always emit this).
+///  - Bare array: `[...]` (legacy pre-versioning rows already on disk).
+///
+/// Unknown future versions return None — readers should fall back to a
+/// linear curve at the tier's base rate, the same as for any other
+/// parse failure.
+pub fn deserialize_curve(json: &str) -> Option<Vec<CurveSegment>> {
+    if json.trim_start().starts_with('[') {
+        return serde_json::from_str::<Vec<CurveSegment>>(json).ok();
+    }
+    let envelope: CurveEnvelope = serde_json::from_str(json).ok()?;
+    if envelope.version != CURRENT_CURVE_VERSION {
+        return None;
+    }
+    Some(envelope.segments)
+}
+
 /// Build the structured speed curve. This is the single source of
 /// truth: `compose_filter` renders it to an ffmpeg filter string, and
 /// the worker serializes it to JSON for the frontend player to use in
@@ -193,6 +246,65 @@ mod tests {
     /// Default input label for tests that pre-date the input-label
     /// param. Keeps legacy assertions on `[0:v]` head shape stable.
     const LBL: &str = "0:v";
+
+    // ── envelope round-trip ──────────────────────────────────────────
+
+    #[test]
+    fn serialize_curve_emits_versioned_envelope() {
+        let curve = vec![CurveSegment {
+            concat_start: 0.0,
+            concat_end: 60.0,
+            rate: 8,
+        }];
+        let json = serialize_curve(&curve);
+        assert!(
+            json.contains("\"version\":1"),
+            "expected version tag in output: {json}"
+        );
+        assert!(
+            json.contains("\"segments\""),
+            "expected segments key in output: {json}"
+        );
+    }
+
+    #[test]
+    fn deserialize_curve_round_trips_via_envelope() {
+        let curve = vec![
+            CurveSegment { concat_start: 0.0, concat_end: 25.0, rate: 16 },
+            CurveSegment { concat_start: 25.0, concat_end: 40.0, rate: 1 },
+            CurveSegment { concat_start: 40.0, concat_end: 60.0, rate: 16 },
+        ];
+        let json = serialize_curve(&curve);
+        let back = deserialize_curve(&json).expect("envelope should parse");
+        assert_eq!(back, curve);
+    }
+
+    #[test]
+    fn deserialize_curve_accepts_legacy_bare_array() {
+        // Pre-versioning shape — what existing rows in the wild look
+        // like. Must continue to play back without re-encoding.
+        let legacy = "[{\"concatStart\":0.0,\"concatEnd\":300.0,\"rate\":8}]";
+        let parsed = deserialize_curve(legacy).expect("legacy should parse");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].rate, 8);
+        assert_eq!(parsed[0].concat_end, 300.0);
+    }
+
+    #[test]
+    fn deserialize_curve_rejects_unknown_future_version() {
+        let json = "{\"version\":99,\"segments\":[]}";
+        assert!(
+            deserialize_curve(json).is_none(),
+            "unknown version should be rejected so caller falls back"
+        );
+    }
+
+    #[test]
+    fn deserialize_curve_rejects_garbage() {
+        assert!(deserialize_curve("not json").is_none());
+        assert!(deserialize_curve("").is_none());
+        assert!(deserialize_curve("{\"version\":1}").is_none()); // missing segments
+    }
 
     // ── build_curve ───────────────────────────────────────────────────
 

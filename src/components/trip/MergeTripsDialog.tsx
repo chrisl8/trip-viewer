@@ -109,6 +109,18 @@ export function MergeTripsDialog({ marked, onClose }: Props) {
           </p>
         )}
 
+        {!loading && assessment && assessment.cameraKinds.length > 1 && (
+          <p className="mt-3 rounded-md bg-amber-950 px-2 py-1.5 text-xs text-amber-200">
+            <span className="font-medium">
+              ⚠ Mixed cameras ({assessment.cameraKinds.join(", ")}).
+            </span>{" "}
+            Different brands record at different resolutions and pixel
+            formats; concatenating their timelapse outputs will fail at
+            ffmpeg time. Pick <span className="font-medium">Discard all</span>{" "}
+            below and re-encode after the merge.
+          </p>
+        )}
+
         {!loading && assessment && assessment.hasAnyTimelapses && (
           <div className="mt-3 space-y-2">
             <p className="text-sm text-neutral-300">

@@ -57,6 +57,10 @@ export interface TimelapseMergeAssessment {
    *  can skip the strategy dialog and merge silently. */
   hasAnyTimelapses: boolean;
   tuples: TupleAssessment[];
+  /** Distinct `camera_kind` values across primary + absorbed, sorted.
+   *  More than one entry means concat will fail at ffmpeg time on
+   *  resolution / pix_fmt mismatches; the dialog surfaces a warning. */
+  cameraKinds: string[];
 }
 
 export type TimelapseMergeStrategy = "concatWherePossible" | "discardAll";

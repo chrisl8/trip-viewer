@@ -7,6 +7,7 @@ import type {
   TimelapseTier,
 } from "../../ipc/timelapse";
 import { formatTripStart } from "../../utils/format";
+import { parseCurveJson } from "../../utils/speedCurve";
 import { TripActionsMenu } from "../trip/TripActionsMenu";
 import { FfmpegConfig } from "./FfmpegConfig";
 
@@ -552,11 +553,9 @@ export function TimelapseView() {
                                         j.status === "done" &&
                                         j.speedCurveJson,
                                     );
-                                    const curve = job?.speedCurveJson
-                                      ? (JSON.parse(
-                                          job.speedCurveJson,
-                                        ) as import("../../utils/speedCurve").CurveSegment[])
-                                      : null;
+                                    const curve = parseCurveJson(
+                                      job?.speedCurveJson ?? null,
+                                    );
                                     if (!curve) return;
                                     selectTrip(t.id);
                                     setSourceMode(tier, curve);

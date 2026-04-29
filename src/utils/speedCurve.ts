@@ -105,28 +105,56 @@ export function linearCurve(
   ];
 }
 
+/** Schema version we know how to read. Mirrors Rust's
+ *  `speed_curve::CURRENT_CURVE_VERSION`. Bump in lockstep when the
+ *  segment shape or curve semantics change. */
+const CURRENT_CURVE_VERSION = 1;
+
 /**
  * Parse a JSON string (as persisted on `timelapse_jobs.speed_curve_json`)
  * into a curve, or return null if parsing fails or the shape is wrong.
- * Callers fall back to `linearCurve` using the tier's base rate.
+ *
+ * Accepts two shapes:
+ *  - Versioned envelope: `{"version": N, "segments": [...]}` — what the
+ *    current writer emits.
+ *  - Bare array: `[...]` — legacy pre-versioning rows still on disk.
+ *
+ * Unknown future versions return null so the caller falls back to
+ * `linearCurve` at the tier's base rate (same as any other parse fail).
  */
 export function parseCurveJson(json: string | null | undefined): CurveSegment[] | null {
   if (!json) return null;
+  let segments: unknown;
   try {
     const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const valid = parsed.every(
-      (s) =>
-        typeof s === "object" &&
-        s !== null &&
-        typeof s.concatStart === "number" &&
-        typeof s.concatEnd === "number" &&
-        typeof s.rate === "number" &&
-        s.rate > 0 &&
-        s.concatEnd >= s.concatStart,
-    );
-    return valid ? (parsed as CurveSegment[]) : null;
+    if (Array.isArray(parsed)) {
+      segments = parsed;
+    } else if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { version?: unknown }).version === "number" &&
+      Array.isArray((parsed as { segments?: unknown }).segments)
+    ) {
+      if ((parsed as { version: number }).version !== CURRENT_CURVE_VERSION) {
+        return null;
+      }
+      segments = (parsed as { segments: unknown[] }).segments;
+    } else {
+      return null;
+    }
   } catch {
     return null;
   }
+  if (!Array.isArray(segments) || segments.length === 0) return null;
+  const valid = segments.every(
+    (s) =>
+      typeof s === "object" &&
+      s !== null &&
+      typeof (s as CurveSegment).concatStart === "number" &&
+      typeof (s as CurveSegment).concatEnd === "number" &&
+      typeof (s as CurveSegment).rate === "number" &&
+      (s as CurveSegment).rate > 0 &&
+      (s as CurveSegment).concatEnd >= (s as CurveSegment).concatStart,
+  );
+  return valid ? (segments as CurveSegment[]) : null;
 }

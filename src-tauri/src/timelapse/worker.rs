@@ -233,9 +233,15 @@ fn run_inner(
             }
         };
 
-        // Scratch placeholder files — cleaned up at the end of the
-        // iteration regardless of encode outcome.
+        // Scratch placeholder files + their containing per-job dir,
+        // both cleaned up at the end of the iteration regardless of
+        // encode outcome. Lifting `scratch_dir` here means the
+        // post-encode cleanup can remove the now-empty dir without
+        // having to rebuild the path; otherwise empty
+        // `<library>/Timelapses/.tmp/<trip>_<tier>_<channel>/` dirs
+        // would accumulate one per padded job over time.
         let mut scratch_files: Vec<PathBuf> = Vec::new();
+        let mut scratch_dir: Option<PathBuf> = None;
 
         let (sources, padded_count) = match resolution {
             SiblingResolution::Complete(v) => (v, 0usize),
@@ -293,13 +299,20 @@ fn run_inner(
                     Path::new(&reference_sibling),
                 );
 
-                let scratch_dir = output_root.join(".tmp").join(format!(
+                let dir = output_root.join(".tmp").join(format!(
                     "{}_{}_{}",
                     item.trip_id,
                     item.tier.as_str(),
                     item.channel.as_str()
                 ));
-                if let Err(e) = std::fs::create_dir_all(&scratch_dir) {
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    // create_dir_all may have created the leaf and
+                    // failed on a later metadata step (rare), so
+                    // attempt an inline cleanup before bailing — the
+                    // post-encode unified cleanup is unreachable from
+                    // this `continue`. `remove_dir` is empty-only and
+                    // best-effort: no-op if the dir wasn't created.
+                    let _ = std::fs::remove_dir(&dir);
                     record_failed(
                         db,
                         item,
@@ -308,6 +321,7 @@ fn run_inner(
                     failed += 1;
                     continue;
                 }
+                scratch_dir = Some(dir.clone());
 
                 let mut built: Vec<String> = Vec::with_capacity(entries.len());
                 let mut placeholder_err: Option<AppError> = None;
@@ -315,7 +329,7 @@ fn run_inner(
                     match entry {
                         ConcatEntry::Real(s) => built.push(s),
                         ConcatEntry::MissingPlaceholder { duration_s } => {
-                            let path = scratch_dir.join(format!("ph_{i}.mp4"));
+                            let path = dir.join(format!("ph_{i}.mp4"));
                             match ffmpeg::generate_black_placeholder(
                                 ffmpeg_path,
                                 &path,
@@ -339,10 +353,16 @@ fn run_inner(
                     }
                 }
                 if let Some(e) = placeholder_err {
+                    // Don't clean up here — the unified post-encode
+                    // cleanup below handles files + dir for every exit
+                    // path, including this one (encode is skipped via
+                    // the early `continue` after `record_failed`).
                     for f in &scratch_files {
                         let _ = std::fs::remove_file(f);
                     }
-                    let _ = std::fs::remove_dir(&scratch_dir);
+                    if let Some(d) = &scratch_dir {
+                        let _ = std::fs::remove_dir(d);
+                    }
                     record_failed(
                         db,
                         item,
@@ -375,9 +395,16 @@ fn run_inner(
         let encode_result = ffmpeg::encode_trip_channel(&args, cancel);
 
         // Clean up scratch placeholders before handling the encode
-        // result so we never leak temp files, even on cancel.
+        // result so we never leak temp files, even on cancel. Then
+        // try to remove the per-job scratch dir itself — `remove_dir`
+        // only succeeds when the dir is empty, which is the post-
+        // cleanup state, so an unrelated stray file would be left
+        // alone rather than silently nuked.
         for f in &scratch_files {
             let _ = std::fs::remove_file(f);
+        }
+        if let Some(d) = &scratch_dir {
+            let _ = std::fs::remove_dir(d);
         }
 
         match encode_result {
@@ -392,8 +419,7 @@ fn run_inner(
                     item.tier,
                     ctx.total_duration_s,
                 );
-                let curve_json = serde_json::to_string(&curve)
-                    .unwrap_or_else(|_| "[]".to_string());
+                let curve_json = crate::timelapse::speed_curve::serialize_curve(&curve);
                 let output_size_bytes = std::fs::metadata(&path)
                     .ok()
                     .map(|m| m.len() as i64);
@@ -421,6 +447,13 @@ fn run_inner(
         }
 
     }
+
+    // Sweep the parent .tmp/ if every per-job dir cleaned up and it's
+    // now empty. `remove_dir` is empty-only, so a half-cleaned state
+    // (e.g. a future job left mid-encode by a process kill) is left
+    // alone rather than touched.
+    let tmp_root = output_root.join(".tmp");
+    let _ = std::fs::remove_dir(&tmp_root);
 
     // Final progress emit so the UI reflects the closing tally. The
     // top-of-loop emit can't cover this — there's no next iteration

@@ -12,10 +12,13 @@
 //!   `manual_trip_merges` so the merge survives a folder rescan, and
 //!   rebuilds the primary's `trips` row to span the union.
 //!
-//! Cross-camera merges aren't blocked here. ffmpeg's concat demuxer
-//! will refuse mismatched codecs/resolutions; the assessment surfaces
-//! that as PartialOutputs once probed (deferred — for now we trust
-//! same-camera merges).
+//! Cross-camera merges aren't blocked here. ffmpeg's concat will refuse
+//! mismatched codecs / resolutions / pix_fmt at encode time. The
+//! assessment surfaces this pre-merge by returning the distinct set of
+//! `camera_kind` values across primary + absorbed in `camera_kinds` —
+//! the dialog warns when more than one is present so the user knows
+//! concat will fail and they should pick `discardAll` (or split the
+//! marked set).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -66,6 +69,12 @@ pub struct TimelapseMergeAssessment {
     /// and merge silently.
     pub has_any_timelapses: bool,
     pub tuples: Vec<TupleAssessment>,
+    /// Distinct `camera_kind` values across primary + absorbed, sorted.
+    /// More than one entry means the merge crosses camera brands and
+    /// any concat will fail at ffmpeg time on resolution / pix_fmt
+    /// mismatches — the frontend surfaces a warning before the user
+    /// commits.
+    pub camera_kinds: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,16 +161,20 @@ pub fn assess_timelapse_merge(
     let mut all_ids: Vec<String> = absorbed.iter().map(|u| u.to_string()).collect();
     all_ids.push(primary.to_string());
 
-    let conn = db
-        .lock()
-        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-    let rows = load_job_rows(&conn, &all_ids)?;
-    drop(conn);
+    let (rows, camera_kinds) = {
+        let conn = db
+            .lock()
+            .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+        let rows = load_job_rows(&conn, &all_ids)?;
+        let kinds = load_camera_kinds(&conn, &all_ids)?;
+        (rows, kinds)
+    };
 
     if rows.is_empty() {
         return Ok(TimelapseMergeAssessment {
             has_any_timelapses: false,
             tuples: Vec::new(),
+            camera_kinds,
         });
     }
 
@@ -213,7 +226,34 @@ pub fn assess_timelapse_merge(
     Ok(TimelapseMergeAssessment {
         has_any_timelapses: true,
         tuples: out,
+        camera_kinds,
     })
+}
+
+fn load_camera_kinds(
+    conn: &Connection,
+    trip_ids: &[String],
+) -> Result<Vec<String>, AppError> {
+    if trip_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", trip_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT DISTINCT camera_kind FROM trips WHERE id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(trip_ids.iter()), |r| {
+        r.get::<_, String>(0)
+    })?;
+    let mut kinds = Vec::new();
+    for r in rows {
+        kinds.push(r?);
+    }
+    kinds.sort();
+    kinds.dedup();
+    Ok(kinds)
 }
 
 // ── Merge ──────────────────────────────────────────────────────────
@@ -643,9 +683,10 @@ fn merge_speed_curves(inputs: &[&JobRow]) -> String {
         let Some(json) = row.speed_curve_json.as_deref() else {
             continue;
         };
-        let parsed: Vec<CurveSegment> = match serde_json::from_str(json) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Some(parsed) =
+            crate::timelapse::speed_curve::deserialize_curve(json)
+        else {
+            continue;
         };
         if parsed.is_empty() {
             continue;
@@ -663,7 +704,7 @@ fn merge_speed_curves(inputs: &[&JobRow]) -> String {
         }
         offset += local_max;
     }
-    serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string())
+    crate::timelapse::speed_curve::serialize_curve(&merged)
 }
 
 fn rewrite_trip_id_columns(
