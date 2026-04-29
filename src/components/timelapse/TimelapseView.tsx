@@ -142,18 +142,23 @@ export function TimelapseView() {
   const configured = ffmpegPath !== null && caps !== null;
 
   const doneCount = progress?.done ?? 0;
+  const failedCount = progress?.failed ?? 0;
   const total = progress?.total ?? 0;
-  const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+  const processedCount = doneCount + failedCount;
+  const donePct = total > 0 ? (doneCount / total) * 100 : 0;
+  const failedPct = total > 0 ? (failedCount / total) * 100 : 0;
+  const pct = Math.round(donePct);
 
   const etaLabel = useMemo(() => {
     if (!running || !startMs || total === 0) return null;
-    if (doneCount < 2) return "calculating…";
+    if (processedCount < 2) return "calculating…";
     const elapsed = now - startMs;
-    const avgPer = elapsed / doneCount;
-    const remaining = total - doneCount;
+    // Amortize over attempts: elapsed includes failure time, so dividing by successes alone inflates ETA.
+    const avgPer = elapsed / processedCount;
+    const remaining = total - processedCount;
     if (remaining <= 0) return null;
     return formatDurationShort(avgPer * remaining);
-  }, [running, startMs, total, doneCount, now]);
+  }, [running, startMs, total, processedCount, now]);
 
   const jobsByTrip = useMemo(() => {
     const m: Record<string, typeof jobs> = {};
@@ -355,10 +360,14 @@ export function TimelapseView() {
               Progress
             </h2>
             <div className="rounded-md border border-neutral-800 bg-neutral-900 p-3">
-              <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-neutral-800">
+              <div className="mb-2 flex h-2 w-full overflow-hidden rounded-full bg-neutral-800">
                 <div
                   className="h-full bg-sky-500 transition-all"
-                  style={{ width: `${pct}%` }}
+                  style={{ width: `${donePct}%` }}
+                />
+                <div
+                  className="h-full bg-red-500 transition-all"
+                  style={{ width: `${failedPct}%` }}
                 />
               </div>
               <div className="flex items-center justify-between text-xs text-neutral-400">
@@ -393,7 +402,14 @@ export function TimelapseView() {
                 : "Timelapse run complete"}
             </div>
             <div className="mt-1 text-xs text-neutral-400">
-              {lastResult.done} encoded · {lastResult.failed} failed
+              {lastResult.done} encoded ·{" "}
+              <span
+                className={
+                  lastResult.failed > 0 ? "text-red-400" : undefined
+                }
+              >
+                {lastResult.failed} failed
+              </span>
             </div>
           </section>
         )}
