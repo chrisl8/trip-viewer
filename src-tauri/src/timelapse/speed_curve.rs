@@ -126,26 +126,23 @@ pub fn build_curve(
 /// `trim/setpts` chain concatenated with the `concat` filter.
 ///
 /// `scale_filter` is either `"scale"` (CPU/libx265) or `"scale_cuda"`
-/// (NVENC). Resolution + pixel-format normalization happens once at
-/// the head of the chain so that downstream `trim`/`setpts`/`concat`
-/// see a uniform stream regardless of source-segment heterogeneity:
-/// without that, ffmpeg's auto-inserted scaler trips on
-/// "Error reinitializing filters! ... -40 (Function not implemented)"
-/// when concat-demuxer-fed frames change resolution / pix_fmt between
-/// source segments (or between a real file and a black-frame
-/// placeholder).
+/// (NVENC). `input_label` is the ffmpeg pad name the head reads from
+/// — typically `"0:v"` for a single source, or a label like `"vcat"`
+/// when the caller has already prepended a concat filter that joins
+/// multiple inputs into one stream.
 pub fn compose_filter(
     windows: &[EventWindow],
     tier: Tier,
     total_duration_s: f64,
     scale_filter: &str,
+    input_label: &str,
 ) -> String {
     let curve = build_curve(windows, tier, total_duration_s);
 
-    // Head normalization stage — the load-bearing piece. CPU `scale`
-    // and CUDA `scale_cuda` differ in how pix_fmt is set: scale needs
-    // a separate `format=` filter (host frames), scale_cuda accepts
-    // pix_fmt as an option (CUDA frames stay on the GPU).
+    // Head normalization stage. CPU `scale` and CUDA `scale_cuda`
+    // differ in how pix_fmt is set: scale needs a separate `format=`
+    // filter (host frames), scale_cuda accepts pix_fmt as an option
+    // (CUDA frames stay on the GPU).
     let head = if scale_filter == "scale_cuda" {
         format!("scale_cuda={OUT_WIDTH}:-2:format=yuv420p")
     } else {
@@ -155,7 +152,7 @@ pub fn compose_filter(
     // Single-segment (fixed tier or no windows): no trim needed —
     // just normalize and apply the global rate change.
     if curve.len() == 1 {
-        return format!("[0:v]{head},setpts=PTS/{}[out]", curve[0].rate);
+        return format!("[{input_label}]{head},setpts=PTS/{}[out]", curve[0].rate);
     }
 
     let n = curve.len();
@@ -163,7 +160,7 @@ pub fn compose_filter(
     // Normalize once, then split into N labeled outputs that each
     // per-curve-segment trim/setpts chain consumes. The split filter
     // is what lets us reuse a single normalized stream across N trims.
-    body.push_str(&format!("[0:v]{head},split={n}"));
+    body.push_str(&format!("[{input_label}]{head},split={n}"));
     for i in 0..n {
         body.push_str(&format!("[v{i}]"));
     }
@@ -193,6 +190,9 @@ mod tests {
     // assertions are written against it; a dedicated test covers the
     // NVENC / scale_cuda substitution.
     const CPU: &str = "scale";
+    /// Default input label for tests that pre-date the input-label
+    /// param. Keeps legacy assertions on `[0:v]` head shape stable.
+    const LBL: &str = "0:v";
 
     // ── build_curve ───────────────────────────────────────────────────
 
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn fixed_tier_is_single_pass() {
-        let got = compose_filter(&[], Tier::Tier8x, 300.0, CPU);
+        let got = compose_filter(&[], Tier::Tier8x, 300.0, CPU, LBL);
         assert_eq!(got, "[0:v]format=yuv420p,scale=1920:-2,setpts=PTS/8[out]");
     }
 
@@ -280,19 +280,19 @@ mod tests {
     fn fixed_tier_ignores_windows() {
         // 8x has base == event, so even with windows we should get
         // the single-pass form.
-        let got = compose_filter(&[w(10.0, 20.0)], Tier::Tier8x, 300.0, CPU);
+        let got = compose_filter(&[w(10.0, 20.0)], Tier::Tier8x, 300.0, CPU, LBL);
         assert_eq!(got, "[0:v]format=yuv420p,scale=1920:-2,setpts=PTS/8[out]");
     }
 
     #[test]
     fn variable_tier_with_no_windows_is_single_pass() {
-        let got = compose_filter(&[], Tier::Tier16x, 300.0, CPU);
+        let got = compose_filter(&[], Tier::Tier16x, 300.0, CPU, LBL);
         assert_eq!(got, "[0:v]format=yuv420p,scale=1920:-2,setpts=PTS/16[out]");
     }
 
     #[test]
     fn variable_tier_with_one_middle_window_has_three_segments() {
-        let got = compose_filter(&[w(60.0, 80.0)], Tier::Tier16x, 300.0, CPU);
+        let got = compose_filter(&[w(60.0, 80.0)], Tier::Tier16x, 300.0, CPU, LBL);
         // Three parts: [0-60 @ 16x], [60-80 @ 1x], [80-300 @ 16x]
         assert!(
             got.contains("trim=0.000:60.000"),
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn variable_tier_window_at_start_skips_leading() {
-        let got = compose_filter(&[w(0.0, 10.0)], Tier::Tier60x, 120.0, CPU);
+        let got = compose_filter(&[w(0.0, 10.0)], Tier::Tier60x, 120.0, CPU, LBL);
         // Two parts: [0-10 @ 8x], [10-120 @ 60x]
         assert!(got.contains("concat=n=2:v=1[out]"));
         assert!(got.contains("trim=0.000:10.000"));
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn variable_tier_window_at_end_skips_trailing() {
-        let got = compose_filter(&[w(100.0, 120.0)], Tier::Tier16x, 120.0, CPU);
+        let got = compose_filter(&[w(100.0, 120.0)], Tier::Tier16x, 120.0, CPU, LBL);
         assert!(got.contains("concat=n=2:v=1[out]"));
         assert!(got.contains("trim=0.000:100.000"));
         assert!(got.contains("trim=100.000:120.000"));
@@ -340,6 +340,7 @@ mod tests {
             Tier::Tier16x,
             100.0,
             CPU,
+            LBL,
         );
         // Five parts: base, event, base, event, base
         assert!(got.contains("concat=n=5:v=1[out]"));
@@ -347,7 +348,7 @@ mod tests {
 
     #[test]
     fn variable_tier_clamps_window_end_at_duration() {
-        let got = compose_filter(&[w(80.0, 200.0)], Tier::Tier16x, 100.0, CPU);
+        let got = compose_filter(&[w(80.0, 200.0)], Tier::Tier16x, 100.0, CPU, LBL);
         // Window clamped to [80, 100]; trailing base segment should NOT exist.
         assert!(got.contains("concat=n=2:v=1[out]"));
         assert!(got.contains("trim=80.000:100.000"));
@@ -359,14 +360,14 @@ mod tests {
 
     #[test]
     fn variable_tier_drops_zero_width_window() {
-        let got = compose_filter(&[w(50.0, 50.0)], Tier::Tier16x, 100.0, CPU);
+        let got = compose_filter(&[w(50.0, 50.0)], Tier::Tier16x, 100.0, CPU, LBL);
         // Degenerate window — filter should reduce to single-pass.
         assert_eq!(got, "[0:v]format=yuv420p,scale=1920:-2,setpts=PTS/16[out]");
     }
 
     #[test]
     fn variable_tier_window_covering_whole_trip() {
-        let got = compose_filter(&[w(0.0, 100.0)], Tier::Tier16x, 100.0, CPU);
+        let got = compose_filter(&[w(0.0, 100.0)], Tier::Tier16x, 100.0, CPU, LBL);
         // Single-segment curve (event covers the whole trip) collapses
         // to the simple passthrough form — no concat filter needed.
         assert_eq!(got, "[0:v]format=yuv420p,scale=1920:-2,setpts=PTS/1[out]");
@@ -378,14 +379,14 @@ mod tests {
         // identical args must produce byte-identical strings. This is
         // what guarantees front/interior/rear stay synced when we run
         // the same filter against each channel.
-        let a = compose_filter(&[w(10.0, 20.0)], Tier::Tier16x, 60.0, CPU);
-        let b = compose_filter(&[w(10.0, 20.0)], Tier::Tier16x, 60.0, CPU);
+        let a = compose_filter(&[w(10.0, 20.0)], Tier::Tier16x, 60.0, CPU, LBL);
+        let b = compose_filter(&[w(10.0, 20.0)], Tier::Tier16x, 60.0, CPU, LBL);
         assert_eq!(a, b);
     }
 
     #[test]
     fn zero_duration_is_tolerated() {
-        let got = compose_filter(&[w(0.0, 10.0)], Tier::Tier16x, 0.0, CPU);
+        let got = compose_filter(&[w(0.0, 10.0)], Tier::Tier16x, 0.0, CPU, LBL);
         // Falls back to single-pass base rate.
         assert_eq!(got, "[0:v]format=yuv420p,scale=1920:-2,setpts=PTS/16[out]");
     }
@@ -395,7 +396,7 @@ mod tests {
         // Fixed tier: scale_cuda appears once with format=yuv420p as
         // a parameter. No CPU `scale=` and no separate `format=`
         // filter — frames stay on the GPU end-to-end.
-        let got = compose_filter(&[], Tier::Tier8x, 300.0, "scale_cuda");
+        let got = compose_filter(&[], Tier::Tier8x, 300.0, "scale_cuda", LBL);
         assert_eq!(
             got,
             "[0:v]scale_cuda=1920:-2:format=yuv420p,setpts=PTS/8[out]"
@@ -409,6 +410,7 @@ mod tests {
             Tier::Tier16x,
             100.0,
             "scale_cuda",
+            LBL,
         );
         let cuda_count = got.matches("scale_cuda=1920:-2:format=yuv420p").count();
         assert_eq!(cuda_count, 1, "expected exactly one head scale_cuda: {got}");
@@ -419,8 +421,23 @@ mod tests {
     }
 
     #[test]
+    fn input_label_is_substituted_into_head() {
+        // Caller passes "vcat" (the output of an upstream concat
+        // filter) — the head reads from that pad, not the default
+        // [0:v]. Tests both fixed and variable curve shapes.
+        let fixed = compose_filter(&[], Tier::Tier8x, 300.0, CPU, "vcat");
+        assert_eq!(fixed, "[vcat]format=yuv420p,scale=1920:-2,setpts=PTS/8[out]");
+
+        let var = compose_filter(&[w(60.0, 80.0)], Tier::Tier16x, 300.0, CPU, "vcat");
+        assert!(
+            var.starts_with("[vcat]format=yuv420p,scale=1920:-2,split=3[v0][v1][v2];"),
+            "head shape wrong: {var}"
+        );
+    }
+
+    #[test]
     fn multi_segment_normalizes_then_splits() {
-        let got = compose_filter(&[w(60.0, 80.0)], Tier::Tier16x, 300.0, CPU);
+        let got = compose_filter(&[w(60.0, 80.0)], Tier::Tier16x, 300.0, CPU, LBL);
         // Three-segment curve → split=3 then three trim chains.
         assert!(
             got.starts_with("[0:v]format=yuv420p,scale=1920:-2,split=3[v0][v1][v2];"),

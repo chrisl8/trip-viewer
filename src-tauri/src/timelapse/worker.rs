@@ -246,6 +246,19 @@ fn run_inner(
                 // concat demuxer accepts via rate-tolerant muxing.
                 let fps = (meta.fps_num / meta.fps_den.max(1)).max(1);
 
+                // Probe the reference sibling for pix_fmt + color tags
+                // so the placeholders match the real files' decoded
+                // frame parameters. Without this match, ffmpeg's
+                // auto_scaler trips on a -40 ENOSYS reinit when the
+                // first segment is a placeholder (yuv420p, untagged)
+                // and slot 1 is real Wolf Box footage (yuvj420p, BT.709
+                // tagged). One probe per (trip, channel); falls back to
+                // Wolf Box-shaped defaults if parsing fails.
+                let color_meta = ffmpeg::probe_color_metadata(
+                    ffmpeg_path,
+                    Path::new(&reference_sibling),
+                );
+
                 let scratch_dir = output_root.join(".tmp").join(format!(
                     "{}_{}_{}",
                     item.trip_id,
@@ -277,6 +290,7 @@ fn run_inner(
                                 fps,
                                 duration_s,
                                 encoder,
+                                &color_meta,
                             ) {
                                 Ok(()) => {
                                     built.push(path.to_string_lossy().to_string());
