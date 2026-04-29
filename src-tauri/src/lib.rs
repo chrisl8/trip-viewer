@@ -8,6 +8,7 @@ mod model;
 mod places;
 pub mod scan;
 mod scans;
+mod storage;
 mod tags;
 mod timelapse;
 mod trips;
@@ -151,6 +152,7 @@ pub fn run() {
             places::commands::add_place,
             places::commands::update_place,
             places::commands::delete_place,
+            storage::get_library_storage_summary,
             get_video_port,
         ])
         .run(tauri::generate_context!())

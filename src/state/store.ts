@@ -40,6 +40,10 @@ import {
   listTimelapseJobs as ipcListTimelapseJobs,
   startTimelapse as ipcStartTimelapse,
 } from "../ipc/timelapse";
+import {
+  getLibraryStorageSummary as ipcGetLibraryStorageSummary,
+  type LibraryStorageSummary,
+} from "../ipc/library";
 import type { CurveSegment } from "../utils/speedCurve";
 
 export type AppStatus = "idle" | "loading" | "ready" | "error";
@@ -57,6 +61,13 @@ export interface LibrarySlice {
   selectedTripId: string | null;
   scanErrors: ScanError[];
   gpsByFile: Record<string, GpsPoint[]>;
+  /** Library-wide bytes used + reclaimable, refreshed after every
+   *  storage-changing action. `null` until the first refresh resolves. */
+  librarySummary: LibraryStorageSummary | null;
+  /** When true, TripList shows only trips whose ids are in
+   *  `librarySummary.reclaimableTripIds`. Toggled by clicking the
+   *  reclaimable count in the sidebar header. */
+  reclaimableFilter: boolean;
 }
 
 export interface PlaybackSlice {
@@ -173,6 +184,13 @@ export interface AppState
    *  and advances the selection to the next adjacent trip. The only
    *  store action that ever causes a timelapse archive to be removed. */
   deleteTripCompletely: (tripId: string) => Promise<DeleteTripReport>;
+  /** Re-fetch the library storage summary (totals + reclaimable trip
+   *  ids). Called after any action that changes segment or timelapse
+   *  bytes on disk. Errors are swallowed — a stale total is better
+   *  than a crashed sidebar. */
+  refreshLibrarySummary: () => Promise<void>;
+  /** Toggle the reclaimable-only filter in the sidebar trip list. */
+  setReclaimableFilter: (enabled: boolean) => void;
 
   /** IDs of trips the user has flagged for merging. Session-scoped —
    *  not persisted to disk. Once `markedForMerge.size >= 2`, the
@@ -234,6 +252,8 @@ export const useStore = create<AppState>((set) => ({
   selectedTripId: null,
   scanErrors: [],
   gpsByFile: {},
+  librarySummary: null,
+  reclaimableFilter: false,
   markedForMerge: new Set<string>(),
 
   loadedTripId: null,
@@ -341,6 +361,10 @@ export const useStore = create<AppState>((set) => ({
     // sliding in once the DB query returns. Sorted by startTime so they
     // interleave correctly.
     void useStore.getState().mergeArchiveOnlyTrips();
+    // Sizes change on every scan (new segments, vanished segments,
+    // backfilled sizes from migration 0009) — refresh the header
+    // summary so "X GB used / Y GB reclaimable" stays honest.
+    void useStore.getState().refreshLibrarySummary();
   },
   removeScanErrors: (paths) => {
     const drop = new Set(paths);
@@ -356,8 +380,12 @@ export const useStore = create<AppState>((set) => ({
     // for it) is correct only when the frontend's job cache is in
     // sync; the merge is the source of truth and re-adds the trip as
     // archive-only if the user hasn't visited the Timelapse view yet.
-    const reconcile = () =>
+    const reconcile = () => {
       void useStore.getState().mergeArchiveOnlyTrips();
+      // Originals just got trashed → reclaimable bytes drop, total
+      // bytes drop. Refresh the header summary alongside the reconcile.
+      void useStore.getState().refreshLibrarySummary();
+    };
     setTimeout(reconcile, 0);
     set((s) => {
       const tripIdx = s.trips.findIndex((t) => t.id === tripId);
@@ -444,6 +472,8 @@ export const useStore = create<AppState>((set) => ({
     }
     const report = await ipcDeleteTrip(tripId, inMemoryPaths);
     if (report.tripRemoved) {
+      // Both originals and timelapses got trashed — refresh totals.
+      void useStore.getState().refreshLibrarySummary();
       // Remove the trip from the local list and advance selection.
       // This is the only path that ever fully removes a trip with a
       // timelapse archive; the archive-only fallback in
@@ -805,10 +835,22 @@ export const useStore = create<AppState>((set) => ({
     try {
       const jobs = await ipcListTimelapseJobs();
       set({ timelapseJobs: jobs });
+      // Job completions push timelapse_bytes up and may flip a trip
+      // into the reclaimable set — refresh totals together.
+      void useStore.getState().refreshLibrarySummary();
     } catch (e) {
       console.error("refreshTimelapseJobs failed", e);
     }
   },
+  refreshLibrarySummary: async () => {
+    try {
+      const summary = await ipcGetLibraryStorageSummary();
+      set({ librarySummary: summary });
+    } catch (e) {
+      console.error("refreshLibrarySummary failed", e);
+    }
+  },
+  setReclaimableFilter: (reclaimableFilter) => set({ reclaimableFilter }),
   startTimelapseRun: async (args) => {
     set({
       timelapseRunning: true,

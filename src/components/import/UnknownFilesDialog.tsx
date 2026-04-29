@@ -2,12 +2,7 @@ import { useState } from "react";
 import { useStore } from "../../state/store";
 import { resolveUnknowns } from "../../ipc/importer";
 import type { UnknownFileAction, UnknownFileDecision } from "../../types/import";
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1 << 20) return (bytes / (1 << 20)).toFixed(1) + " MB";
-  if (bytes >= 1 << 10) return (bytes / (1 << 10)).toFixed(1) + " KB";
-  return bytes + " B";
-}
+import { formatBytes } from "../../utils/format";
 
 export function UnknownFilesDialog() {
   const importStatus = useStore((s) => s.importStatus);

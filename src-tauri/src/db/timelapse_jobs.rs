@@ -37,6 +37,11 @@ pub struct TimelapseJobRow {
     /// tags, and effective-speed math. Null for rows encoded before
     /// this column existed (user will rebuild-all).
     pub speed_curve_json: Option<String>,
+    /// On-disk size of `output_path` in bytes. `None` for jobs not in
+    /// status='done', for rows encoded before migration 0009 (filled
+    /// in lazily by `cleanup_stale_jobs`), or when the output file
+    /// vanished between completion and stat.
+    pub output_size_bytes: Option<i64>,
 }
 
 /// Upsert a pending job row. If the row already exists in a completed
@@ -60,6 +65,7 @@ pub fn upsert_pending(
             completed_at_ms = NULL,
             padded_count = 0,
             speed_curve_json = NULL,
+            output_size_bytes = NULL,
             created_at_ms = excluded.created_at_ms",
         params![trip_id, tier, channel, STATUS_PENDING, now],
     )?;
@@ -91,6 +97,7 @@ pub fn mark_done(
     encoder_used: &str,
     padded_count: i64,
     speed_curve_json: &str,
+    output_size_bytes: Option<i64>,
 ) -> Result<(), AppError> {
     let now = chrono::Utc::now().timestamp_millis();
     conn.execute(
@@ -102,7 +109,8 @@ pub fn mark_done(
             encoder_used = ?7,
             completed_at_ms = ?8,
             padded_count = ?9,
-            speed_curve_json = ?10
+            speed_curve_json = ?10,
+            output_size_bytes = ?11
          WHERE trip_id = ?1 AND tier = ?2 AND channel = ?3",
         params![
             trip_id,
@@ -115,6 +123,7 @@ pub fn mark_done(
             now,
             padded_count,
             speed_curve_json,
+            output_size_bytes,
         ],
     )?;
     Ok(())
@@ -162,7 +171,8 @@ pub fn reset_to_pending(
             error_message = NULL,
             completed_at_ms = NULL,
             padded_count = 0,
-            speed_curve_json = NULL
+            speed_curve_json = NULL,
+            output_size_bytes = NULL
          WHERE trip_id = ?1 AND tier = ?2 AND channel = ?3",
         params![trip_id, tier, channel, STATUS_PENDING],
     )?;
@@ -179,7 +189,7 @@ pub fn get(
         .query_row(
             "SELECT trip_id, tier, channel, status, output_path, error_message,
                     ffmpeg_version, encoder_used, created_at_ms, completed_at_ms,
-                    padded_count, speed_curve_json
+                    padded_count, speed_curve_json, output_size_bytes
              FROM timelapse_jobs
              WHERE trip_id = ?1 AND tier = ?2 AND channel = ?3",
             params![trip_id, tier, channel],
@@ -193,7 +203,7 @@ pub fn list_all(conn: &Connection) -> Result<Vec<TimelapseJobRow>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT trip_id, tier, channel, status, output_path, error_message,
                 ffmpeg_version, encoder_used, created_at_ms, completed_at_ms,
-                padded_count, speed_curve_json
+                padded_count, speed_curve_json, output_size_bytes
          FROM timelapse_jobs
          ORDER BY created_at_ms DESC",
     )?;
@@ -212,7 +222,7 @@ pub fn list_by_status(
     let mut stmt = conn.prepare(
         "SELECT trip_id, tier, channel, status, output_path, error_message,
                 ffmpeg_version, encoder_used, created_at_ms, completed_at_ms,
-                padded_count, speed_curve_json
+                padded_count, speed_curve_json, output_size_bytes
          FROM timelapse_jobs
          WHERE status = ?1
          ORDER BY created_at_ms ASC",
@@ -239,6 +249,7 @@ fn row_to_job(r: &rusqlite::Row) -> rusqlite::Result<TimelapseJobRow> {
         completed_at_ms: r.get(9)?,
         padded_count: r.get(10)?,
         speed_curve_json: r.get(11)?,
+        output_size_bytes: r.get(12)?,
     })
 }
 
@@ -265,7 +276,7 @@ mod tests {
         upsert_pending(&conn, "t", "16x", "I").unwrap();
         mark_running(&conn, "t", "16x", "I").unwrap();
         assert_eq!(get(&conn, "t", "16x", "I").unwrap().unwrap().status, STATUS_RUNNING);
-        mark_done(&conn, "t", "16x", "I", "/out/f.mp4", "7.0", "hevc_nvenc", 0, "[]").unwrap();
+        mark_done(&conn, "t", "16x", "I", "/out/f.mp4", "7.0", "hevc_nvenc", 0, "[]", None).unwrap();
         let row = get(&conn, "t", "16x", "I").unwrap().unwrap();
         assert_eq!(row.status, STATUS_DONE);
         assert_eq!(row.output_path.as_deref(), Some("/out/f.mp4"));
@@ -301,7 +312,7 @@ mod tests {
         let conn = db.lock().unwrap();
         upsert_pending(&conn, "t", "8x", "F").unwrap();
         mark_running(&conn, "t", "8x", "F").unwrap();
-        mark_done(&conn, "t", "8x", "F", "/x.mp4", "7.0", "hevc_nvenc", 0, "[]").unwrap();
+        mark_done(&conn, "t", "8x", "F", "/x.mp4", "7.0", "hevc_nvenc", 0, "[]", None).unwrap();
         upsert_pending(&conn, "t", "8x", "F").unwrap();
         let row = get(&conn, "t", "8x", "F").unwrap().unwrap();
         assert_eq!(row.status, STATUS_PENDING);
@@ -326,10 +337,37 @@ mod tests {
             "hevc_nvenc",
             3,
             r#"[{"concatStart":0,"concatEnd":60,"rate":16}]"#,
+            None,
         )
         .unwrap();
         let row = get(&conn, "t", "16x", "R").unwrap().unwrap();
         assert_eq!(row.padded_count, 3);
+    }
+
+    #[test]
+    fn output_size_bytes_round_trips() {
+        let db = open_in_memory().unwrap();
+        let conn = db.lock().unwrap();
+        upsert_pending(&conn, "t", "8x", "F").unwrap();
+        mark_done(
+            &conn,
+            "t",
+            "8x",
+            "F",
+            "/x.mp4",
+            "7.0",
+            "hevc_nvenc",
+            0,
+            "[]",
+            Some(123_456_789),
+        )
+        .unwrap();
+        let row = get(&conn, "t", "8x", "F").unwrap().unwrap();
+        assert_eq!(row.output_size_bytes, Some(123_456_789));
+        // Reset clears it back to NULL.
+        reset_to_pending(&conn, "t", "8x", "F").unwrap();
+        let row = get(&conn, "t", "8x", "F").unwrap().unwrap();
+        assert!(row.output_size_bytes.is_none());
     }
 
     #[test]
@@ -347,6 +385,7 @@ mod tests {
             "hevc_nvenc",
             2,
             r#"[{"concatStart":0,"concatEnd":60,"rate":16}]"#,
+            None,
         )
         .unwrap();
         reset_to_pending(&conn, "t", "16x", "R").unwrap();
@@ -363,7 +402,7 @@ mod tests {
         let curve =
             r#"[{"concatStart":0,"concatEnd":25,"rate":16},{"concatStart":25,"concatEnd":40,"rate":1},{"concatStart":40,"concatEnd":60,"rate":16}]"#;
         mark_done(
-            &conn, "t", "16x", "F", "/x.mp4", "7.0", "hevc_nvenc", 0, curve,
+            &conn, "t", "16x", "F", "/x.mp4", "7.0", "hevc_nvenc", 0, curve, None,
         )
         .unwrap();
         let row = get(&conn, "t", "16x", "F").unwrap().unwrap();

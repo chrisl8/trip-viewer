@@ -11,6 +11,7 @@ const M0005: &str = include_str!("migrations/0005_padded_count.sql");
 const M0006: &str = include_str!("migrations/0006_speed_curve.sql");
 const M0007: &str = include_str!("migrations/0007_trip_camera_meta.sql");
 const M0008: &str = include_str!("migrations/0008_manual_trip_merges.sql");
+const M0009: &str = include_str!("migrations/0009_storage_sizes.sql");
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -22,6 +23,7 @@ fn migrations() -> Migrations<'static> {
         M::up(M0006),
         M::up(M0007),
         M::up(M0008),
+        M::up(M0009),
     ])
 }
 

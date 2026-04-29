@@ -394,6 +394,9 @@ fn run_inner(
                 );
                 let curve_json = serde_json::to_string(&curve)
                     .unwrap_or_else(|_| "[]".to_string());
+                let output_size_bytes = std::fs::metadata(&path)
+                    .ok()
+                    .map(|m| m.len() as i64);
                 record_done(
                     db,
                     item,
@@ -402,6 +405,7 @@ fn run_inner(
                     encoder.as_str(),
                     padded_count as i64,
                     &curve_json,
+                    output_size_bytes,
                 )?;
                 done += 1;
             }
@@ -469,6 +473,7 @@ fn record_done(
     encoder_used: &str,
     padded_count: i64,
     speed_curve_json: &str,
+    output_size_bytes: Option<i64>,
 ) -> Result<(), AppError> {
     let conn = db
         .lock()
@@ -483,6 +488,7 @@ fn record_done(
         encoder_used,
         padded_count,
         speed_curve_json,
+        output_size_bytes,
     )
 }
 

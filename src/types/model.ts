@@ -42,6 +42,12 @@ export interface Segment {
    */
   gpsSupported: boolean;
   /**
+   * Sum of the on-disk size of every channel file in the segment.
+   * `null` when stat failed at scan time, or for segments persisted
+   * before migration 0009 that haven't been re-scanned yet.
+   */
+  sizeBytes: number | null;
+  /**
    * Tags attached to this segment. Present when the caller has loaded
    * tags into the trip — live-updating state lives in the tagsSlice,
    * so renderers that need to react to scan/user-tag changes should

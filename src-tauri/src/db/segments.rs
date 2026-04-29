@@ -70,9 +70,12 @@ pub fn upsert_segment(conn: &Connection, seg: &Segment, trip_id: &str, now_ms: i
         .first()
         .map(|c| c.file_path.as_str())
         .unwrap_or("");
+    // Don't overwrite a previously-known size_bytes with NULL when
+    // the current scan failed to stat the files — keeps the
+    // library-wide totals stable across transient stat hiccups.
     conn.execute(
-        "INSERT INTO segments (id, trip_id, start_time_ms, duration_s, master_path, is_event, camera_kind, gps_supported, last_seen_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO segments (id, trip_id, start_time_ms, duration_s, master_path, is_event, camera_kind, gps_supported, last_seen_ms, size_bytes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
             trip_id = excluded.trip_id,
             start_time_ms = excluded.start_time_ms,
@@ -81,7 +84,8 @@ pub fn upsert_segment(conn: &Connection, seg: &Segment, trip_id: &str, now_ms: i
             is_event = excluded.is_event,
             camera_kind = excluded.camera_kind,
             gps_supported = excluded.gps_supported,
-            last_seen_ms = excluded.last_seen_ms",
+            last_seen_ms = excluded.last_seen_ms,
+            size_bytes = COALESCE(excluded.size_bytes, segments.size_bytes)",
         params![
             seg.id.to_string(),
             trip_id,
@@ -92,6 +96,7 @@ pub fn upsert_segment(conn: &Connection, seg: &Segment, trip_id: &str, now_ms: i
             camera_kind_to_str(seg.camera_kind),
             seg.gps_supported as i32,
             now_ms,
+            seg.size_bytes.map(|n| n as i64),
         ],
     )?;
     Ok(())
@@ -314,6 +319,7 @@ mod tests {
             }],
             camera_kind: CameraKind::WolfBox,
             gps_supported: true,
+            size_bytes: None,
         }
     }
 
@@ -353,6 +359,60 @@ mod tests {
         assert_eq!(n, 1);
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM trips", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn size_bytes_round_trips_and_does_not_clobber_with_null() {
+        // First write carries a real size; second write (e.g. a scan
+        // that failed to stat the file) leaves size_bytes=None and must
+        // NOT overwrite the previously-known value with NULL — that's
+        // the COALESCE in upsert_segment's ON CONFLICT.
+        let db = open_in_memory().unwrap();
+        let mut seg = sample_segment("C:/vids/a.mp4", 0);
+        seg.size_bytes = Some(12_345_678);
+        let trip = sample_trip(vec![seg.clone()]);
+
+        {
+            let mut conn = db.lock().unwrap();
+            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000).unwrap();
+        }
+
+        // Verify the size persisted.
+        {
+            let conn = db.lock().unwrap();
+            let stored: Option<i64> = conn
+                .query_row(
+                    "SELECT size_bytes FROM segments WHERE id = ?1",
+                    params![seg.id.to_string()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, Some(12_345_678));
+        }
+
+        // Re-persist with size_bytes = None — must NOT clobber.
+        let mut seg_unstat = seg.clone();
+        seg_unstat.size_bytes = None;
+        let trip_unstat = sample_trip(vec![seg_unstat]);
+        {
+            let mut conn = db.lock().unwrap();
+            persist_and_gc(&mut conn, &[trip_unstat], 2_000).unwrap();
+        }
+        {
+            let conn = db.lock().unwrap();
+            let stored: Option<i64> = conn
+                .query_row(
+                    "SELECT size_bytes FROM segments WHERE id = ?1",
+                    params![seg.id.to_string()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                stored,
+                Some(12_345_678),
+                "a None-sized re-upsert must preserve the previously-known size",
+            );
+        }
     }
 
     #[test]

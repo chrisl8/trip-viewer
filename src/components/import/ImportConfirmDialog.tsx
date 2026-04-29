@@ -10,15 +10,9 @@ import {
   onImportComplete,
 } from "../../ipc/importer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { formatBytes } from "../../utils/format";
 
 const LAST_FOLDER_KEY = "tripviewer:lastFolder";
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1 << 30) return (bytes / (1 << 30)).toFixed(1) + " GB";
-  if (bytes >= 1 << 20) return (bytes / (1 << 20)).toFixed(1) + " MB";
-  if (bytes >= 1 << 10) return (bytes / (1 << 10)).toFixed(1) + " KB";
-  return bytes + " B";
-}
 
 export function ImportConfirmDialog() {
   const importStatus = useStore((s) => s.importStatus);

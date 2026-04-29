@@ -79,6 +79,12 @@ pub struct Segment {
     /// Thinkware non-GPS variants) — the UI hides the panel entirely and
     /// shows a small caption instead of an empty "No GPS data" placeholder.
     pub gps_supported: bool,
+    /// Sum of the on-disk size of every channel file in the segment.
+    /// `None` when stat'ing failed (file vanished mid-scan, permissions)
+    /// or when the row was persisted before migration 0009 and hasn't
+    /// been touched by a scan since. Frontend renders `None` as "—".
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

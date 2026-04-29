@@ -134,6 +134,7 @@ export function PlayerShell() {
       // trips (no segments left) still have the right values.
       cameraKind: trip.cameraKind,
       gpsSupported: trip.gpsSupported,
+      sizeBytes: null,
     };
   }, [sourceMode, activeSegmentForUi, trip, timelapseJobs]);
 

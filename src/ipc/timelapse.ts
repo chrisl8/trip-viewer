@@ -38,6 +38,10 @@ export interface TimelapseJobRow {
    *  rows. The player uses this to map file-time ↔ concat-time in
    *  tiered playback. */
   speedCurveJson: string | null;
+  /** On-disk size of `outputPath` in bytes. Null for non-done rows
+   *  and for done rows encoded before migration 0009 whose backfill
+   *  hasn't filled the column yet (or whose output file is missing). */
+  outputSizeBytes: number | null;
 }
 
 export interface TimelapseStartEvent {

@@ -120,6 +120,7 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
             if let Some(d) = probe.master_duration {
                 seg.duration_s = d;
             }
+            seg.size_bytes = probe.size_bytes;
             for (ch, pch) in seg.channels.iter_mut().zip(probe.channels.iter()) {
                 ch.width = pch.width;
                 ch.height = pch.height;
@@ -161,11 +162,20 @@ struct SegmentProbe {
     master_duration: Option<f64>,
     channels: Vec<ProbedChannel>,
     errors: Vec<ScanError>,
+    /// Sum of `fs::metadata.len()` across every channel file in the
+    /// segment. `None` only if every file failed to stat.
+    size_bytes: Option<u64>,
 }
 
 fn probe_segment(paths: &[PathBuf]) -> SegmentProbe {
     let mut out = SegmentProbe::default();
+    let mut size_total: u64 = 0;
+    let mut any_size = false;
     for (idx, path) in paths.iter().enumerate() {
+        if let Ok(meta) = std::fs::metadata(path) {
+            size_total = size_total.saturating_add(meta.len());
+            any_size = true;
+        }
         match mp4_probe::probe(path) {
             Ok(meta) => {
                 if idx == 0 {
@@ -185,6 +195,9 @@ fn probe_segment(paths: &[PathBuf]) -> SegmentProbe {
                 out.channels.push(ProbedChannel::default());
             }
         }
+    }
+    if any_size {
+        out.size_bytes = Some(size_total);
     }
     out
 }
@@ -250,5 +263,49 @@ fn close_trip(segments: Vec<Segment>) -> Trip {
         camera_kind,
         gps_supported,
         archive_only: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env::temp_dir;
+    use std::fs;
+
+    #[test]
+    fn probe_segment_sums_channel_file_sizes() {
+        // Two scratch files with known sizes. mp4_probe will fail on
+        // these (they're not real MP4s) and the channel records will
+        // be empty defaults — that's fine; we're only asserting the
+        // size aggregation path which runs independently of mp4_probe.
+        let dir = temp_dir().join(format!(
+            "tripviewer-probe-size-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p1 = dir.join("a.bin");
+        let p2 = dir.join("b.bin");
+        fs::write(&p1, vec![0u8; 1_024]).unwrap();
+        fs::write(&p2, vec![0u8; 2_048]).unwrap();
+
+        let probe = probe_segment(&[p1.clone(), p2.clone()]);
+        assert_eq!(probe.size_bytes, Some(3_072));
+
+        // A path that doesn't exist is silently skipped — total only
+        // reflects the files that stat'd successfully.
+        let p_missing = dir.join("ghost.bin");
+        let probe = probe_segment(&[p1.clone(), p_missing]);
+        assert_eq!(probe.size_bytes, Some(1_024));
+
+        // All paths missing → size_bytes is None, not Some(0). The
+        // distinction lets the UI render "—" instead of misleadingly
+        // claiming the trip is zero bytes.
+        let only_missing = dir.join("nope.bin");
+        let probe = probe_segment(&[only_missing]);
+        assert!(probe.size_bytes.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

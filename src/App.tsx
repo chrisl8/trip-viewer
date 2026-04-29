@@ -19,6 +19,7 @@ import { ReviewView } from "./components/review/ReviewView";
 import { PlacesView } from "./components/places/PlacesView";
 import { TimelapseView } from "./components/timelapse/TimelapseView";
 import { useStore } from "./state/store";
+import { formatBytes } from "./utils/format";
 import { KIND_META, kindCounts } from "./utils/issueKinds";
 import {
   onScanStart,
@@ -41,6 +42,9 @@ function App() {
   const setVideoPort = useStore((s) => s.setVideoPort);
   const mainView = useStore((s) => s.mainView);
   const setMainView = useStore((s) => s.setMainView);
+  const librarySummary = useStore((s) => s.librarySummary);
+  const reclaimableFilter = useStore((s) => s.reclaimableFilter);
+  const setReclaimableFilter = useStore((s) => s.setReclaimableFilter);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [version, setVersion] = useState("");
 
@@ -65,6 +69,9 @@ function App() {
     // opens a folder. They live in the DB; the sidebar should show
     // them as soon as the app loads.
     void useStore.getState().mergeArchiveOnlyTrips();
+    // Library-wide totals — populated from the DB without needing a
+    // scan first, so the sidebar shows real numbers immediately.
+    void useStore.getState().refreshLibrarySummary();
   }, [setVideoPort]);
 
   // Attach scan-pipeline event listeners at the app root so progress
@@ -199,6 +206,13 @@ function App() {
                   </button>
                 )}
               </div>
+              <StorageSummaryLine
+                summary={librarySummary}
+                filterActive={reclaimableFilter}
+                onToggleReclaim={() =>
+                  setReclaimableFilter(!reclaimableFilter)
+                }
+              />
               {issueCount > 0 && issueBreakdown.length > 0 && (
                 <div className="flex flex-wrap gap-x-2 text-[11px] text-neutral-600">
                   {issueBreakdown.slice(0, 3).map(({ kind, count }) => (
@@ -265,6 +279,44 @@ function App() {
     <ImportSummary />
     <UpdateChecker />
     </HevcSupportGate>
+  );
+}
+
+function StorageSummaryLine({
+  summary,
+  filterActive,
+  onToggleReclaim,
+}: {
+  summary: ReturnType<typeof useStore.getState>["librarySummary"];
+  filterActive: boolean;
+  onToggleReclaim: () => void;
+}) {
+  if (!summary || summary.totalBytes === 0) return null;
+  const reclaimable = summary.reclaimableBytes;
+  return (
+    <div>
+      {formatBytes(summary.totalBytes)} used
+      {reclaimable > 0 && (
+        <>
+          {" · "}
+          <button
+            onClick={onToggleReclaim}
+            className={
+              filterActive
+                ? "text-emerald-300 hover:text-emerald-200"
+                : "text-emerald-500 hover:text-emerald-400"
+            }
+            title={
+              filterActive
+                ? "Show all trips again"
+                : "Show only trips whose originals can be reclaimed (timelapse already encoded)"
+            }
+          >
+            {formatBytes(reclaimable)} reclaimable {filterActive ? "◧" : "▸"}
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 

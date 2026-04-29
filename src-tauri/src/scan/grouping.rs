@@ -94,6 +94,7 @@ fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
         channels,
         gps_supported: camera_kind.gps_supported(),
         camera_kind,
+        size_bytes: None,
     }
 }
 

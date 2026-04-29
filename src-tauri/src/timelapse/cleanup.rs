@@ -11,6 +11,8 @@
 
 use std::fs;
 
+use rusqlite::params;
+
 use crate::db::{self, DbHandle};
 use crate::error::AppError;
 
@@ -45,7 +47,62 @@ pub fn cleanup_stale_jobs(db: &DbHandle) -> Result<u64, AppError> {
     if count > 0 {
         eprintln!("[timelapse] cleanup: reset {count} stale running job(s) to pending");
     }
+    backfill_output_sizes(db)?;
     Ok(count)
+}
+
+/// One-shot pass to fill `output_size_bytes` on done rows that were
+/// completed before migration 0009 (or whose output was missing at
+/// completion time and is now present). Cheap — one stat per
+/// completed job, dozens per typical library.
+fn backfill_output_sizes(db: &DbHandle) -> Result<(), AppError> {
+    let rows: Vec<(String, String, String, String)> = {
+        let conn = db
+            .lock()
+            .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+        let mut stmt = conn.prepare(
+            "SELECT trip_id, tier, channel, output_path
+             FROM timelapse_jobs
+             WHERE status = ?1
+               AND output_path IS NOT NULL
+               AND output_size_bytes IS NULL",
+        )?;
+        let mapped = stmt.query_map(params![db::timelapse_jobs::STATUS_DONE], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in mapped {
+            out.push(r?);
+        }
+        out
+    };
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut filled = 0u64;
+    for (trip_id, tier, channel, output_path) in rows {
+        let Ok(meta) = fs::metadata(&output_path) else {
+            continue;
+        };
+        let conn = db
+            .lock()
+            .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+        conn.execute(
+            "UPDATE timelapse_jobs SET output_size_bytes = ?4
+             WHERE trip_id = ?1 AND tier = ?2 AND channel = ?3",
+            params![trip_id, tier, channel, meta.len() as i64],
+        )?;
+        filled += 1;
+    }
+    if filled > 0 {
+        eprintln!("[timelapse] cleanup: backfilled output_size_bytes for {filled} completed job(s)");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

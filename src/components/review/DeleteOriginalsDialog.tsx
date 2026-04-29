@@ -1,6 +1,8 @@
 import { useEffect, useMemo } from "react";
 import clsx from "clsx";
+import { useStore } from "../../state/store";
 import type { Trip } from "../../types/model";
+import { formatBytes } from "../../utils/format";
 
 interface Props {
   trip: Trip;
@@ -14,6 +16,17 @@ function formatDuration(s: number): string {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+/** Sum segment sizes — null if any are unknown (mixed totals would mislead). */
+function trashedBytes(trip: Trip): number | null {
+  if (trip.segments.length === 0) return null;
+  let total = 0;
+  for (const seg of trip.segments) {
+    if (seg.sizeBytes == null) return null;
+    total += seg.sizeBytes;
+  }
+  return total;
 }
 
 /**
@@ -46,6 +59,14 @@ export function DeleteOriginalsDialog({
     () => trip.segments.reduce((sum, seg) => sum + seg.durationS, 0),
     [trip.segments],
   );
+  const originalsBytes = useMemo(() => trashedBytes(trip), [trip]);
+  const archiveBytes = useStore((s) => {
+    const tripJobs = s.timelapseJobs.filter(
+      (j) => j.tripId === trip.id && j.outputSizeBytes != null,
+    );
+    if (tripJobs.length === 0) return null;
+    return tripJobs.reduce((sum, j) => sum + (j.outputSizeBytes ?? 0), 0);
+  });
 
   return (
     <div
@@ -61,11 +82,14 @@ export function DeleteOriginalsDialog({
           {trip.segments.length} {trip.segments.length === 1 ? "segment" : "segments"} · {formatDuration(totalDuration)}
         </p>
         <p className="mt-3 text-sm text-neutral-300">
-          {fileCount} original {fileCount === 1 ? "file" : "files"} will be moved
-          to the OS trash. Recoverable from there.
+          {fileCount} original {fileCount === 1 ? "file" : "files"}
+          {originalsBytes != null && ` (${formatBytes(originalsBytes)})`} will
+          be moved to the OS trash. Recoverable from there.
         </p>
         <p className="mt-2 rounded-md bg-emerald-950 px-2 py-1 text-xs text-emerald-300">
-          The timelapse archive will be kept and stays playable in this trip.
+          The timelapse archive
+          {archiveBytes != null && ` (${formatBytes(archiveBytes)})`} will be
+          kept and stays playable in this trip.
         </p>
         {errorMessage && (
           <p className="mt-2 rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">

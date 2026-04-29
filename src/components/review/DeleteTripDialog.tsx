@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import clsx from "clsx";
 import { useStore } from "../../state/store";
 import type { Trip } from "../../types/model";
+import { formatBytes } from "../../utils/format";
 
 interface Props {
   trip: Trip;
@@ -16,6 +17,16 @@ function formatDuration(s: number): string {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function originalsBytes(trip: Trip): number | null {
+  if (trip.segments.length === 0) return null;
+  let total = 0;
+  for (const seg of trip.segments) {
+    if (seg.sizeBytes == null) return null;
+    total += seg.sizeBytes;
+  }
+  return total;
 }
 
 /**
@@ -48,11 +59,19 @@ export function DeleteTripDialog({
     () => trip.segments.reduce((sum, seg) => sum + seg.durationS, 0),
     [trip.segments],
   );
+  const segmentBytes = useMemo(() => originalsBytes(trip), [trip]);
   const timelapseFileCount = useStore((s) =>
     s.timelapseJobs.filter(
       (j) => j.tripId === trip.id && j.outputPath !== null,
     ).length,
   );
+  const timelapseBytes = useStore((s) => {
+    const jobs = s.timelapseJobs.filter(
+      (j) => j.tripId === trip.id && j.outputSizeBytes != null,
+    );
+    if (jobs.length === 0) return null;
+    return jobs.reduce((sum, j) => sum + (j.outputSizeBytes ?? 0), 0);
+  });
 
   return (
     <div
@@ -77,14 +96,18 @@ export function DeleteTripDialog({
           {segmentFileCount > 0 && (
             <li>
               <span className="text-neutral-400">→</span> {segmentFileCount}{" "}
-              original {segmentFileCount === 1 ? "file" : "files"} to trash
+              original {segmentFileCount === 1 ? "file" : "files"}
+              {segmentBytes != null && ` (${formatBytes(segmentBytes)})`} to
+              trash
             </li>
           )}
           {timelapseFileCount > 0 && (
             <li>
               <span className="text-neutral-400">→</span> {timelapseFileCount}{" "}
               timelapse archive{" "}
-              {timelapseFileCount === 1 ? "file" : "files"} to trash
+              {timelapseFileCount === 1 ? "file" : "files"}
+              {timelapseBytes != null && ` (${formatBytes(timelapseBytes)})`}{" "}
+              to trash
             </li>
           )}
           <li>
