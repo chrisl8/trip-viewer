@@ -424,24 +424,32 @@ fn apply_concat_where_possible(
                     });
                     concatenated_paths_to_keep.insert(merged_path_str);
                     report.concatenated.push((tier.clone(), channel.clone()));
+
+                    // Source rows for this tuple are replaced by the
+                    // merged row above. Primary's on-disk file IS the
+                    // merged output (concat_outputs renamed the temp
+                    // file into the canonical primary path); absorbed
+                    // files become orphans for a future cleanup sweep.
+                    for trip_row in &ordered {
+                        rows_to_delete.push((
+                            trip_row.trip_id.clone(),
+                            tier.clone(),
+                            channel.clone(),
+                        ));
+                    }
                 }
                 Err(e) => {
+                    // Leave rows untouched. Phase 2's
+                    // rewrite_trip_id_columns dedupe step will drop
+                    // absorbed rows for this tuple because primary
+                    // still has its row, so the merged trip keeps
+                    // primary's existing timelapse intact rather than
+                    // silently losing both the file and the row.
                     eprintln!(
                         "[merge] concat failed for ({tier}, {channel}): {e}; \
-                         falling back to deleting the source rows"
+                         keeping primary's existing output"
                     );
                 }
-            }
-
-            // Either way, the source rows for this tuple are about to
-            // be replaced by either the merged row (success) or
-            // nothing (concat failed). Mark them for deletion.
-            for trip_row in &ordered {
-                rows_to_delete.push((
-                    trip_row.trip_id.clone(),
-                    tier.clone(),
-                    channel.clone(),
-                ));
             }
         } else {
             // Partial coverage. Drop all rows for this tuple — the
@@ -536,10 +544,24 @@ fn concat_outputs(
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // ffmpeg -y prefers an absent target, but if a previous merge
-    // attempt left a stale partial file the concat will refuse to
-    // start mid-stream. Remove explicitly.
-    let _ = std::fs::remove_file(output);
+
+    // The merged output's canonical path collides with primary's
+    // existing timelapse — both follow the
+    // `<library_root>/Timelapses/<trip_id>_<tier>_<channel>.mp4`
+    // convention and the merged trip's id IS the primary's id. Writing
+    // ffmpeg's output directly to `output` would clobber an input
+    // before it's read. Stage to a sibling temp file and rename into
+    // place only after a successful encode; on failure or partial
+    // write, primary's existing file is preserved so the row deletion
+    // path can keep its existing output.
+    let temp_output = {
+        let stem = output
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("merged");
+        output.with_file_name(format!(".{stem}.merging.mp4"))
+    };
+    let _ = std::fs::remove_file(&temp_output);
 
     // Build the concat list file in the parent directory so relative
     // paths resolve correctly. Use absolute paths to be safe.
@@ -584,7 +606,7 @@ fn concat_outputs(
         .arg(&list_path)
         .arg("-c")
         .arg("copy")
-        .arg(output)
+        .arg(&temp_output)
         .output()
         .map_err(|e| AppError::Internal(format!("failed to spawn ffmpeg: {e}")))?;
 
@@ -592,10 +614,22 @@ fn concat_outputs(
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+        let _ = std::fs::remove_file(&temp_output);
         return Err(AppError::Internal(format!(
             "ffmpeg concat failed: {stderr}"
         )));
     }
+
+    // Promote temp → final. Remove the existing primary file first so
+    // rename works portably (Windows rename refuses an existing target
+    // on older Rust toolchains, and explicit remove is unambiguous).
+    let _ = std::fs::remove_file(output);
+    std::fs::rename(&temp_output, output).map_err(|e| {
+        let _ = std::fs::remove_file(&temp_output);
+        AppError::Internal(format!(
+            "merged output rename failed: {e}"
+        ))
+    })?;
     Ok(())
 }
 
