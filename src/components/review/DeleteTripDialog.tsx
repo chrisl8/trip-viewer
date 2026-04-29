@@ -77,7 +77,7 @@ export function DeleteTripDialog({
           {segmentFileCount > 0 && (
             <li>
               <span className="text-neutral-400">→</span> {segmentFileCount}{" "}
-              source {segmentFileCount === 1 ? "file" : "files"} to trash
+              original {segmentFileCount === 1 ? "file" : "files"} to trash
             </li>
           )}
           {timelapseFileCount > 0 && (

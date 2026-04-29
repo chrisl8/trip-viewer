@@ -61,7 +61,7 @@ export function DeleteOriginalsDialog({
           {trip.segments.length} {trip.segments.length === 1 ? "segment" : "segments"} · {formatDuration(totalDuration)}
         </p>
         <p className="mt-3 text-sm text-neutral-300">
-          {fileCount} source {fileCount === 1 ? "file" : "files"} will be moved
+          {fileCount} original {fileCount === 1 ? "file" : "files"} will be moved
           to the OS trash. Recoverable from there.
         </p>
         <p className="mt-2 rounded-md bg-emerald-950 px-2 py-1 text-xs text-emerald-300">

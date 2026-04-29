@@ -134,7 +134,7 @@ export function TripList() {
                     {archive && (
                       <span
                         className="rounded-sm bg-amber-900/60 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200"
-                        title="Source files have been deleted; only the timelapse archive remains."
+                        title="Original files have been deleted; only the timelapse archive remains."
                       >
                         Archive
                       </span>

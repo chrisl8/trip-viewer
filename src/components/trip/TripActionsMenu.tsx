@@ -158,7 +158,7 @@ export function TripActionsMenu({ trip, variant = "kebab" }: Props) {
             >
               Delete trip…
               <div className="text-[11px] text-neutral-500">
-                Sources and timelapse archive
+                Originals and timelapse archive
               </div>
             </button>
           </div>
