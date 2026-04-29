@@ -47,6 +47,21 @@ pub async fn get_timelapse_settings(
     })
 }
 
+/// Erase the cached ffmpeg path and capability flags from the settings
+/// table. Used by the FfmpegConfig modal's Clear button — lets the user
+/// disable timelapse encoding (e.g. switching to a machine without
+/// ffmpeg) and exposes the "not configured" UI path for testing.
+#[tauri::command]
+pub async fn clear_timelapse_settings(db: State<'_, DbHandle>) -> Result<(), AppError> {
+    let conn = db
+        .lock()
+        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+    db::settings::delete(&conn, SETTING_FFMPEG_PATH)?;
+    db::settings::delete(&conn, SETTING_FFMPEG_VERSION)?;
+    db::settings::delete(&conn, SETTING_NVENC_HEVC)?;
+    Ok(())
+}
+
 /// Run `ffmpeg -version` and `-encoders` on the given path, cache the
 /// result to the `settings` table, and return it. The frontend's
 /// "Test" button calls this.

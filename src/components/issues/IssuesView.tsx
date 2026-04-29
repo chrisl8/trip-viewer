@@ -138,22 +138,13 @@ export function IssuesView() {
                 } flagged`}
           </span>
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onRescan}
-            className="rounded-md px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-            title="Rescan the current folder"
-          >
-            ⟳ Rescan
-          </button>
-          <button
-            onClick={() => setMainView("player")}
-            className="rounded-md px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-            title="Close issues view"
-          >
-            ✕ Close
-          </button>
-        </div>
+        <button
+          onClick={onRescan}
+          className="rounded-md px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+          title="Rescan the current folder"
+        >
+          ⟳ Rescan
+        </button>
       </header>
 
       {scanErrors.length === 0 ? (

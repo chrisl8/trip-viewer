@@ -68,7 +68,7 @@ export function DeleteTripDialog({
         </h2>
         {trip.segments.length > 0 ? (
           <p className="mt-2 text-sm text-neutral-400">
-            {trip.segments.length} segments · {formatDuration(totalDuration)}
+            {trip.segments.length} {trip.segments.length === 1 ? "segment" : "segments"} · {formatDuration(totalDuration)}
           </p>
         ) : (
           <p className="mt-2 text-sm text-neutral-400">Archive only</p>

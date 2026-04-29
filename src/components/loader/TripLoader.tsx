@@ -5,6 +5,12 @@ import { useStore } from "../../state/store";
 
 const LAST_FOLDER_KEY = "tripviewer:lastFolder";
 
+/**
+ * Folder picker collapsed into a single clickable row that doubles as
+ * the path display. Replaces the old "Open folder" blue button +
+ * separate path label combo. Once a folder is chosen the picker still
+ * works as the change-folder affordance.
+ */
 export function TripLoader() {
   const status = useStore((s) => s.status);
   const setStatus = useStore((s) => s.setStatus);
@@ -39,20 +45,27 @@ export function TripLoader() {
     }
   }, []);
 
+  const isLoading = status === "loading";
+  const display = isLoading
+    ? "Scanning…"
+    : lastPath
+      ? lastPath
+      : "Open folder…";
+
   return (
-    <div className="flex flex-col gap-2">
-      <button
-        onClick={onPick}
-        disabled={status === "loading"}
-        className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {status === "loading" ? "Scanning…" : "Open folder"}
-      </button>
-      {lastPath && (
-        <p className="truncate text-xs text-neutral-500" title={lastPath}>
-          {lastPath}
-        </p>
-      )}
-    </div>
+    <button
+      onClick={onPick}
+      disabled={isLoading}
+      title={lastPath ? `Click to change folder · current: ${lastPath}` : "Pick your dashcam library folder"}
+      className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-left text-xs text-neutral-300 transition-colors hover:border-neutral-700 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <span className="shrink-0 text-neutral-500" aria-hidden="true">
+        📁
+      </span>
+      <span className="flex-1 truncate">{display}</span>
+      <span className="shrink-0 text-neutral-500" aria-hidden="true">
+        ▾
+      </span>
+    </button>
   );
 }

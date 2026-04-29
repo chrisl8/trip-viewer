@@ -151,7 +151,7 @@ export function TripList() {
                   <div className="text-xs text-neutral-500">
                     {archive
                       ? "Timelapse only"
-                      : `${trip.segments.length} segments · ${formatDuration(trip)}`}
+                      : `${trip.segments.length} ${trip.segments.length === 1 ? "segment" : "segments"} · ${formatDuration(trip)}`}
                   </div>
                   <TripBadges tripId={trip.id} />
                 </button>

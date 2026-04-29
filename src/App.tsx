@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TripLoader } from "./components/loader/TripLoader";
 import { TripList } from "./components/loader/TripList";
 import { HevcSupportGate } from "./components/video/HevcSupportGate";
+import { MainNavTabs } from "./components/MainNavTabs";
 import { PlayerShell } from "./components/video/PlayerShell";
 import { UpdateChecker } from "./components/UpdateChecker";
 import { KeyboardShortcutsHelp } from "./components/KeyboardShortcutsHelp";
@@ -40,10 +41,6 @@ function App() {
   const setVideoPort = useStore((s) => s.setVideoPort);
   const mainView = useStore((s) => s.mainView);
   const setMainView = useStore((s) => s.setMainView);
-  const scanRunning = useStore((s) => s.scanRunning);
-  const scanProgress = useStore((s) => s.scanProgress);
-  const timelapseRunning = useStore((s) => s.timelapseRunning);
-  const timelapseProgress = useStore((s) => s.timelapseProgress);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [version, setVersion] = useState("");
 
@@ -214,81 +211,6 @@ function App() {
                   )}
                 </div>
               )}
-              <div className="mt-1 flex gap-1">
-                <button
-                  onClick={() =>
-                    setMainView(mainView === "scan" ? "player" : "scan")
-                  }
-                  className={
-                    mainView === "scan"
-                      ? "rounded border border-sky-500 px-2 py-0.5 text-xs text-sky-300 hover:bg-neutral-800"
-                      : `rounded border px-2 py-0.5 text-xs hover:border-sky-500 hover:text-sky-300 ${
-                          scanRunning
-                            ? "animate-pulse-sky border-sky-500 text-sky-300"
-                            : "border-neutral-700 text-neutral-300"
-                        }`
-                  }
-                  title={
-                    mainView === "scan"
-                      ? "Close scan view"
-                      : scanRunning
-                        ? "Scan running in background — click to view"
-                        : "Open scan view"
-                  }
-                >
-                  {scanRunning
-                    ? `Scanning… ${scanProgress?.done ?? 0}/${scanProgress?.total ?? "?"}`
-                    : "Scan"}
-                </button>
-                <button
-                  onClick={() =>
-                    setMainView(mainView === "review" ? "player" : "review")
-                  }
-                  className={
-                    mainView === "review"
-                      ? "rounded border border-emerald-500 px-2 py-0.5 text-xs text-emerald-300 hover:bg-neutral-800"
-                      : "rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-500 hover:text-emerald-300"
-                  }
-                  title={
-                    mainView === "review"
-                      ? "Close review view"
-                      : "Open review view"
-                  }
-                >
-                  Review
-                </button>
-                <button
-                  onClick={() =>
-                    setMainView(
-                      mainView === "timelapse" ? "player" : "timelapse",
-                    )
-                  }
-                  className={
-                    // ml-2 separates the output-phase action (Timelapse)
-                    // from the input/triage row (Scan, Review). Small
-                    // visual hint that this is a different phase of the
-                    // workflow rather than another peer trip-action.
-                    mainView === "timelapse"
-                      ? "ml-2 rounded border border-violet-500 px-2 py-0.5 text-xs text-violet-300 hover:bg-neutral-800"
-                      : `ml-2 rounded border px-2 py-0.5 text-xs hover:border-violet-500 hover:text-violet-300 ${
-                          timelapseRunning
-                            ? "animate-pulse-violet border-violet-500 text-violet-300"
-                            : "border-neutral-700 text-neutral-300"
-                        }`
-                  }
-                  title={
-                    mainView === "timelapse"
-                      ? "Close timelapse view"
-                      : timelapseRunning
-                        ? "Timelapse encoding in background — click to view"
-                        : "Open timelapse view"
-                  }
-                >
-                  {timelapseRunning
-                    ? `Encoding… ${timelapseProgress?.done ?? 0}/${timelapseProgress?.total ?? "?"}`
-                    : "Timelapse"}
-                </button>
-              </div>
             </div>
           )}
           {status === "ready" && trips.length === 0 && (
@@ -307,48 +229,32 @@ function App() {
         <TripList />
         <footer className="flex items-center justify-between border-t border-neutral-800 px-3 py-2.5">
           <span className="text-xs text-neutral-500">v{version}</span>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() =>
-                setMainView(mainView === "places" ? "player" : "places")
-              }
-              className={
-                mainView === "places"
-                  ? "text-xs text-rose-300 hover:text-rose-200"
-                  : "text-xs text-neutral-400 hover:text-neutral-200"
-              }
-              title={
-                mainView === "places"
-                  ? "Close places view"
-                  : "Define points of interest used by GPS-aware scans"
-              }
-            >
-              Places
-            </button>
-            <button
-              onClick={() => setShowShortcuts(true)}
-              className="text-xs text-neutral-400 hover:text-neutral-200"
-            >
-              Keyboard shortcuts
-            </button>
-          </div>
+          <button
+            onClick={() => setShowShortcuts(true)}
+            className="text-xs text-neutral-400 hover:text-neutral-200"
+          >
+            Keyboard shortcuts
+          </button>
         </footer>
       </aside>
 
-      <main className="flex flex-1 flex-col">
-        {mainView === "issues" ? (
-          <IssuesView />
-        ) : mainView === "scan" ? (
-          <ScanView />
-        ) : mainView === "review" ? (
-          <ReviewView />
-        ) : mainView === "places" ? (
-          <PlacesView />
-        ) : mainView === "timelapse" ? (
-          <TimelapseView />
-        ) : (
-          <PlayerShell />
-        )}
+      <main className="flex flex-1 flex-col overflow-hidden">
+        <MainNavTabs />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {mainView === "issues" ? (
+            <IssuesView />
+          ) : mainView === "scan" ? (
+            <ScanView />
+          ) : mainView === "review" ? (
+            <ReviewView />
+          ) : mainView === "places" ? (
+            <PlacesView />
+          ) : mainView === "timelapse" ? (
+            <TimelapseView />
+          ) : (
+            <PlayerShell />
+          )}
+        </div>
       </main>
     </div>
     {showShortcuts && (

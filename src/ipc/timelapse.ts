@@ -78,6 +78,12 @@ export function testFfmpeg(path: string): Promise<FfmpegCapabilities> {
   return invoke<FfmpegCapabilities>("test_ffmpeg", { path });
 }
 
+/** Wipe the cached ffmpeg path + capabilities from settings. After
+ *  this resolves, `getTimelapseSettings()` returns nulls. */
+export function clearTimelapseSettings(): Promise<void> {
+  return invoke<void>("clear_timelapse_settings");
+}
+
 export function startTimelapse(args: StartTimelapseArgs): Promise<void> {
   return invoke<void>("start_timelapse", { args });
 }

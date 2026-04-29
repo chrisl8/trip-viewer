@@ -5,7 +5,6 @@ import { useStore } from "../../state/store";
 import { PlaceDialog } from "./PlaceDialog";
 
 export function PlacesView() {
-  const setMainView = useStore((s) => s.setMainView);
   const places = useStore((s) => s.places);
   const refreshPlaces = useStore((s) => s.refreshPlaces);
   const tripTagCounts = useStore((s) => s.tripTagCounts);
@@ -56,20 +55,12 @@ export function PlacesView() {
               : `${places.length} place${places.length === 1 ? "" : "s"}. After adding or editing a place, run the Places scan to update tags.`}
           </p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setAdding(true)}
-            className="rounded-md bg-rose-700 px-3 py-1 text-sm text-white hover:bg-rose-600"
-          >
-            Add place
-          </button>
-          <button
-            onClick={() => setMainView("player")}
-            className="rounded-md border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-          >
-            Close
-          </button>
-        </div>
+        <button
+          onClick={() => setAdding(true)}
+          className="rounded-md bg-rose-700 px-3 py-1 text-sm text-white hover:bg-rose-600"
+        >
+          Add place
+        </button>
       </header>
 
       <div className="flex-1 overflow-auto">

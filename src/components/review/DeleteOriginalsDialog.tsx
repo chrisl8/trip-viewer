@@ -58,7 +58,7 @@ export function DeleteOriginalsDialog({
       >
         <h2 className="text-base font-semibold">Delete original files?</h2>
         <p className="mt-2 text-sm text-neutral-400">
-          {trip.segments.length} segments · {formatDuration(totalDuration)}
+          {trip.segments.length} {trip.segments.length === 1 ? "segment" : "segments"} · {formatDuration(totalDuration)}
         </p>
         <p className="mt-3 text-sm text-neutral-300">
           {fileCount} source {fileCount === 1 ? "file" : "files"} will be moved

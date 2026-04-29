@@ -230,20 +230,12 @@ export function ScanView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-neutral-950 text-neutral-100">
-      <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-        <div>
-          <h1 className="text-lg font-semibold">Scan library</h1>
-          <p className="text-xs text-neutral-500">
-            Analyze segments to attach tags. Tags surface in the sidebar,
-            timeline, and Review view.
-          </p>
-        </div>
-        <button
-          onClick={() => setMainView("player")}
-          className="rounded-md border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-        >
-          Close
-        </button>
+      <header className="border-b border-neutral-800 px-4 py-3">
+        <h1 className="text-lg font-semibold">Scan library</h1>
+        <p className="text-xs text-neutral-500">
+          Analyze segments to attach tags. Tags surface in the sidebar,
+          timeline, and Review view.
+        </p>
       </header>
 
       <div className="flex-1 overflow-y-auto p-4">
@@ -311,9 +303,21 @@ export function ScanView() {
                       {scan.id === "gps_place" && places.length === 0 && (
                         <p className="mt-2 rounded-md bg-amber-950/60 px-2 py-1 text-[11px] text-amber-300">
                           No places defined yet — this scan won&apos;t emit
-                          any tags until you add at least one. Open{" "}
-                          <span className="font-medium">Places</span> in the
-                          sidebar footer to define points of interest.
+                          any tags until you add at least one. Switch to the{" "}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              // Stop the click from also toggling the
+                              // wrapping <label>'s checkbox.
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setMainView("places");
+                            }}
+                            className="font-medium underline underline-offset-2 hover:text-amber-200"
+                          >
+                            Places
+                          </button>{" "}
+                          tab to define points of interest.
                         </p>
                       )}
                     </div>

@@ -14,6 +14,22 @@ export function ImportButton() {
   const busy = importStatus !== "idle" && importStatus !== "complete" && importStatus !== "error";
 
   async function handleSdImport() {
+    // Establish destination before touching any SD. If localStorage
+    // already has one (returning user), this is a no-op. Asking up
+    // front means the confirm dialog appears with both endpoints
+    // (source SD + destination library) already known, instead of
+    // surprising the user with a folder picker on Start Import.
+    // ImportConfirmDialog.handleStart still has a defensive
+    // pickFolder fallback for the rare stale-localStorage edge case.
+    let rootPath = localStorage.getItem(LAST_FOLDER_KEY);
+    if (!rootPath) {
+      const chosen = await pickFolder("Select your dashcam library folder");
+      if (!chosen) return; // user cancelled — stay idle, no error
+      rootPath = chosen;
+      localStorage.setItem(LAST_FOLDER_KEY, rootPath);
+      setImportRootPath(rootPath);
+    }
+
     setImportStatus("discovering");
     try {
       const sources = await discoverSources();
@@ -60,7 +76,7 @@ export function ImportButton() {
       <button
         onClick={handleSdImport}
         disabled={busy}
-        className="rounded-md bg-neutral-700 px-4 py-2 text-sm font-medium text-neutral-200 transition-colors hover:bg-neutral-600 disabled:cursor-not-allowed disabled:opacity-50"
+        className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {importStatus === "discovering" ? "Scanning…" : "Import from SD"}
       </button>

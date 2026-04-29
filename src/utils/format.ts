@@ -32,15 +32,17 @@ export function basename(path: string): string {
 }
 
 /**
- * Sidebar-style trip label: short month/day + 12-hour time, no year,
- * no seconds (e.g. "Mar 22 4:41 PM"). Used anywhere a trip's start
+ * Sidebar-style trip label: short month/day/year + 12-hour time, no
+ * seconds (e.g. "Mar 22, 2026 4:41 PM"). Used anywhere a trip's start
  * time is shown so the different views don't each roll their own
- * format and fall out of sync.
+ * format and fall out of sync. Year matters once a library spans
+ * multiple years — without it, "Mar 22" is ambiguous.
  */
 export function formatTripStart(startTime: string): string {
   const d = new Date(startTime);
   if (Number.isNaN(d.getTime())) return startTime;
   const date = d.toLocaleDateString(undefined, {
+    year: "numeric",
     month: "short",
     day: "numeric",
   });

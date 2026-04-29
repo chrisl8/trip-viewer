@@ -223,19 +223,29 @@ export function TimelapseView() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowConfig(true)}
-            className="rounded-md border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-            title="Configure ffmpeg"
-          >
-            ffmpeg: {configured ? "ready" : "not set"}
-          </button>
-          <button
-            onClick={() => setMainView("player")}
-            className="rounded-md border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-          >
-            Close
-          </button>
+          {configured ? (
+            // Healthy state: a small unlabeled gear so the user can
+            // still re-open FfmpegConfig to switch binaries, but no
+            // status pill announcing the obvious "ready" state.
+            <button
+              onClick={() => setShowConfig(true)}
+              className="rounded-md border border-neutral-700 px-2 py-1 text-sm text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+              title="Configure ffmpeg"
+              aria-label="Configure ffmpeg"
+            >
+              ⚙
+            </button>
+          ) : (
+            // Broken state: prominent amber-tinted button matching the
+            // body banner's tone so the call-to-action is unmissable.
+            <button
+              onClick={() => setShowConfig(true)}
+              className="rounded-md border border-amber-700/50 bg-amber-950/40 px-3 py-1 text-sm text-amber-200 hover:bg-amber-950/60"
+              title="Configure ffmpeg"
+            >
+              ffmpeg: not set
+            </button>
+          )}
         </div>
       </header>
 

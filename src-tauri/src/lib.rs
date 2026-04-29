@@ -142,6 +142,7 @@ pub fn run() {
             scans::commands::start_scan,
             scans::commands::cancel_scan,
             timelapse::commands::get_timelapse_settings,
+            timelapse::commands::clear_timelapse_settings,
             timelapse::commands::test_ffmpeg,
             timelapse::commands::start_timelapse,
             timelapse::commands::cancel_timelapse,

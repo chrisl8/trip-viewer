@@ -23,6 +23,7 @@ import { DriftHud } from "../hud/DriftHud";
 import { MapPanel } from "../map/MapPanel";
 import { SegmentTagBar } from "../review/SegmentTagBar";
 import { Timeline } from "../timeline/Timeline";
+import { WelcomePanel } from "../welcome/WelcomePanel";
 import { VideoGrid } from "./VideoGrid";
 
 /** Map the backend's F/I/R channel code to the frontend's canonical
@@ -388,6 +389,16 @@ export function PlayerShell() {
       }
     }
   }, [trip, sourceMode, timelapseJobs, onSourceChange]);
+
+  // No trip loaded — render the orientation panel instead of an empty
+  // VideoGrid + MapPanel (which used to leave a "No GPS data" dead
+  // column on the right and shift the layout once a trip arrived).
+  // All hooks above this line have run; React's rules-of-hooks are
+  // satisfied because the early return is structurally stable across
+  // renders for any given (loadedTripId === null) state.
+  if (!trip) {
+    return <WelcomePanel />;
+  }
 
   // When the active segment's camera doesn't record GPS, collapse the map
   // slot and let the video grid grow into the freed space. A small muted

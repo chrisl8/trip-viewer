@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  clearTimelapseSettings,
   pickFfmpegBinary,
   testFfmpeg,
   type FfmpegCapabilities,
@@ -79,7 +80,23 @@ export function FfmpegConfig({ onClose }: Props) {
     }
   }
 
+  async function onClear() {
+    setError(null);
+    try {
+      await clearTimelapseSettings();
+      setPath("");
+      setCaps(null);
+      await refreshSettings();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   const canTest = path.trim().length > 0 && !testing;
+  // Only offer Clear when there's actually something to clear. Reading
+  // from the store (not local state) so the button reflects what's
+  // persisted, not in-flight edits.
+  const canClear = (existingPath !== null || existingCaps !== null) && !testing;
 
   return (
     <div
@@ -129,6 +146,19 @@ export function FfmpegConfig({ onClose }: Props) {
             )}
           >
             {testing ? "Testing…" : "Test"}
+          </button>
+          <button
+            onClick={() => void onClear()}
+            disabled={!canClear}
+            title="Erase the saved ffmpeg path and capabilities. Timelapse encoding will be disabled until you point at a binary again."
+            className={clsx(
+              "rounded-md px-3 py-1 text-sm",
+              canClear
+                ? "border border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+                : "cursor-not-allowed border border-neutral-800 text-neutral-600",
+            )}
+          >
+            Clear
           </button>
           {caps && !testing && (
             <div className="text-xs">

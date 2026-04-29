@@ -344,7 +344,7 @@ export function ReviewView() {
         <div>
           <h1 className="text-lg font-semibold">Review</h1>
           <p className="text-xs text-neutral-500">
-            {filtered.length} of {rows.length} segments
+            {filtered.length} of {rows.length} {rows.length === 1 ? "segment" : "segments"}
             {selectedCount > 0 && (
               <span> · {selectedCount} selected</span>
             )}
@@ -362,25 +362,17 @@ export function ReviewView() {
             Click one or more pills below to filter the segments.
           </p>
         </div>
-        <div className="flex items-center gap-4">
-          <label
-            className="flex items-center gap-1.5 whitespace-nowrap text-xs text-neutral-400"
-            title="When checked, segments tagged 'keep' don't appear in the table below."
-          >
-            <input
-              type="checkbox"
-              checked={hideKept}
-              onChange={(e) => setHideKept(e.target.checked)}
-            />
-            Hide &lsquo;keep&rsquo; tag
-          </label>
-          <button
-            onClick={() => setMainView("player")}
-            className="rounded-md border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-          >
-            Close
-          </button>
-        </div>
+        <label
+          className="flex items-center gap-1.5 whitespace-nowrap text-xs text-neutral-400"
+          title="When checked, segments tagged 'keep' don't appear in the table below."
+        >
+          <input
+            type="checkbox"
+            checked={hideKept}
+            onChange={(e) => setHideKept(e.target.checked)}
+          />
+          Hide &lsquo;keep&rsquo; tag
+        </label>
       </header>
 
       <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
