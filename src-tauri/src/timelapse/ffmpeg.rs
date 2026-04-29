@@ -164,8 +164,19 @@ pub fn encode_trip_channel(
     // For 2+ inputs, prepend a concat filter that joins them into one
     // stream (`[vcat]`) which the existing speed-curve filter then
     // consumes. Single-input case skips the concat prefix and reads
-    // directly from `[0:v]` — same shape as before the refactor.
-    let head_label = if n_inputs == 1 { "0:v" } else { "vcat" };
+    // directly from input 0's video stream — same shape as before the
+    // refactor.
+    //
+    // We select the *first* video stream explicitly via `[N:v:0]`
+    // rather than `[N:v]`. The concat filter wants exactly v=1 per
+    // input; `[N:v]` matches all video streams, so a (rare) multi-
+    // video-stream file would feed several into a slot expecting one
+    // and the filter graph would fail to instantiate. Audio streams
+    // are not referenced anywhere — combined with `concat=...:a=0`
+    // and the output-side `-an` below, audio is dropped at every
+    // level, so audio-bearing dashcam files (e.g. Wolf Box's in-cabin
+    // mic) feed through without trouble.
+    let head_label = if n_inputs == 1 { "0:v:0" } else { "vcat" };
     let speed_filter = speed_curve::compose_filter(
         args.windows,
         args.tier,
@@ -178,7 +189,7 @@ pub fn encode_trip_channel(
     } else {
         let mut prefix = String::new();
         for i in 0..n_inputs {
-            prefix.push_str(&format!("[{i}:v]"));
+            prefix.push_str(&format!("[{i}:v:0]"));
         }
         prefix.push_str(&format!("concat=n={n_inputs}:v=1:a=0[vcat];"));
         prefix.push_str(&speed_filter);
