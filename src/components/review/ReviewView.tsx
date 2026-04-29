@@ -208,18 +208,30 @@ export function ReviewView() {
   }
 
   async function onBulkTagChange(name: string, mode: "add" | "remove") {
-    if (selectedSegments.size === 0) return;
+    // Same intersection rule as delete: bulk-tag changes apply only
+    // to visible-and-selected rows. Tagging is reversible but the
+    // surprise of "I changed tags on rows I couldn't see" is the
+    // same trap, so apply the same safety here.
+    if (filteredSelectedCount === 0) return;
     setBusy(true);
     try {
+      const ids = Array.from(filteredSelectedIds);
       if (mode === "add") {
-        await addUserTag(Array.from(selectedSegments), name);
+        await addUserTag(ids, name);
       } else {
-        await removeUserTag(Array.from(selectedSegments), name);
+        await removeUserTag(ids, name);
       }
       await refetchTags();
       await refreshTripTagCounts();
       if (selectedTripId) await refreshTripTags(selectedTripId);
-      setSelectedSegments(new Set());
+      // Drop only the segments we just tagged from the selection;
+      // hidden selections stay so the user can clear the filter and
+      // act on them.
+      setSelectedSegments((prev) => {
+        const next = new Set(prev);
+        for (const id of filteredSelectedIds) next.delete(id);
+        return next;
+      });
     } catch (e) {
       console.error(`bulk ${mode} tag failed`, e);
     } finally {
@@ -237,33 +249,58 @@ export function ReviewView() {
     [filtered, selectedSegments],
   );
 
+  // Bulk actions only operate on the intersection of selected ∩
+  // filtered. Without this, the classic trap is: select 100, filter
+  // down to 5, click Delete → all 100 get deleted including the 95
+  // hidden ones. With the intersection, the user can't destructively
+  // act on rows they can't see; if they want the full set deleted
+  // they must clear the filter first.
+  const filteredSelectedIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of filtered) {
+      if (selectedSegments.has(row.segmentId)) ids.add(row.segmentId);
+    }
+    return ids;
+  }, [filtered, selectedSegments]);
+  const filteredSelectedCount = filteredSelectedIds.size;
+  const hiddenSelectedCount = selectedSegments.size - filteredSelectedCount;
+
   // Build the segmentId -> [channel paths] map from in-memory trips so
-  // the backend doesn't have to store channel lists in the DB.
+  // the backend doesn't have to store channel lists in the DB. Only
+  // includes the visible-and-selected segments, since those are the
+  // only ones a bulk action can touch.
   const pathsBySegment = useMemo(() => {
     const map: Record<string, string[]> = {};
     for (const trip of trips) {
       for (const seg of trip.segments) {
-        if (!selectedSegments.has(seg.id)) continue;
+        if (!filteredSelectedIds.has(seg.id)) continue;
         map[seg.id] = seg.channels.map((c) => c.filePath).filter(Boolean);
       }
     }
     return map;
-  }, [trips, selectedSegments]);
+  }, [trips, filteredSelectedIds]);
 
   async function onConfirmDelete() {
-    if (selectedSegments.size === 0) return;
+    if (filteredSelectedCount === 0) return;
     setBusy(true);
     setConfirmDelete(false);
     try {
       const report = await deleteSegmentsToTrash(
-        Array.from(selectedSegments),
+        Array.from(filteredSelectedIds),
         pathsBySegment,
       );
       setDeleteReport(report);
       await refetchTags();
       await refreshTripTagCounts();
       if (selectedTripId) await refreshTripTags(selectedTripId);
-      setSelectedSegments(new Set());
+      // Drop only the segments we just deleted from the selection;
+      // segments hidden by the filter (and thus skipped) stay
+      // selected so the user can clear the filter and act on them.
+      setSelectedSegments((prev) => {
+        const next = new Set(prev);
+        for (const id of filteredSelectedIds) next.delete(id);
+        return next;
+      });
     } catch (e) {
       console.error("deleteSegmentsToTrash failed", e);
     } finally {
@@ -311,26 +348,42 @@ export function ReviewView() {
             {selectedCount > 0 && (
               <span> · {selectedCount} selected</span>
             )}
+            {hiddenSelectedCount > 0 && (
+              <span
+                className="text-amber-400"
+                title="These segments are part of your selection but hidden by the current filter. Bulk actions (delete, tag) only affect visible-and-selected rows; clear the filter to act on hidden ones."
+              >
+                {" "}
+                ({hiddenSelectedCount} hidden by filter)
+              </span>
+            )}
+          </p>
+          <p className="text-xs text-neutral-500">
+            Click one or more pills below to filter the segments.
           </p>
         </div>
-        <button
-          onClick={() => setMainView("player")}
-          className="rounded-md border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
-        >
-          Close
-        </button>
+        <div className="flex items-center gap-4">
+          <label
+            className="flex items-center gap-1.5 whitespace-nowrap text-xs text-neutral-400"
+            title="When checked, segments tagged 'keep' don't appear in the table below."
+          >
+            <input
+              type="checkbox"
+              checked={hideKept}
+              onChange={(e) => setHideKept(e.target.checked)}
+            />
+            Hide &lsquo;keep&rsquo; tag
+          </label>
+          <button
+            onClick={() => setMainView("player")}
+            className="rounded-md border border-neutral-700 px-3 py-1 text-sm text-neutral-300 hover:bg-neutral-800"
+          >
+            Close
+          </button>
+        </div>
       </header>
 
       <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={hideKept}
-            onChange={(e) => setHideKept(e.target.checked)}
-          />
-          Hide <span className={CATEGORY_COLORS.user.text}>keep</span>
-        </label>
-
         <div className="flex items-center gap-1">
           {ALL_CATEGORIES.map((cat) => {
             const active = categoryFilter.has(cat);
@@ -392,10 +445,15 @@ export function ReviewView() {
               onClick={() =>
                 setOpenMenu(openMenu === "add" ? null : "add")
               }
-              disabled={selectedCount === 0 || busy || userApplicable.length === 0}
+              disabled={filteredSelectedCount === 0 || busy || userApplicable.length === 0}
+              title={
+                filteredSelectedCount === 0 && hiddenSelectedCount > 0
+                  ? "All selected segments are hidden by your current filter — clear the filter to act on them."
+                  : undefined
+              }
               className={clsx(
                 "rounded-md px-3 py-1 text-sm",
-                selectedCount === 0 || busy
+                filteredSelectedCount === 0 || busy
                   ? "cursor-not-allowed bg-neutral-800 text-neutral-500"
                   : "bg-emerald-700 text-white hover:bg-emerald-600",
               )}
@@ -417,10 +475,15 @@ export function ReviewView() {
               onClick={() =>
                 setOpenMenu(openMenu === "remove" ? null : "remove")
               }
-              disabled={selectedCount === 0 || busy || userApplicable.length === 0}
+              disabled={filteredSelectedCount === 0 || busy || userApplicable.length === 0}
+              title={
+                filteredSelectedCount === 0 && hiddenSelectedCount > 0
+                  ? "All selected segments are hidden by your current filter — clear the filter to act on them."
+                  : undefined
+              }
               className={clsx(
                 "rounded-md border px-3 py-1 text-sm",
-                selectedCount === 0 || busy
+                filteredSelectedCount === 0 || busy
                   ? "cursor-not-allowed border-neutral-800 text-neutral-500"
                   : "border-neutral-700 text-neutral-300 hover:bg-neutral-800",
               )}
@@ -439,10 +502,15 @@ export function ReviewView() {
           </div>
           <button
             onClick={() => setConfirmDelete(true)}
-            disabled={selectedCount === 0 || busy}
+            disabled={filteredSelectedCount === 0 || busy}
+            title={
+              filteredSelectedCount === 0 && hiddenSelectedCount > 0
+                ? "All selected segments are hidden by your current filter — clear the filter to delete them."
+                : undefined
+            }
             className={clsx(
               "rounded-md px-3 py-1 text-sm",
-              selectedCount === 0 || busy
+              filteredSelectedCount === 0 || busy
                 ? "cursor-not-allowed bg-neutral-800 text-neutral-500"
                 : "bg-red-700 text-white hover:bg-red-600",
             )}
@@ -547,19 +615,25 @@ export function ReviewView() {
       {confirmDelete && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60">
           <div className="w-96 rounded-md border border-neutral-700 bg-neutral-900 p-4">
-            <h2 className="text-base font-semibold">Delete {selectedCount} {selectedCount === 1 ? "segment" : "segments"}?</h2>
+            <h2 className="text-base font-semibold">Delete {filteredSelectedCount} {filteredSelectedCount === 1 ? "segment" : "segments"}?</h2>
             <p className="mt-2 text-sm text-neutral-400">
               Files move to the OS trash and can be recovered from there.
               Tags and scan history for these segments are removed from the
               library.
             </p>
+            {hiddenSelectedCount > 0 && (
+              <p className="mt-2 rounded-md bg-sky-950 px-2 py-1 text-xs text-sky-300">
+                {hiddenSelectedCount} other selected{" "}
+                {hiddenSelectedCount === 1 ? "segment is" : "segments are"}{" "}
+                hidden by the current filter and won&apos;t be touched.
+                Clear the filter first if you want them included.
+              </p>
+            )}
             {selectedKeptCount > 0 && (
               <p className="mt-2 rounded-md bg-amber-950 px-2 py-1 text-xs text-amber-300">
                 {selectedKeptCount} of the selected{" "}
                 {selectedKeptCount === 1 ? "segment is" : "segments are"}{" "}
-                marked{" "}
-                <span className={CATEGORY_COLORS.user.text}>keep</span>.
-                Delete anyway?
+                marked &lsquo;keep&rsquo;. Delete anyway?
               </p>
             )}
             <div className="mt-4 flex justify-end gap-2">
