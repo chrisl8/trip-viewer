@@ -32,6 +32,7 @@ import {
 import {
   startAnalysisScan as ipcStartScan,
   cancelAnalysisScan as ipcCancelScan,
+  listScanCoverage as ipcListScanCoverage,
 } from "../ipc/scanner";
 import {
   cancelTimelapse as ipcCancelTimelapse,
@@ -274,6 +275,7 @@ export const useStore = create<AppState>((set) => ({
   scanStartMs: null,
   scanProgress: null,
   scanLastResult: null,
+  scanCoverage: [],
 
   timelapseRunning: false,
   timelapseProgress: null,
@@ -761,7 +763,7 @@ export const useStore = create<AppState>((set) => ({
     }
   },
 
-  startAnalysisScan: async (scanIds, scope) => {
+  startAnalysisScan: async (scanIds, scope, tripIds) => {
     set({
       scanRunning: true,
       scanStartTotal: 0,
@@ -769,7 +771,7 @@ export const useStore = create<AppState>((set) => ({
       scanLastResult: null,
     });
     try {
-      await ipcStartScan(scanIds, scope);
+      await ipcStartScan(scanIds, scope, tripIds ?? null);
     } catch (e) {
       console.error("startAnalysisScan failed", e);
       set({ scanRunning: false });
@@ -778,6 +780,14 @@ export const useStore = create<AppState>((set) => ({
   },
   cancelAnalysisScan: async () => {
     await ipcCancelScan();
+  },
+  refreshScanCoverage: async () => {
+    try {
+      const coverage = await ipcListScanCoverage();
+      set({ scanCoverage: coverage });
+    } catch (e) {
+      console.error("refreshScanCoverage failed", e);
+    }
   },
 
   refreshTimelapseSettings: async () => {

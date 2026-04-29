@@ -138,6 +138,7 @@ pub fn run() {
             trips::commands::assess_trip_merge,
             trips::commands::merge_trips,
             scans::commands::list_scans,
+            scans::commands::list_scan_coverage,
             scans::commands::start_scan,
             scans::commands::cancel_scan,
             timelapse::commands::get_timelapse_settings,

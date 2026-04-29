@@ -19,6 +19,7 @@ use crate::tags::Tag;
 
 pub mod audio_rms;
 pub mod commands;
+pub mod coverage;
 pub mod ee_normalize;
 pub mod gps_place;
 pub mod gps_stationary;

@@ -38,15 +38,41 @@ export interface ScanDoneEvent {
   cancelled: boolean;
 }
 
+export interface ScanCoverage {
+  scanId: string;
+  totalSegments: number;
+  doneCount: number;
+  staleCount: number;
+  failedCount: number;
+  notRunCount: number;
+  /** Up to 3 distinct error_message strings from failed runs for
+   *  this (trip, scan). Empty when failedCount === 0. */
+  sampleFailures: string[];
+}
+
+export interface TripScanCoverage {
+  tripId: string;
+  perScan: ScanCoverage[];
+}
+
 export function listScans(): Promise<ScanDescriptor[]> {
   return invoke<ScanDescriptor[]>("list_scans");
+}
+
+export function listScanCoverage(): Promise<TripScanCoverage[]> {
+  return invoke<TripScanCoverage[]>("list_scan_coverage");
 }
 
 export function startAnalysisScan(
   scanIds: string[],
   scope: ScanScope,
+  tripIds?: string[] | null,
 ): Promise<void> {
-  return invoke<void>("start_scan", { scanIds, scope });
+  return invoke<void>("start_scan", {
+    scanIds,
+    scope,
+    tripIds: tripIds ?? null,
+  });
 }
 
 export function cancelAnalysisScan(): Promise<void> {

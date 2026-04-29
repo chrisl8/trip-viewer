@@ -71,6 +71,9 @@ pub struct ScanDoneEvent {
 
 /// Run the full scan loop on a blocking thread. Drops the `running`
 /// flag in the worker state before returning regardless of outcome.
+/// `trip_ids` is an optional whitelist; `None` means "every trip in
+/// the library" (the default Start-button behavior). When set, only
+/// segments belonging to those trips are scanned (per-trip Rebuild).
 pub fn run_scan_loop(
     app: AppHandle,
     db: DbHandle,
@@ -78,8 +81,9 @@ pub fn run_scan_loop(
     cancel: CancelFlag,
     scan_ids: Vec<String>,
     scope: ScanScope,
+    trip_ids: Option<Vec<String>>,
 ) {
-    let result = run_inner(&app, &db, &cancel, &scan_ids, scope);
+    let result = run_inner(&app, &db, &cancel, &scan_ids, scope, trip_ids.as_deref());
     // Always clear running=false so future start_scan calls aren't blocked.
     if let Ok(mut guard) = state.lock() {
         guard.running = false;
@@ -96,12 +100,26 @@ fn run_inner(
     cancel: &CancelFlag,
     scan_ids: &[String],
     scope: ScanScope,
+    trip_ids: Option<&[String]>,
 ) -> Result<(), AppError> {
     let (segments, places) = {
         let conn = db
             .lock()
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-        let segs = db::segments::all_segments(&conn)?;
+        let mut segs = db::segments::all_segments(&conn)?;
+        if let Some(ids) = trip_ids {
+            let trip_set: std::collections::HashSet<&str> =
+                ids.iter().map(|s| s.as_str()).collect();
+            segs.retain(|s| trip_set.contains(s.trip_id.as_str()));
+        }
+        // Drop segments whose master file is missing on disk. They
+        // aren't scannable units — `File::open` would error with
+        // NotFound and the result would land as `status='error'` in
+        // `scan_runs`, which makes the trip's coverage pill show red
+        // for what's really just a deleted-on-disk file. Filtering
+        // here keeps `total` accurate (so the progress bar reflects
+        // real work) and prevents writing phantom-failure rows.
+        segs.retain(|s| std::path::Path::new(&s.master_path).exists());
         let pls = db::places::list_places(&conn).unwrap_or_default();
         (segs, pls)
     };
@@ -139,6 +157,26 @@ fn run_inner(
         let Some(scan) = find_scan(&scan_id) else {
             continue;
         };
+
+        // Top-of-loop progress emit. Same rationale as the timelapse
+        // worker: putting it here (rather than after scan.run) means
+        // the final iteration's tally always reaches the frontend via
+        // the post-loop emit below, and the `current_*` fields
+        // describe the upcoming item ("now scanning…") rather than
+        // the just-finished one.
+        if last_emit.elapsed() >= EMIT_INTERVAL {
+            let _ = app.emit(
+                "scan:progress",
+                ScanProgressEvent {
+                    total,
+                    done,
+                    failed,
+                    current_segment_id: Some(segment.id.clone()),
+                    current_scan_id: Some(scan.id().to_string()),
+                },
+            );
+            last_emit = Instant::now();
+        }
 
         let ctx = ScanContext {
             segment,
@@ -180,21 +218,22 @@ fn run_inner(
                 }
             }
         }
-
-        if last_emit.elapsed() >= EMIT_INTERVAL {
-            let _ = app.emit(
-                "scan:progress",
-                ScanProgressEvent {
-                    total,
-                    done,
-                    failed,
-                    current_segment_id: Some(segment.id.clone()),
-                    current_scan_id: Some(scan.id().to_string()),
-                },
-            );
-            last_emit = Instant::now();
-        }
     }
+
+    // Final unthrottled progress emit so the bar always lands on the
+    // closing tally (e.g. 4/4 instead of 3/4 if the last iteration
+    // happened inside the throttle window). `scan:done` doesn't
+    // update the progress payload on the frontend.
+    let _ = app.emit(
+        "scan:progress",
+        ScanProgressEvent {
+            total,
+            done,
+            failed,
+            current_segment_id: None,
+            current_scan_id: None,
+        },
+    );
 
     let cancelled = cancel.load(Ordering::Relaxed);
     let _ = app.emit(

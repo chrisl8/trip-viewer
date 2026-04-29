@@ -1,5 +1,38 @@
 @import "tailwindcss";
 
+@theme {
+  --animate-pulse-sky: pulse-glow-sky 1.6s ease-in-out infinite;
+  --animate-pulse-violet: pulse-glow-violet 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse-glow-sky {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(56, 189, 248, 0.45),
+      0 0 6px rgba(56, 189, 248, 0.25);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(56, 189, 248, 0.95),
+      0 0 14px rgba(56, 189, 248, 0.75);
+  }
+}
+
+@keyframes pulse-glow-violet {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(167, 139, 250, 0.45),
+      0 0 6px rgba(167, 139, 250, 0.25);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(167, 139, 250, 0.95),
+      0 0 14px rgba(167, 139, 250, 0.75);
+  }
+}
+
 html,
 body,
 #root {

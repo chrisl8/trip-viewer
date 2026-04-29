@@ -11,10 +11,11 @@ use tauri::{AppHandle, State};
 
 use crate::db::DbHandle;
 use crate::error::AppError;
+use crate::scans::coverage::TripScanCoverage;
 use crate::scans::worker::{
     new_cancel_flag, run_scan_loop, ScanScope, SharedWorkerState,
 };
-use crate::scans::{registry, CostTier};
+use crate::scans::{coverage, registry, CostTier};
 
 /// Describe every registered scan so the ScanView can render checkboxes.
 #[derive(Debug, Serialize)]
@@ -45,11 +46,14 @@ pub async fn list_scans() -> Vec<ScanDescriptor> {
 
 /// Kick off a background scan. Returns immediately; progress arrives via
 /// events. Errors if a scan is already running — the caller should
-/// cancel first.
+/// cancel first. `trip_ids` is an optional whitelist; when present the
+/// worker only processes segments belonging to those trips (used by the
+/// per-trip Rebuild button on the Trips table). `None` = whole library.
 #[tauri::command]
 pub async fn start_scan(
     scan_ids: Vec<String>,
     scope: ScanScope,
+    trip_ids: Option<Vec<String>>,
     app: AppHandle,
     db: State<'_, DbHandle>,
     worker_state: State<'_, SharedWorkerState>,
@@ -71,10 +75,29 @@ pub async fn start_scan(
     let db_clone: DbHandle = (*db).clone();
     let state_clone: SharedWorkerState = (*worker_state).clone();
     tauri::async_runtime::spawn_blocking(move || {
-        run_scan_loop(app_clone, db_clone, state_clone, cancel, scan_ids, scope);
+        run_scan_loop(
+            app_clone,
+            db_clone,
+            state_clone,
+            cancel,
+            scan_ids,
+            scope,
+            trip_ids,
+        );
     });
 
     Ok(())
+}
+
+/// Compute per-trip × per-scan coverage for the Trips table on the
+/// Scan view. Returns a row per trip, with one `ScanCoverage` per
+/// registered scan (whether or not the user has it selected). Cheap
+/// — two GROUP BY queries plus a HashMap merge.
+#[tauri::command]
+pub async fn list_scan_coverage(
+    db: State<'_, DbHandle>,
+) -> Result<Vec<TripScanCoverage>, AppError> {
+    coverage::list_scan_coverage(&db)
 }
 
 /// Request that the running scan stop at the next safe point. No-op if

@@ -2,11 +2,73 @@ import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import {
   listScans,
+  type ScanCoverage,
   type ScanDescriptor,
   type ScanScope,
 } from "../../ipc/scanner";
 import { useStore } from "../../state/store";
 import { CATEGORY_COLORS, categoryForTag } from "../../utils/tagColors";
+import { formatTripStart } from "../../utils/format";
+import { TripActionsMenu } from "../trip/TripActionsMenu";
+
+type PillState = "done" | "stale" | "partial" | "failed" | "notRun";
+
+// Reduce the four-bucket tally to a single dominant state. Failures
+// take priority because they're the most actionable; an entirely
+// untouched (trip, scan) is "notRun" rather than "partial" so the
+// user can tell "I haven't run this yet" from "this is mid-progress."
+function pillState(c: ScanCoverage): PillState {
+  if (c.failedCount > 0) return "failed";
+  if (c.totalSegments === 0) return "notRun";
+  if (c.notRunCount === c.totalSegments) return "notRun";
+  if (c.notRunCount > 0) return "partial";
+  if (c.staleCount > 0) return "stale";
+  return "done";
+}
+
+const PILL_CLASSES: Record<PillState, string> = {
+  done: "border-emerald-700 bg-emerald-950/60 text-emerald-200",
+  stale: "border-yellow-700 bg-yellow-950/60 text-yellow-200",
+  partial: "border-orange-700 bg-orange-950/60 text-orange-200",
+  failed: "border-red-700 bg-red-950/60 text-red-200",
+  notRun: "border-neutral-700 bg-neutral-900 text-neutral-500",
+};
+
+const PILL_GLYPH: Record<PillState, string> = {
+  done: "✓",
+  stale: "⚠",
+  partial: "◐",
+  failed: "✗",
+  notRun: "○",
+};
+
+function pillTooltip(displayName: string, c: ScanCoverage): string {
+  const state = pillState(c);
+  const stateLabel: Record<PillState, string> = {
+    done: "complete",
+    stale: "stale (algorithm version bumped)",
+    partial: "partial",
+    failed: "failed",
+    notRun: "not run",
+  };
+  const parts = [`${displayName} — ${stateLabel[state]}`];
+  if (c.totalSegments > 0) {
+    const tally = `${c.doneCount}/${c.totalSegments} segments done`;
+    const extras: string[] = [];
+    if (c.staleCount > 0) extras.push(`${c.staleCount} stale`);
+    if (c.failedCount > 0) extras.push(`${c.failedCount} failed`);
+    if (c.notRunCount > 0 && c.notRunCount < c.totalSegments) {
+      extras.push(`${c.notRunCount} not run`);
+    }
+    parts.push(extras.length > 0 ? `${tally} · ${extras.join(" · ")}` : tally);
+  }
+  if (c.sampleFailures.length > 0) {
+    parts.push("");
+    parts.push("Errors:");
+    for (const msg of c.sampleFailures) parts.push(`• ${msg}`);
+  }
+  return parts.join("\n");
+}
 
 const SCOPE_LABELS: { value: ScanScope; label: string; hint: string }[] = [
   {
@@ -46,6 +108,10 @@ export function ScanView() {
   const startMs = useStore((s) => s.scanStartMs);
   const startScan = useStore((s) => s.startAnalysisScan);
   const cancelScan = useStore((s) => s.cancelAnalysisScan);
+  const trips = useStore((s) => s.trips);
+  const coverage = useStore((s) => s.scanCoverage);
+  const refreshCoverage = useStore((s) => s.refreshScanCoverage);
+  const places = useStore((s) => s.places);
 
   // Tick once per second while a scan is running so the ETA display
   // ticks down in real time even when no new progress event has landed.
@@ -71,7 +137,51 @@ export function ScanView() {
       .catch((e) => {
         setLoadError(String(e));
       });
-  }, []);
+    void refreshCoverage();
+  }, [refreshCoverage]);
+
+  // Poll the coverage matrix while a scan is running so the Trips
+  // table reflects rows flipping to done/stale/failed live. The query
+  // is two GROUP BY scans plus a HashMap merge — cheap. The cleanup
+  // also refreshes once to catch the final transitions.
+  useEffect(() => {
+    if (!running) return;
+    const interval = setInterval(() => void refreshCoverage(), 1500);
+    return () => {
+      clearInterval(interval);
+      void refreshCoverage();
+    };
+  }, [running, refreshCoverage]);
+
+  const coverageByTrip = useMemo(() => {
+    const m: Record<string, ScanCoverage[]> = {};
+    for (const t of coverage) m[t.tripId] = t.perScan;
+    return m;
+  }, [coverage]);
+
+  const scansById = useMemo(() => {
+    const m: Record<string, ScanDescriptor> = {};
+    for (const s of scans) m[s.id] = s;
+    return m;
+  }, [scans]);
+
+  // Map segmentId → tripId so the live progress event's
+  // currentSegmentId can be resolved to the trip whose row should
+  // light up. Trips and their segments are already in memory; this
+  // is just a flat index over them.
+  const segmentToTripId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of trips) {
+      for (const s of t.segments) m.set(s.id, t.id);
+    }
+    return m;
+  }, [trips]);
+
+  const runningTripId =
+    running && progress?.currentSegmentId
+      ? (segmentToTripId.get(progress.currentSegmentId) ?? null)
+      : null;
+  const runningScanId = (running && progress?.currentScanId) || null;
 
   const canStart = selected.size > 0 && !running && scans.length > 0;
   const doneCount = progress?.done ?? 0;
@@ -98,6 +208,25 @@ export function ScanView() {
       setLoadError(String(e));
     }
   }
+
+  async function onRebuildTrip(tripId: string) {
+    try {
+      // newOnly would silently no-op for an already-scanned trip,
+      // which is the opposite of what "Rebuild" means. Coerce to
+      // "all"; pass rescanStale/all through unchanged. Same fix as
+      // the Timelapse per-trip rebuild button.
+      const effectiveScope: ScanScope = scope === "newOnly" ? "all" : scope;
+      await startScan(Array.from(selected), effectiveScope, [tripId]);
+    } catch (e) {
+      setLoadError(String(e));
+    }
+  }
+
+  const rebuildDisabledReason = running
+    ? "Scan in progress"
+    : selected.size === 0
+      ? "Pick at least one scan"
+      : null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-neutral-950 text-neutral-100">
@@ -179,6 +308,14 @@ export function ScanView() {
                           );
                         })}
                       </div>
+                      {scan.id === "gps_place" && places.length === 0 && (
+                        <p className="mt-2 rounded-md bg-amber-950/60 px-2 py-1 text-[11px] text-amber-300">
+                          No places defined yet — this scan won&apos;t emit
+                          any tags until you add at least one. Open{" "}
+                          <span className="font-medium">Places</span> in the
+                          sidebar footer to define points of interest.
+                        </p>
+                      )}
                     </div>
                   </label>
                 </li>
@@ -257,6 +394,123 @@ export function ScanView() {
             <div className="mt-1 text-xs text-neutral-400">
               {lastResult.done} scanned · {lastResult.tagsEmitted} tags
               emitted · {lastResult.failed} failed
+            </div>
+          </section>
+        )}
+
+        {trips.length > 0 && scans.length > 0 && (
+          <section className="mb-6">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-400">
+              Trips
+            </h2>
+            <div className="overflow-hidden rounded-md border border-neutral-800">
+              <table className="w-full text-sm">
+                <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Trip</th>
+                    <th className="px-3 py-2 text-left">Segments</th>
+                    <th className="px-3 py-2 text-left">Coverage</th>
+                    <th className="px-3 py-2 text-left">Rebuild</th>
+                    <th className="px-3 py-2 text-left"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trips.map((t) => {
+                    const perScan = coverageByTrip[t.id] ?? [];
+                    const isTripRunning = t.id === runningTripId;
+                    return (
+                      <tr
+                        key={t.id}
+                        className={clsx(
+                          "border-t border-neutral-800 hover:bg-neutral-900/60",
+                          // Subtle row tint when this trip is currently
+                          // being scanned — overrides the default hover
+                          // background so the highlight stays visible
+                          // even on hover.
+                          isTripRunning && "bg-sky-950/30",
+                        )}
+                      >
+                        <td className="px-3 py-2">
+                          <div className="truncate text-neutral-200">
+                            {formatTripStart(t.startTime)}
+                          </div>
+                          <div className="text-xs text-neutral-500">
+                            {t.id.slice(0, 8)}…
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-neutral-400">
+                          {t.segments.length}
+                        </td>
+                        <td className="px-3 py-2">
+                          {perScan.length === 0 ? (
+                            <span className="text-xs text-neutral-500">—</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {perScan.map((c) => {
+                                const scan = scansById[c.scanId];
+                                const label = scan?.displayName ?? c.scanId;
+                                const state = pillState(c);
+                                // Live overlay: the (trip, scan) currently
+                                // being processed gets a sky-blue pulsing
+                                // pill regardless of the underlying coverage
+                                // state. scan_runs only records final state,
+                                // so "running" is overlay info from the
+                                // progress event, not a coverage bucket.
+                                const isPillRunning =
+                                  isTripRunning && c.scanId === runningScanId;
+                                return (
+                                  <span
+                                    key={c.scanId}
+                                    title={
+                                      isPillRunning
+                                        ? `${label} — running now`
+                                        : pillTooltip(label, c)
+                                    }
+                                    className={clsx(
+                                      "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium",
+                                      isPillRunning
+                                        ? "animate-pulse-sky border-sky-500 bg-sky-950/60 text-sky-200"
+                                        : PILL_CLASSES[state],
+                                    )}
+                                  >
+                                    <span aria-hidden="true">
+                                      {isPillRunning ? "▶" : PILL_GLYPH[state]}
+                                    </span>
+                                    {label}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            onClick={() => void onRebuildTrip(t.id)}
+                            disabled={rebuildDisabledReason !== null}
+                            className={clsx(
+                              "rounded px-2 py-1 text-xs font-medium transition-colors",
+                              rebuildDisabledReason === null
+                                ? "bg-neutral-700 text-neutral-100 hover:bg-neutral-600"
+                                : "cursor-not-allowed bg-neutral-800 text-neutral-600",
+                            )}
+                            title={
+                              rebuildDisabledReason ??
+                              (scope === "newOnly"
+                                ? "Re-run the selected scans on this trip (forces re-scan — scope is set to New segments only, which would otherwise skip done rows)"
+                                : `Re-run the selected scans on this trip (scope: ${scope === "rescanStale" ? "Rescan stale" : "Scan all"})`)
+                            }
+                          >
+                            ↻
+                          </button>
+                        </td>
+                        <td className="px-3 py-2">
+                          <TripActionsMenu trip={t} variant="icon" />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </section>
         )}
