@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { MapContainer, TileLayer } from "react-leaflet";
+import { useEffect, useMemo, useState } from "react";
+import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import { useStore } from "../../state/store";
 import { interpolateGps } from "../../engine/interpolate";
 import { dumpMiltonaGpsDebug } from "../../ipc/gps";
@@ -10,6 +10,24 @@ import { SpeedReadout } from "../hud/SpeedReadout";
 import { HeadingReadout } from "../hud/HeadingReadout";
 import { computeTripTime } from "../../utils/tripTime";
 import "leaflet/dist/leaflet.css";
+
+/**
+ * Keeps Leaflet's cached container size in sync with the actual DOM
+ * size. Without this, fitBounds called shortly after mount can land on
+ * the wrong center+zoom because Leaflet computes the result against a
+ * stale `_size`. Symptom: map shows the trip area but shifted/zoomed
+ * wrong until a click-away-and-back forces a remount.
+ */
+function MapResizeObserver() {
+  const map = useMap();
+  useEffect(() => {
+    const container = map.getContainer();
+    const ro = new ResizeObserver(() => map.invalidateSize());
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [map]);
+  return null;
+}
 
 /**
  * Button for Miltona segments that dumps the raw `gps0` atom plus every
@@ -167,13 +185,13 @@ export function MapPanel({ activeSegment }: Props) {
     return null;
   }
 
-  if (tripGpsPoints.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center rounded-md bg-neutral-900 text-xs text-neutral-500">
-        No GPS data
-      </div>
-    );
-  }
+  // MapContainer is always mounted while a trip is loaded so that
+  // GPS arriving after a trip click doesn't trigger a fresh mount of
+  // Leaflet (which races with the Polyline/CircleMarker children's
+  // pane attachment — symptom: tiles render but track + marker
+  // silently fail to paint until you click away and back). The
+  // "No GPS data" caption renders on top instead of replacing it.
+  const hasTripGps = tripGpsPoints.length > 0;
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-md">
@@ -185,13 +203,23 @@ export function MapPanel({ activeSegment }: Props) {
         attributionControl={false}
       >
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        <TrackPolyline points={tripGpsPoints} />
-        <VehicleMarker
-          gpsPoints={consumerGpsPoints}
-          interpolationTime={consumerInterpTime}
-          activeSegment={activeSegment}
-        />
+        <MapResizeObserver />
+        {hasTripGps && <TrackPolyline points={tripGpsPoints} />}
+        {hasTripGps && (
+          <VehicleMarker
+            gpsPoints={consumerGpsPoints}
+            tripGpsPoints={tripGpsPoints}
+            interpolationTime={consumerInterpTime}
+            activeSegment={activeSegment}
+          />
+        )}
       </MapContainer>
+
+      {!hasTripGps && (
+        <div className="pointer-events-none absolute inset-0 z-[1000] flex items-center justify-center bg-neutral-900/70 text-xs text-neutral-400">
+          Loading GPS…
+        </div>
+      )}
 
       <GpsMissingRibbon
         gpsPoints={consumerGpsPoints}

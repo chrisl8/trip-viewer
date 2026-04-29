@@ -6,6 +6,11 @@ import type { GpsPoint, Segment } from "../../types/model";
 
 interface Props {
   gpsPoints: GpsPoint[];
+  /** Whole-trip GPS (all segments stitched), used to fit-bounds on
+   *  trip select. Distinct from `gpsPoints`, which in Original mode
+   *  is just the active segment's track and would fit-bounds to a
+   *  small window around the start of the trip. */
+  tripGpsPoints: GpsPoint[];
   /** Time to interpolate at. The caller decides whether this is
    *  segment-local seconds (matching `gpsPoints` from the active
    *  segment) in Original mode, or concat-time seconds (matching
@@ -16,11 +21,15 @@ interface Props {
 
 export function VehicleMarker({
   gpsPoints,
+  tripGpsPoints,
   interpolationTime,
   activeSegment,
 }: Props) {
   const map = useMap();
-  const hasFitRef = useRef<string | null>(null);
+  const loadedTripId = useStore((s) => s.loadedTripId);
+  const isPlaying = useStore((s) => s.isPlaying);
+  const fittedTripRef = useRef<string | null>(null);
+  const zoomedInTripRef = useRef<string | null>(null);
 
   const interp = useMemo(
     () =>
@@ -28,22 +37,51 @@ export function VehicleMarker({
     [gpsPoints, interpolationTime, activeSegment],
   );
 
-  // Fit map bounds on first GPS load per trip
+  // Reset one-shots when the trip changes so the new trip gets its
+  // own fit-bounds + first-play zoom-in.
   useEffect(() => {
-    const tripId = useStore.getState().loadedTripId;
-    if (!tripId || hasFitRef.current === tripId) return;
-    if (gpsPoints.length === 0) return;
+    fittedTripRef.current = null;
+    zoomedInTripRef.current = null;
+  }, [loadedTripId]);
 
-    hasFitRef.current = tripId;
-    const lats = gpsPoints.map((p) => p.lat);
-    const lons = gpsPoints.map((p) => p.lon);
-    map.fitBounds([
-      [Math.min(...lats), Math.min(...lons)],
-      [Math.max(...lats), Math.max(...lons)],
-    ], { padding: [30, 30] });
-  }, [gpsPoints, map]);
+  // Fit-bounds once per trip, as soon as trip-level GPS is available.
+  // maxZoom caps the initial view so very short trips don't end up
+  // zoomed in tighter than the eventual vehicle-level zoom.
+  useEffect(() => {
+    if (!loadedTripId || fittedTripRef.current === loadedTripId) return;
+    if (tripGpsPoints.length === 0) return;
 
-  // Follow the marker during playback
+    fittedTripRef.current = loadedTripId;
+    // Force a fresh size read before fitBounds. Leaflet's cached
+    // _size can be stale on the first fit after mount, which makes
+    // fitBounds compute the wrong center+zoom for the actual viewport.
+    map.invalidateSize();
+    const lats = tripGpsPoints.map((p) => p.lat);
+    const lons = tripGpsPoints.map((p) => p.lon);
+    map.fitBounds(
+      [
+        [Math.min(...lats), Math.min(...lons)],
+        [Math.max(...lats), Math.max(...lons)],
+      ],
+      { padding: [30, 30], maxZoom: 15 },
+    );
+  }, [loadedTripId, tripGpsPoints, map]);
+
+  // First-play zoom-in: snap to the vehicle once per trip when
+  // playback first starts and we have a usable interpolated point.
+  // Subsequent plays don't re-zoom — the user owns zoom from here.
+  useEffect(() => {
+    if (!loadedTripId || zoomedInTripRef.current === loadedTripId) return;
+    if (!isPlaying) return;
+    if (!interp || interp.stale) return;
+
+    zoomedInTripRef.current = loadedTripId;
+    map.setView([interp.lat, interp.lon], 15, { animate: true });
+  }, [loadedTripId, isPlaying, interp, map]);
+
+  // Pan-follow whenever the marker leaves the visible area. Runs
+  // unconditionally — pan and zoom are independent. If the user has
+  // zoomed out, this just keeps following at their chosen zoom.
   useEffect(() => {
     if (!interp || interp.stale) return;
     if (!map.getBounds().contains([interp.lat, interp.lon])) {
