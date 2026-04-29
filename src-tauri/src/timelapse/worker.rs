@@ -158,6 +158,40 @@ fn run_inner(
             break;
         }
 
+        // Flip the row to status='running' before the prep work, not
+        // after. Per-trip prep (GPS extraction across all segments,
+        // sibling scan, black-placeholder generation when needed) can
+        // take many seconds; if `mark_running` waits until just before
+        // ffmpeg starts, the Trips table polling shows "pending" the
+        // whole time. Failure paths overwrite running with failed, so
+        // the state machine stays correct.
+        mark_running(db, item)?;
+
+        // Emit progress at the top of each iteration rather than the
+        // bottom. Several failure paths below `continue` past the
+        // bottom of the loop, which used to hide a stream of fast
+        // failures (e.g. CameraDoesNotRecord for every I/R job on a
+        // single-channel dashcam) — the internal `failed` counter
+        // climbed but no event reached the frontend, so the bar sat
+        // at 0/N indefinitely. Top-of-loop emit fires regardless of
+        // which path the iteration takes. The 250 ms throttle still
+        // prevents IPC saturation. `current_*` describes the upcoming
+        // item ("now working on…") rather than the previous one.
+        if last_emit.elapsed() >= EMIT_INTERVAL {
+            let _ = app.emit(
+                "timelapse:progress",
+                TimelapseProgressEvent {
+                    total,
+                    done,
+                    failed,
+                    current_trip_id: Some(item.trip_id.clone()),
+                    current_tier: Some(item.tier.as_str().to_string()),
+                    current_channel: Some(item.channel.as_str().to_string()),
+                },
+            );
+            last_emit = Instant::now();
+        }
+
         // Refresh the cache if we've moved to a new trip.
         if cached.as_ref().map(|c| c.trip_id.as_str()) != Some(item.trip_id.as_str()) {
             cached = match build_trip_context(db, &item.trip_id) {
@@ -328,8 +362,6 @@ fn run_inner(
             item.channel.as_str()
         ));
 
-        mark_running(db, item)?;
-
         let args = EncodeArgs {
             ffmpeg_path,
             source_paths: &sources,
@@ -384,21 +416,23 @@ fn run_inner(
             }
         }
 
-        if last_emit.elapsed() >= EMIT_INTERVAL {
-            let _ = app.emit(
-                "timelapse:progress",
-                TimelapseProgressEvent {
-                    total,
-                    done,
-                    failed,
-                    current_trip_id: Some(item.trip_id.clone()),
-                    current_tier: Some(item.tier.as_str().to_string()),
-                    current_channel: Some(item.channel.as_str().to_string()),
-                },
-            );
-            last_emit = Instant::now();
-        }
     }
+
+    // Final progress emit so the UI reflects the closing tally. The
+    // top-of-loop emit can't cover this — there's no next iteration
+    // to anchor it to — and `timelapse:done` doesn't update the
+    // progress payload on the frontend.
+    let _ = app.emit(
+        "timelapse:progress",
+        TimelapseProgressEvent {
+            total,
+            done,
+            failed,
+            current_trip_id: None,
+            current_tier: None,
+            current_channel: None,
+        },
+    );
 
     let cancelled = cancel.load(Ordering::Relaxed);
     let _ = app.emit(
