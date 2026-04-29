@@ -30,6 +30,7 @@ export function VehicleMarker({
   const isPlaying = useStore((s) => s.isPlaying);
   const fittedTripRef = useRef<string | null>(null);
   const zoomedInTripRef = useRef<string | null>(null);
+  const userInteractingRef = useRef(false);
 
   const interp = useMemo(
     () =>
@@ -43,6 +44,28 @@ export function VehicleMarker({
     fittedTripRef.current = null;
     zoomedInTripRef.current = null;
   }, [loadedTripId]);
+
+  // Track whether the user is currently dragging or zooming the map.
+  // Pan-follow defers to active gestures — yanking the view mid-drag
+  // would feel like the app fighting the user.
+  useEffect(() => {
+    const onStart = () => {
+      userInteractingRef.current = true;
+    };
+    const onEnd = () => {
+      userInteractingRef.current = false;
+    };
+    map.on("dragstart", onStart);
+    map.on("dragend", onEnd);
+    map.on("zoomstart", onStart);
+    map.on("zoomend", onEnd);
+    return () => {
+      map.off("dragstart", onStart);
+      map.off("dragend", onEnd);
+      map.off("zoomstart", onStart);
+      map.off("zoomend", onEnd);
+    };
+  }, [map]);
 
   // Fit-bounds once per trip, as soon as trip-level GPS is available.
   // maxZoom caps the initial view so very short trips don't end up
@@ -70,6 +93,10 @@ export function VehicleMarker({
   // First-play zoom-in: snap to the vehicle once per trip when
   // playback first starts and we have a usable interpolated point.
   // Subsequent plays don't re-zoom — the user owns zoom from here.
+  // Intentionally per-trip, NOT per-segment: switching segments
+  // within a trip lets pan-follow bring the new vehicle position
+  // into view at whatever zoom the user has chosen, instead of
+  // snapping back to 15× and overriding their context view.
   useEffect(() => {
     if (!loadedTripId || zoomedInTripRef.current === loadedTripId) return;
     if (!isPlaying) return;
@@ -79,11 +106,14 @@ export function VehicleMarker({
     map.setView([interp.lat, interp.lon], 15, { animate: true });
   }, [loadedTripId, isPlaying, interp, map]);
 
-  // Pan-follow whenever the marker leaves the visible area. Runs
-  // unconditionally — pan and zoom are independent. If the user has
-  // zoomed out, this just keeps following at their chosen zoom.
+  // Pan-follow whenever the marker leaves the visible area. Pan and
+  // zoom are independent — if the user has zoomed out, this just
+  // keeps following at their chosen zoom. Skipped while the user is
+  // mid-drag or mid-zoom so the auto-pan doesn't fight the gesture;
+  // the next interp tick after gesture-end will catch up if needed.
   useEffect(() => {
     if (!interp || interp.stale) return;
+    if (userInteractingRef.current) return;
     if (!map.getBounds().contains([interp.lat, interp.lon])) {
       map.panTo([interp.lat, interp.lon], { animate: true, duration: 0.3 });
     }
