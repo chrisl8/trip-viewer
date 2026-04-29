@@ -55,6 +55,20 @@ export interface Trip {
   startTime: string;
   endTime: string;
   segments: Segment[];
+  /**
+   * Mirrors `Segment.cameraKind`. Persisted on the trip row so a trip
+   * with no segments left on disk (archive-only — only the timelapse
+   * remains) still has the metadata playback needs.
+   */
+  cameraKind: CameraKind;
+  /** Mirrors `Segment.gpsSupported`, same rationale as `cameraKind`. */
+  gpsSupported: boolean;
+  /**
+   * True when the trip's source segments have all been deleted but its
+   * timelapse pre-render(s) remain. The trip is still discoverable in
+   * the sidebar; only tier playback is available — Original is hidden.
+   */
+  archiveOnly?: boolean;
   /** Trip-level tags. Same caveat as `Segment.tags` re: slice vs. field. */
   tags?: Tag[];
 }

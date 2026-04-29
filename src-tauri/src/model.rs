@@ -88,6 +88,19 @@ pub struct Trip {
     pub start_time: NaiveDateTime,
     pub end_time: NaiveDateTime,
     pub segments: Vec<Segment>,
+    /// Mirrors `Segment.camera_kind` so a trip whose source segments
+    /// have been deleted (archive-only — only the timelapse remains)
+    /// can still be played back without needing to read from a
+    /// non-existent segment.
+    pub camera_kind: CameraKind,
+    /// Mirrors `Segment.gps_supported`, same rationale as `camera_kind`.
+    pub gps_supported: bool,
+    /// True when this trip has no source segments left on disk and is
+    /// only viewable via its timelapse pre-render(s). Set by the
+    /// archive-only loader; always false for trips returned by
+    /// `scan_folder`.
+    #[serde(default)]
+    pub archive_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

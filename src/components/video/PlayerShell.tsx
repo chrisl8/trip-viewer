@@ -58,6 +58,9 @@ export function PlayerShell() {
   // Original mode, and continues to drive them in tiered mode where
   // we update activeSegmentId as the playhead crosses virtual segment
   // boundaries (so tags + map stay on the right segment).
+  // For archive-only trips (no source segments left, only the
+  // timelapse remains) this stays null — SegmentTagBar / MapPanel
+  // hide themselves and the tier file plays without overlay state.
   const activeSegmentForUi = useStore((s): Segment | null => {
     const trip = s.trips.find((t) => t.id === s.loadedTripId);
     if (!trip || trip.segments.length === 0) return null;
@@ -106,14 +109,30 @@ export function PlayerShell() {
       hasGpmdTrack: false,
     }));
 
+    // For archive-only trips, fall back to wall-clock duration since
+    // segments is empty. Tier playback's actual duration comes from
+    // the file itself; this synthetic value is mainly used by the
+    // Timeline before the engine reports the real one.
+    const segmentTotalS = trip.segments.reduce(
+      (sum, s) => sum + s.durationS,
+      0,
+    );
+    const wallClockS =
+      (new Date(trip.endTime).getTime() -
+        new Date(trip.startTime).getTime()) /
+      1000;
+    const durationS = segmentTotalS > 0 ? segmentTotalS : Math.max(0, wallClockS);
+
     return {
       id: `__tier_${tier}_${trip.id}`,
       startTime: trip.startTime,
-      durationS: trip.segments.reduce((sum, s) => sum + s.durationS, 0),
+      durationS,
       isEvent: false,
       channels,
-      cameraKind: trip.segments[0]?.cameraKind ?? "wolfBox",
-      gpsSupported: trip.segments[0]?.gpsSupported ?? true,
+      // Trip-level metadata is persisted on the row itself so archive-only
+      // trips (no segments left) still have the right values.
+      cameraKind: trip.cameraKind,
+      gpsSupported: trip.gpsSupported,
     };
   }, [sourceMode, activeSegmentForUi, trip, timelapseJobs]);
 
@@ -346,13 +365,42 @@ export function PlayerShell() {
     [],
   );
 
+  // Archive-only trips have no Original tier (no source files left), so
+  // when the user picks one we have to switch sourceMode off Original
+  // ourselves. selectTrip resets sourceMode to "original" by default,
+  // so without this effect the player would hang on a trip with no
+  // source segments. Picks the lowest available tier (8x → 16x → 60x)
+  // — that's what the user is most likely to have encoded if only
+  // partial coverage exists. Realistically unreachable for trips with
+  // no done jobs because the archive-only loader and GC rule only keep
+  // trips alive when at least one timelapse_jobs row exists.
+  useEffect(() => {
+    if (!trip || trip.archiveOnly !== true) return;
+    if (sourceMode !== "original") return;
+    const tiers: ("8x" | "16x" | "60x")[] = ["8x", "16x", "60x"];
+    for (const tier of tiers) {
+      const hasDone = timelapseJobs.some(
+        (j) => j.tripId === trip.id && j.tier === tier && j.status === "done",
+      );
+      if (hasDone) {
+        onSourceChange(tier);
+        return;
+      }
+    }
+  }, [trip, sourceMode, timelapseJobs, onSourceChange]);
+
   // When the active segment's camera doesn't record GPS, collapse the map
   // slot and let the video grid grow into the freed space. A small muted
   // caption explains why — so users aren't left wondering where the map went.
-  const gpsSupported = activeSegmentForUi?.gpsSupported ?? true;
-  const gridCols = gpsSupported
-    ? "grid-cols-[2fr_1fr_1fr]"
-    : "grid-cols-[3fr_1fr]";
+  // For archive-only trips with no active segment, fall back to the
+  // trip-level value so the layout doesn't flicker.
+  const gpsSupported =
+    activeSegmentForUi?.gpsSupported ?? trip?.gpsSupported ?? true;
+  const archiveOnly = trip?.archiveOnly === true;
+  // Archive-only trips have no MapPanel because GPS lives with the
+  // source segments, not the timelapse. Always collapse the map slot.
+  const showMap = gpsSupported && !archiveOnly;
+  const gridCols = showMap ? "grid-cols-[2fr_1fr_1fr]" : "grid-cols-[3fr_1fr]";
 
   return (
     <div className="flex h-full flex-col">
@@ -361,7 +409,7 @@ export function PlayerShell() {
           channelRefs={channelRefs}
           activeSegment={activeSegmentForVideo}
         />
-        {gpsSupported && <MapPanel activeSegment={activeSegmentForUi} />}
+        {showMap && <MapPanel activeSegment={activeSegmentForUi} />}
         <DriftHud />
       </div>
       {!gpsSupported && activeSegmentForUi && (

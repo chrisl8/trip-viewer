@@ -59,6 +59,15 @@ function App() {
     // persisted value. Without this, the config modal auto-opens on a
     // racing null value and *looks* like persistence is broken.
     void useStore.getState().refreshTimelapseSettings();
+    // Load timelapse jobs eagerly: needed by PlayerShell to play
+    // archive-only trips (segments deleted, only the timelapse
+    // remains) and by the segment-delete flow to know whether to keep
+    // a now-empty trip alive in the sidebar.
+    void useStore.getState().refreshTimelapseJobs();
+    // Surface any archive-only trips at startup, even before the user
+    // opens a folder. They live in the DB; the sidebar should show
+    // them as soon as the app loads.
+    void useStore.getState().mergeArchiveOnlyTrips();
   }, [setVideoPort]);
 
   // Attach scan-pipeline event listeners at the app root so progress

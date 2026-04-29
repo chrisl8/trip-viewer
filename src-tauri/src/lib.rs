@@ -10,6 +10,7 @@ pub mod scan;
 mod scans;
 mod tags;
 mod timelapse;
+mod trips;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod video_server;
 mod window_fit;
@@ -132,6 +133,10 @@ pub fn run() {
             tags::commands::add_user_tag,
             tags::commands::remove_user_tag,
             tags::commands::delete_segments_to_trash,
+            trips::commands::list_archive_only_trips,
+            trips::commands::delete_trip,
+            trips::commands::assess_trip_merge,
+            trips::commands::merge_trips,
             scans::commands::list_scans,
             scans::commands::start_scan,
             scans::commands::cancel_scan,

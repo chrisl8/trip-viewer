@@ -7,6 +7,7 @@ import type {
   TimelapseTier,
 } from "../../ipc/timelapse";
 import { formatTripStart } from "../../utils/format";
+import { TripActionsMenu } from "../trip/TripActionsMenu";
 import { FfmpegConfig } from "./FfmpegConfig";
 
 const TIER_OPTIONS: {
@@ -124,6 +125,20 @@ export function TimelapseView() {
     return () => clearInterval(interval);
   }, [running]);
 
+  // Poll the jobs table while a run is active so the Trips table
+  // reflects rows flipping pending → running → done/failed live.
+  // Progress events carry only summary counts, not per-row state, so
+  // periodic re-query is the cheapest way to keep the table fresh.
+  // The cleanup also refreshes once to catch the final transitions.
+  useEffect(() => {
+    if (!running) return;
+    const interval = setInterval(() => void refreshJobs(), 1500);
+    return () => {
+      clearInterval(interval);
+      void refreshJobs();
+    };
+  }, [running, refreshJobs]);
+
   const configured = ffmpegPath !== null && caps !== null;
 
   const doneCount = progress?.done ?? 0;
@@ -200,7 +215,6 @@ export function TimelapseView() {
           <h1 className="text-lg font-semibold">Timelapse library</h1>
           <p className="text-xs text-neutral-500">
             Pre-render fast-playback versions of each trip using ffmpeg.
-            Plays back smoothly at 1x instead of stuttering above 4x.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -398,6 +412,7 @@ export function TimelapseView() {
                     <th className="px-3 py-2 text-left">Status</th>
                     <th className="px-3 py-2 text-left">Play</th>
                     <th className="px-3 py-2 text-left">Rebuild</th>
+                    <th className="px-3 py-2 text-left"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -412,6 +427,17 @@ export function TimelapseView() {
                     const runningCount = tripJobs.filter(
                       (j) => j.status === "running",
                     ).length;
+                    // Denominator for the "X/Y done" label excludes
+                    // failed rows. A single-channel camera that was
+                    // run with F+I+R selected leaves 6 permanent
+                    // CameraDoesNotRecord failures; without this,
+                    // those rows would inflate the denominator and
+                    // the trip would read "3/9 done" forever despite
+                    // being as complete as it can ever be. The
+                    // failed count is still surfaced separately, so
+                    // the user isn't misled — they just aren't
+                    // punished for unavoidable failures.
+                    const achievableTotal = tripJobs.length - failedCount;
                     // Max pad count across this trip's channels. We
                     // show a single badge per trip rather than per
                     // channel — users care about "does this trip have
@@ -449,7 +475,7 @@ export function TimelapseView() {
                             <span className="flex gap-2">
                               {doneCount > 0 && (
                                 <span className="text-emerald-400">
-                                  {doneCount} done
+                                  {doneCount}/{achievableTotal} done
                                 </span>
                               )}
                               {runningCount > 0 && (
@@ -548,6 +574,9 @@ export function TimelapseView() {
                           >
                             ↻
                           </button>
+                        </td>
+                        <td className="px-3 py-2">
+                          <TripActionsMenu trip={t} variant="icon" />
                         </td>
                       </tr>
                     );

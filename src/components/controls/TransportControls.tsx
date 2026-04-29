@@ -88,12 +88,27 @@ export function TransportControls({ engine, onSourceChange }: Props) {
   const totalDuration = tripTotalDuration(trip);
 
   const sourceOptions: SourceOption[] = useMemo(
-    () => [
-      { mode: "original", enabled: Boolean(trip) },
-      tierAvailability(timelapseJobs, loadedTripId, "8x"),
-      tierAvailability(timelapseJobs, loadedTripId, "16x"),
-      tierAvailability(timelapseJobs, loadedTripId, "60x"),
-    ],
+    () => {
+      // Archive-only trips have no source segments left on disk, so the
+      // Original tier can't play. Show it as disabled with a clear reason
+      // rather than hiding it — keeps the picker layout stable across
+      // trips and tells the user *why* it's unavailable.
+      const archive = trip?.archiveOnly === true;
+      const originalOption: SourceOption = archive
+        ? {
+            mode: "original",
+            enabled: false,
+            disabledReason:
+              "Source files have been deleted. Only the timelapse archive is available.",
+          }
+        : { mode: "original", enabled: Boolean(trip) };
+      return [
+        originalOption,
+        tierAvailability(timelapseJobs, loadedTripId, "8x"),
+        tierAvailability(timelapseJobs, loadedTripId, "16x"),
+        tierAvailability(timelapseJobs, loadedTripId, "60x"),
+      ];
+    },
     [trip, timelapseJobs, loadedTripId],
   );
 

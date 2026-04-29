@@ -12,11 +12,23 @@ import type { TagsSlice } from "./tagsSlice";
 import type { ScanSlice } from "./scanSlice";
 import type { TimelapseSlice } from "./timelapseSlice";
 import {
+  deleteSegmentsToTrash as ipcDeleteSegmentsToTrash,
   getTagsForTrip,
   getTagCountsByTrip,
   listUserApplicableTags,
+  type DeleteReport,
 } from "../ipc/tags";
 import { listPlaces } from "../ipc/places";
+import {
+  assessTripMerge as ipcAssessTripMerge,
+  deleteTrip as ipcDeleteTrip,
+  listArchiveOnlyTrips,
+  mergeTrips as ipcMergeTrips,
+  type DeleteTripReport,
+  type MergeReport,
+  type TimelapseMergeAssessment,
+  type TimelapseMergeStrategy,
+} from "../ipc/trips";
 import {
   startAnalysisScan as ipcStartScan,
   cancelAnalysisScan as ipcCancelScan,
@@ -139,11 +151,45 @@ export interface AppState
   removeScanErrors: (paths: string[]) => void;
   /** Splice a segment out of the in-memory trips after the backend has
    *  removed it (delete-to-trash path). Drops the trip entirely if it
-   *  becomes empty, advancing `selectedTripId` to the next trip. */
+   *  becomes empty *and* has no timelapse archive; otherwise the trip
+   *  is left in place with `archiveOnly: true` so it stays discoverable. */
   removeSegmentFromTrip: (tripId: string, segmentId: string) => void;
   /** Batch version for multi-segment delete. Accepts a Set/Array of
    *  segment IDs and removes them all atomically (single store update). */
   removeSegmentsFromTrip: (tripId: string, segmentIds: string[]) => void;
+  /** Fetch archive-only trips from the DB and merge them into `trips`,
+   *  sorted by startTime. Idempotent — re-running just refreshes the
+   *  archive set without disturbing scanned trips. */
+  mergeArchiveOnlyTrips: () => Promise<void>;
+  /** Trash every source MP4 for a trip while keeping the timelapse
+   *  archive intact. Convenience for the trip-level "Delete originals…"
+   *  action — calls the existing per-segment IPC under the hood with
+   *  every segment ID for the trip, then updates the in-memory trips
+   *  to leave it as archive-only. */
+  deleteOriginalsForTrip: (tripId: string) => Promise<DeleteReport>;
+  /** Wholesale "delete this trip" — sources, timelapse pre-renders,
+   *  and DB rows. Removes the trip from the in-memory list on success
+   *  and advances the selection to the next adjacent trip. The only
+   *  store action that ever causes a timelapse archive to be removed. */
+  deleteTripCompletely: (tripId: string) => Promise<DeleteTripReport>;
+
+  /** IDs of trips the user has flagged for merging. Session-scoped —
+   *  not persisted to disk. Once `markedForMerge.size >= 2`, the
+   *  TripList sidebar shows a "Merge marked trips" banner. The mark
+   *  is cleared after a successful merge or on explicit cancel. */
+  markedForMerge: Set<string>;
+  toggleMarkForMerge: (tripId: string) => void;
+  clearMergeMarks: () => void;
+  /** Read-only assessment of what's possible for the marked trips'
+   *  existing timelapse outputs. Returns null when nothing is marked
+   *  or only one is marked (need 2+ for a merge). */
+  assessMergeMarked: () => Promise<TimelapseMergeAssessment | null>;
+  /** Perform the merge. Returns the backend report. The primary is
+   *  chosen as the earliest-starting marked trip (its segments come
+   *  first in the merged timeline). On success, the in-memory trip
+   *  list is rewritten to reflect the merge and `markedForMerge` is
+   *  cleared. */
+  mergeMarkedTrips: (strategy: TimelapseMergeStrategy) => Promise<MergeReport>;
 
   /** Whether the timeline is in multi-select mode. While on, segment
    *  clicks toggle selection instead of seeking. */
@@ -187,6 +233,7 @@ export const useStore = create<AppState>((set) => ({
   selectedTripId: null,
   scanErrors: [],
   gpsByFile: {},
+  markedForMerge: new Set<string>(),
 
   loadedTripId: null,
   activeSegmentId: null,
@@ -286,6 +333,12 @@ export const useStore = create<AppState>((set) => ({
     // Fresh folder scan means tags may have been GC'd or the trip set
     // changed — reload aggregate counts so sidebar badges stay honest.
     void useStore.getState().refreshTripTagCounts();
+    // Merge archive-only trips (segments gone, timelapse remains) into
+    // the trip list. Done after the scan-result set so the user sees
+    // their freshly-scanned trips immediately, with archive-only ones
+    // sliding in once the DB query returns. Sorted by startTime so they
+    // interleave correctly.
+    void useStore.getState().mergeArchiveOnlyTrips();
   },
   removeScanErrors: (paths) => {
     const drop = new Set(paths);
@@ -295,7 +348,15 @@ export const useStore = create<AppState>((set) => ({
   },
   removeSegmentFromTrip: (tripId, segmentId) =>
     useStore.getState().removeSegmentsFromTrip(tripId, [segmentId]),
-  removeSegmentsFromTrip: (tripId, segmentIds) =>
+  removeSegmentsFromTrip: (tripId, segmentIds) => {
+    // Schedule a backend reconcile right after the synchronous local
+    // update. The local rule (keep trip if `timelapseJobs` has any row
+    // for it) is correct only when the frontend's job cache is in
+    // sync; the merge is the source of truth and re-adds the trip as
+    // archive-only if the user hasn't visited the Timelapse view yet.
+    const reconcile = () =>
+      void useStore.getState().mergeArchiveOnlyTrips();
+    setTimeout(reconcile, 0);
     set((s) => {
       const tripIdx = s.trips.findIndex((t) => t.id === tripId);
       if (tripIdx < 0) return {};
@@ -304,7 +365,21 @@ export const useStore = create<AppState>((set) => ({
       const remaining = trip.segments.filter((seg) => !dropSet.has(seg.id));
       const nextTrips = [...s.trips];
       if (remaining.length === 0) {
-        // Trip is now empty; drop it from the list and advance the
+        // Trip has no source segments left. If it has any timelapse
+        // jobs, keep it as archive-only so the user can still play the
+        // pre-rendered timelapse — segment deletion is the disk-reclaim
+        // step in the timelapse-as-archive workflow, not a "remove
+        // trip" action. The backend GC has the matching rule.
+        const hasArchive = s.timelapseJobs.some((j) => j.tripId === tripId);
+        if (hasArchive) {
+          nextTrips[tripIdx] = {
+            ...trip,
+            segments: [],
+            archiveOnly: true,
+          };
+          return { trips: nextTrips };
+        }
+        // No archive — drop the trip entirely and advance the
         // selection to the next adjacent trip (preferring the one that
         // was after this one, falling back to the previous, then null).
         nextTrips.splice(tripIdx, 1);
@@ -323,7 +398,212 @@ export const useStore = create<AppState>((set) => ({
       // Trip still has segments; rewrite it in place.
       nextTrips[tripIdx] = { ...trip, segments: remaining };
       return { trips: nextTrips };
+    });
+  },
+  deleteOriginalsForTrip: async (tripId) => {
+    const trip = useStore.getState().trips.find((t) => t.id === tripId);
+    if (!trip) {
+      return { segmentsRemoved: 0, filesTrashed: 0, failures: [] };
+    }
+    const segmentIds = trip.segments.map((s) => s.id);
+    const inMemoryPaths: Record<string, string[]> = {};
+    for (const seg of trip.segments) {
+      inMemoryPaths[seg.id] = seg.channels
+        .map((c) => c.filePath)
+        .filter((p): p is string => Boolean(p));
+    }
+    const report = await ipcDeleteSegmentsToTrash(segmentIds, inMemoryPaths);
+    // Splice out everything that didn't fail. Mirrors the per-segment
+    // path's optimistic update; survivors stay in the list and the
+    // failure list surfaces in the dialog so the user can retry.
+    const failedPaths = new Set(report.failures.map((f) => f.path));
+    const survivors = new Set<string>();
+    for (const segId of segmentIds) {
+      const paths = inMemoryPaths[segId] ?? [];
+      if (paths.length > 0 && paths.every((p) => failedPaths.has(p))) {
+        survivors.add(segId);
+      }
+    }
+    const removed = segmentIds.filter((id) => !survivors.has(id));
+    if (removed.length > 0) {
+      useStore.getState().removeSegmentsFromTrip(tripId, removed);
+    }
+    return report;
+  },
+  deleteTripCompletely: async (tripId) => {
+    const trip = useStore.getState().trips.find((t) => t.id === tripId);
+    const inMemoryPaths: Record<string, string[]> = {};
+    if (trip) {
+      for (const seg of trip.segments) {
+        inMemoryPaths[seg.id] = seg.channels
+          .map((c) => c.filePath)
+          .filter((p): p is string => Boolean(p));
+      }
+    }
+    const report = await ipcDeleteTrip(tripId, inMemoryPaths);
+    if (report.tripRemoved) {
+      // Remove the trip from the local list and advance selection.
+      // This is the only path that ever fully removes a trip with a
+      // timelapse archive; the archive-only fallback in
+      // `removeSegmentsFromTrip` doesn't apply here because we just
+      // deleted the timelapse_jobs rows on the backend.
+      useStore.setState((s) => {
+        const idx = s.trips.findIndex((t) => t.id === tripId);
+        if (idx < 0) return {};
+        const nextTrips = [...s.trips];
+        nextTrips.splice(idx, 1);
+        let nextSelected: string | null = s.selectedTripId;
+        if (s.selectedTripId === tripId) {
+          nextSelected =
+            nextTrips[idx]?.id ?? nextTrips[idx - 1]?.id ?? null;
+        }
+        // Also drop the timelapse_jobs cache entries for this trip so
+        // the player and TimelapseView don't briefly show stale rows
+        // before the next refresh.
+        const nextJobs = s.timelapseJobs.filter((j) => j.tripId !== tripId);
+        return {
+          trips: nextTrips,
+          selectedTripId: nextSelected,
+          loadedTripId:
+            s.loadedTripId === tripId ? nextSelected : s.loadedTripId,
+          timelapseJobs: nextJobs,
+        };
+      });
+    }
+    return report;
+  },
+  mergeArchiveOnlyTrips: async () => {
+    try {
+      const archive = await listArchiveOnlyTrips();
+      if (archive.length === 0) {
+        // Still drop any stale archive-only entries that are no longer
+        // backed by a row in the DB (e.g. after Delete trip…).
+        useStore.setState((s) => {
+          const stripped = s.trips.filter((t) => !t.archiveOnly);
+          return stripped.length === s.trips.length ? {} : { trips: stripped };
+        });
+        return;
+      }
+      useStore.setState((s) => {
+        // Drop any existing archive-only trips, then merge the fresh
+        // set in. Trips that the scan returned (with segments) take
+        // precedence — never overwrite a scanned trip with an
+        // archive-only entry of the same id.
+        const scanned = s.trips.filter((t) => !t.archiveOnly);
+        const scannedIds = new Set(scanned.map((t) => t.id));
+        const merged = [
+          ...scanned,
+          ...archive.filter((t) => !scannedIds.has(t.id)),
+        ];
+        merged.sort((a, b) => a.startTime.localeCompare(b.startTime));
+        return { trips: merged };
+      });
+    } catch (e) {
+      console.error("mergeArchiveOnlyTrips failed", e);
+    }
+  },
+
+  toggleMarkForMerge: (tripId) =>
+    useStore.setState((s) => {
+      const next = new Set(s.markedForMerge);
+      if (next.has(tripId)) next.delete(tripId);
+      else next.add(tripId);
+      return { markedForMerge: next };
     }),
+
+  clearMergeMarks: () => useStore.setState({ markedForMerge: new Set() }),
+
+  assessMergeMarked: async () => {
+    const state = useStore.getState();
+    if (state.markedForMerge.size < 2) return null;
+    // Earliest-start wins — the resulting merged trip's UUID matches
+    // the natural earliest trip's, so its segments come first in any
+    // chronological view and the player resumes there naturally.
+    const marked: Trip[] = state.trips.filter((t) =>
+      state.markedForMerge.has(t.id),
+    );
+    marked.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    const primaryId = marked[0]?.id;
+    const absorbedIds = marked.slice(1).map((t) => t.id);
+    if (!primaryId || absorbedIds.length === 0) return null;
+    return ipcAssessTripMerge(primaryId, absorbedIds);
+  },
+
+  mergeMarkedTrips: async (strategy) => {
+    const state = useStore.getState();
+    if (state.markedForMerge.size < 2) {
+      throw new Error("Need at least 2 trips marked to merge");
+    }
+    const marked: Trip[] = state.trips.filter((t) =>
+      state.markedForMerge.has(t.id),
+    );
+    marked.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    const primaryId = marked[0].id;
+    const absorbedIds = new Set(marked.slice(1).map((t) => t.id));
+    const report = await ipcMergeTrips(
+      primaryId,
+      Array.from(absorbedIds),
+      strategy,
+    );
+
+    // Local update: fold absorbed segments into primary, drop absorbed
+    // trip rows. The backend has already done this in the DB; we
+    // mirror it locally so the UI updates without a full rescan.
+    useStore.setState((s) => {
+      const nextTrips: Trip[] = [];
+      let mergedTrip: Trip | undefined;
+      for (const t of s.trips) {
+        if (t.id === primaryId) {
+          mergedTrip = { ...t };
+          nextTrips.push(mergedTrip);
+        } else if (!absorbedIds.has(t.id)) {
+          nextTrips.push(t);
+        }
+        // Absorbed trips are dropped; their segments fold below.
+      }
+      if (mergedTrip) {
+        const allSegs = [
+          ...mergedTrip.segments,
+          ...marked.slice(1).flatMap((t) => t.segments),
+        ];
+        allSegs.sort((a, b) => a.startTime.localeCompare(b.startTime));
+        mergedTrip.segments = allSegs;
+        if (allSegs.length > 0) {
+          mergedTrip.startTime = allSegs[0].startTime;
+          const last = allSegs[allSegs.length - 1];
+          const lastEnd =
+            new Date(last.startTime).getTime() + (last.durationS ?? 0) * 1000;
+          mergedTrip.endTime = new Date(lastEnd).toISOString();
+        }
+        mergedTrip.archiveOnly = allSegs.length === 0;
+      }
+      // Drop timelapse jobs for absorbed trips — backend either
+      // deleted them or rewrote them under primary's trip_id.
+      const nextJobs = s.timelapseJobs.filter(
+        (j) => !absorbedIds.has(j.tripId),
+      );
+      const nextSelected =
+        s.selectedTripId && absorbedIds.has(s.selectedTripId)
+          ? primaryId
+          : s.selectedTripId;
+      const nextLoaded =
+        s.loadedTripId && absorbedIds.has(s.loadedTripId)
+          ? primaryId
+          : s.loadedTripId;
+      return {
+        trips: nextTrips,
+        markedForMerge: new Set<string>(),
+        timelapseJobs: nextJobs,
+        selectedTripId: nextSelected,
+        loadedTripId: nextLoaded,
+      };
+    });
+
+    // Refresh timelapse jobs from DB to pick up any concat-produced
+    // primary rows the local update doesn't know about.
+    void useStore.getState().refreshTimelapseJobs();
+    return report;
+  },
 
   enterSelectionMode: () =>
     set({

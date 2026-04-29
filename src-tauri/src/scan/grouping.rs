@@ -192,11 +192,16 @@ fn close_trip(segments: Vec<Segment>) -> Trip {
     };
     let end_time = last.start_time + Duration::seconds(last_duration as i64);
     let id = crate::model::derive_trip_id(segments[0].id);
+    let camera_kind = segments[0].camera_kind;
+    let gps_supported = segments[0].gps_supported;
     Trip {
         id,
         start_time,
         end_time,
         segments,
+        camera_kind,
+        gps_supported,
+        archive_only: false,
     }
 }
 
