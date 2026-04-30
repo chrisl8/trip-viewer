@@ -30,11 +30,30 @@ use crate::timelapse::speed_curve;
 use crate::timelapse::types::{Channel, EventWindow, FfmpegCapabilities, Tier};
 use crate::timelapse::CancelFlag;
 
+// On Windows, a GUI-subsystem process (the installed build sets
+// `windows_subsystem = "windows"`) that spawns a console child via
+// `Command::new` gets a fresh console window unless `CREATE_NO_WINDOW`
+// is set on the creation flags. Route every ffmpeg invocation in the
+// crate through this helper so the installed build runs silently.
+#[cfg(windows)]
+pub(crate) fn ffmpeg_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(windows))]
+pub(crate) fn ffmpeg_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    Command::new(program)
+}
+
 /// Run `ffmpeg -version` and `ffmpeg -encoders`, returning the parsed
 /// capabilities. Returns an error if the binary can't be executed or
 /// doesn't produce recognizable ffmpeg output.
 pub fn probe_ffmpeg(path: &str) -> Result<FfmpegCapabilities, AppError> {
-    let version_out = Command::new(path)
+    let version_out = ffmpeg_command(path)
         .arg("-version")
         .output()
         .map_err(|e| AppError::Internal(format!("could not run ffmpeg at {path}: {e}")))?;
@@ -58,7 +77,7 @@ pub fn probe_ffmpeg(path: &str) -> Result<FfmpegCapabilities, AppError> {
     }
 
     // `-encoders` lists everything compiled in; look for hevc_nvenc.
-    let encoders_out = Command::new(path)
+    let encoders_out = ffmpeg_command(path)
         .arg("-hide_banner")
         .arg("-encoders")
         .output()
@@ -196,7 +215,7 @@ pub fn encode_trip_channel(
         prefix
     };
 
-    let mut cmd = Command::new(args.ffmpeg_path);
+    let mut cmd = ffmpeg_command(args.ffmpeg_path);
     cmd.arg("-y")
         .arg("-hide_banner")
         .arg("-nostats")
@@ -357,7 +376,7 @@ impl ColorMetadata {
 /// fails — this is best-effort and a wrong-but-plausible default beats
 /// failing the encode entirely.
 pub fn probe_color_metadata(ffmpeg_path: &str, file: &Path) -> ColorMetadata {
-    let out = Command::new(ffmpeg_path)
+    let out = ffmpeg_command(ffmpeg_path)
         .arg("-hide_banner")
         .arg("-nostats")
         .arg("-i")
@@ -527,7 +546,7 @@ pub fn generate_black_placeholder(
         width, height, fps, duration_s, color.pix_fmt,
     );
 
-    let mut cmd = Command::new(ffmpeg_path);
+    let mut cmd = ffmpeg_command(ffmpeg_path);
     cmd.arg("-y")
         .arg("-hide_banner")
         .arg("-nostats")

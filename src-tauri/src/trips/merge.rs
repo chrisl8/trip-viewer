@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::process::Command;
+use crate::timelapse::ffmpeg::ffmpeg_command;
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -633,7 +633,7 @@ fn concat_outputs(
         }
     }
 
-    let result = Command::new(ffmpeg_path)
+    let result = ffmpeg_command(ffmpeg_path)
         .arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
