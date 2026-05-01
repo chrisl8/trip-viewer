@@ -29,6 +29,50 @@ fn get_video_port(port: tauri::State<VideoPort>) -> u16 {
     port.0
 }
 
+/// Append-only panic log so users on bundled builds (where stderr is
+/// invisible on Windows GUI subsystem and macOS .app launches) can
+/// attach an actionable trace to a bug report.
+fn install_panic_hook(log_dir: std::path::PathBuf) {
+    use std::io::Write;
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        prev(info);
+
+        if std::fs::create_dir_all(&log_dir).is_err() {
+            return;
+        }
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("panic.log"))
+        else {
+            return;
+        };
+
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "<non-string panic payload>"
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+
+        let _ = writeln!(
+            file,
+            "----\n[{timestamp}] thread '{thread_name}' panicked at {location}:\n{msg}\n\nBacktrace:\n{backtrace}",
+        );
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -70,8 +114,22 @@ pub fn run() {
             use tauri::Manager;
             use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
             use tauri_plugin_window_state::WindowExt;
-            let app_data_dir = app.path().app_data_dir()
-                .expect("resolve app_data_dir");
+            let app_data_dir = match app.path().app_data_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    app.dialog()
+                        .message(format!(
+                            "Trip Viewer can't determine its data directory:\n\n{e}\n\n\
+                             Please report this at \
+                             https://github.com/chrisl8/trip-viewer/issues."
+                        ))
+                        .kind(MessageDialogKind::Error)
+                        .title("Trip Viewer — Startup error")
+                        .blocking_show();
+                    return Err(Box::new(e));
+                }
+            };
+            install_panic_hook(app_data_dir.join("logs"));
             let db_path = app_data_dir.join("tripviewer.db");
             let handle = match db::open(&db_path) {
                 Ok(h) => h,

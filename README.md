@@ -14,6 +14,8 @@ Hardware video decoding keeps playback smooth even at high resolution, and Trip 
 
 ![Trip Viewer screenshot showing 3-channel synchronized playback with GPS map](screenshot.png)
 
+https://github.com/user-attachments/assets/435002ee-15ad-41d4-a7eb-979f688c5d7b
+
 ## How to install
 
 **Trip Viewer runs on Windows 10/11, macOS 11 (Big Sur) or later, and modern Linux distributions (tested on Ubuntu 22.04+).** No developer tools required.
@@ -61,7 +63,7 @@ The app is organized as a top tab bar — **Player**, **Scan**, **Review**, **Ti
 - **Live GPS map** — an OpenStreetMap view tracks your vehicle position in real time as the video plays, with a trail showing where you've been. The map auto-pans to follow the vehicle but holds position during your own drag/zoom gestures so you can inspect a moment without being yanked back.
 - **Speed and heading display** — real-time readouts overlaid on the map so you can see how fast you were going at any moment.
 - **Timeline with speed graph** — scrub through footage visually. The speed graph shows interesting moments (hard braking, acceleration) so you can jump right to them.
-- **Timelapse pipeline** — pre-render fast-playback versions of every trip at 8× (constant), 16× (slows to 1× during events), and 60× (slows to 8× during events). Event detection uses GPS-derived hard braking, hard acceleration, and turning thresholds, plus the dashcam's own event flag. Pick the tier and channel mix from the **Timelapse** tab; the Library view shows per-trip status and lets you rebuild any trip on demand. Once a trip has timelapses, you can delete the originals and keep playing the timelapse versions — see "Originals vs. timelapses" below. Timelapse encoding requires ffmpeg to be installed on your system; the app will prompt you to point at the binary the first time you use the feature. NVENC/NVDEC hardware encoding is used automatically when available.
+- **Timelapse pipeline** — _(requires ffmpeg installed on your system; the app prompts for the binary the first time you use the feature.)_ Pre-render fast-playback versions of every trip at 8× (constant), 16× (slows to 1× during events), and 60× (slows to 8× during events). Event detection uses GPS-derived hard braking, hard acceleration, and turning thresholds, plus the dashcam's own event flag. Pick the tier and channel mix from the **Timelapse** tab; the Library view shows per-trip status and lets you rebuild any trip on demand. Once a trip has timelapses, you can delete the originals and keep playing the timelapse versions — see "Originals vs. timelapses" below. NVENC/NVDEC hardware encoding is used automatically when available.
 - **SD card import** — pull footage directly off your dashcam's SD card. Files are copied with SHA-256 integrity verification — with an estimated time remaining during staging — then organized into your library. The SD card is wiped after a successful verified transfer, ready to go back in your dashcam.
 - **Import from a folder** — a non-destructive variant for files already on disk (e.g., manually copied off an SD card, or from a backup). Same trip detection and library organization, but nothing is wiped.
 - **Trip detection** — automatically groups your footage into trips based on recording timestamps. No manual organization needed.

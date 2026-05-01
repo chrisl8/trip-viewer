@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { TripLoader } from "./components/loader/TripLoader";
 import { TripList } from "./components/loader/TripList";
 import { HevcSupportGate } from "./components/video/HevcSupportGate";
@@ -241,14 +242,25 @@ function App() {
         </header>
         <ImportProgress />
         <TripList />
-        <footer className="flex items-center justify-between border-t border-neutral-800 px-3 py-2.5">
+        <footer className="flex items-center justify-between gap-2 border-t border-neutral-800 px-3 py-2.5">
           <span className="text-xs text-neutral-500">v{version}</span>
-          <button
-            onClick={() => setShowShortcuts(true)}
-            className="text-xs text-neutral-400 hover:text-neutral-200"
-          >
-            Keyboard shortcuts
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() =>
+                void openUrl("https://github.com/chrisl8/trip-viewer/issues")
+              }
+              title="Open the GitHub issues page in your browser. If the app crashed, please attach the panic log from the app's data folder (logs/panic.log)."
+              className="text-xs text-neutral-400 hover:text-neutral-200"
+            >
+              Report a bug
+            </button>
+            <button
+              onClick={() => setShowShortcuts(true)}
+              className="text-xs text-neutral-400 hover:text-neutral-200"
+            >
+              Keyboard shortcuts
+            </button>
+          </div>
         </footer>
       </aside>
 
