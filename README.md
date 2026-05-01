@@ -55,17 +55,24 @@ By default on Linux, only the primary channel is shown — press **M** to enable
 
 ## What it does
 
+The app is organized as a top tab bar — **Player**, **Scan**, **Review**, **Timelapse**, optional **Issues**, and **Places** — with a sidebar trip list and storage summary that's always visible.
+
 - **Multi-channel synchronized playback (1–4 channels)** — every camera on your dashcam plays in lockstep. Click a side view to make it the main view. Double-click the main view for fullscreen.
-- **Live GPS map** — an OpenStreetMap view tracks your vehicle position in real time as the video plays, with a trail showing where you've been.
+- **Live GPS map** — an OpenStreetMap view tracks your vehicle position in real time as the video plays, with a trail showing where you've been. The map auto-pans to follow the vehicle but holds position during your own drag/zoom gestures so you can inspect a moment without being yanked back.
 - **Speed and heading display** — real-time readouts overlaid on the map so you can see how fast you were going at any moment.
 - **Timeline with speed graph** — scrub through footage visually. The speed graph shows interesting moments (hard braking, acceleration) so you can jump right to them.
+- **Timelapse pipeline** — pre-render fast-playback versions of every trip at 8× (constant), 16× (slows to 1× during events), and 60× (slows to 8× during events). Event detection uses GPS-derived hard braking, hard acceleration, and turning thresholds, plus the dashcam's own event flag. Pick the tier and channel mix from the **Timelapse** tab; the Library view shows per-trip status and lets you rebuild any trip on demand. Once a trip has timelapses, you can delete the originals and keep playing the timelapse versions — see "Originals vs. timelapses" below. Timelapse encoding requires ffmpeg to be installed on your system; the app will prompt you to point at the binary the first time you use the feature. NVENC/NVDEC hardware encoding is used automatically when available.
 - **SD card import** — pull footage directly off your dashcam's SD card. Files are copied with SHA-256 integrity verification — with an estimated time remaining during staging — then organized into your library. The SD card is wiped after a successful verified transfer, ready to go back in your dashcam.
+- **Import from a folder** — a non-destructive variant for files already on disk (e.g., manually copied off an SD card, or from a backup). Same trip detection and library organization, but nothing is wiped.
 - **Trip detection** — automatically groups your footage into trips based on recording timestamps. No manual organization needed.
-- **Auto-tagging scan pipeline** — a background scan analyses your library and tags segments as `event` (camera event flag from the dashcam), `stationary` (GPS shows the vehicle isn't moving), `silent` / `no_audio` (quiet or missing audio track), and any saved-place matches. Run it from the **Scan** button in the sidebar; progress streams inline.
-- **Places** — save a named location (lat/lon + radius) either manually or with one click from the player using the current segment's GPS. The next scan auto-tags any segment whose GPS track enters that place, turning "everything filmed at home" into a one-click filter.
-- **Review view** — a full-library table with tag-based filtering and bulk actions. Mark segments as **Keep** (hidden from the default filter so repeat review sessions only surface unreviewed material), or select a batch and bulk-delete the clips you don't want.
+- **Trip operations** — delete a whole trip (originals, timelapses, tags), or mark two or more trips and merge them manually if the auto-segmenter split a trip you wanted kept together.
+- **Originals vs. timelapses** — timelapses are an archival format, not a cache. Deleting a trip's originals leaves its timelapses in place; the trip stays in the library and plays back from the timelapse tier. "Delete trip…" is the only action that removes everything.
+- **Storage usage** — the sidebar shows total bytes used (originals + timelapses) and reclaimable bytes, with a one-click filter to surface the trips whose originals you can drop now that timelapses exist.
+- **Auto-tagging scan pipeline** — a background scan analyses your library and tags segments as `event` (camera event flag from the dashcam), `stationary` (GPS shows the vehicle isn't moving), `silent` / `no_audio` (quiet or missing audio track), and any saved-place matches. Run it from the **Scan** tab; progress streams inline, and a per-trip × per-scan coverage matrix shows what each scan touched.
+- **Places** — save a named location (lat/lon + radius) either manually or with one click from the player using the current segment's GPS. The next scan auto-tags any segment whose GPS track enters that place, turning "everything filmed at home" into a one-click filter. Manage them from the **Places** tab.
+- **Review view** — a full-library table with tag-based filtering and bulk actions. Mark segments as **Keep** (hidden from the default filter so repeat review sessions only surface unreviewed material), or select a batch and bulk-delete the clips you don't want. Bulk actions are scoped to the intersection of your selection and the current filter, so the action button always reflects exactly what will be deleted.
 - **In-player selection mode** — open selection mode from the tag bar above the timeline, then click — or shift-click for a range — to select segments directly on the timeline. A single bulk-delete action trashes every channel file for the whole selection. A one-segment delete button is right there too for quick cleanup as you watch.
-- **Issues view** — a classified triage list for any file the scanner couldn't ingest. Each row is tagged by reason (invalid filename, unreadable, missing `moov`, corrupt box structure, no video track, other) with per-row reveal-in-folder, copy-path, and move-to-trash actions, plus a filter-gated bulk delete.
+- **Issues view** — a classified triage list for any file the scanner couldn't ingest. Each row is tagged by reason (invalid filename, unreadable, missing `moov`, corrupt box structure, no video track, other) with per-row reveal-in-folder, copy-path, and move-to-trash actions, plus a filter-gated bulk delete. The tab only appears when there's something to triage.
 - **Deletes go to the OS recycle bin** — everything the app deletes (segments, issue files, places) goes to your system trash, so nothing is permanently gone until you empty it yourself.
 - **Window state is remembered** — the app restores its last size, position, and maximized state across launches.
 - **Keyboard shortcuts** — Space to play/pause, arrow keys to seek, brackets to change speed. Click "Keyboard shortcuts" in the sidebar footer for the full list.
@@ -113,6 +120,7 @@ If you want to build Trip Viewer from source or contribute:
 - **Windows:** HEVC Video Extension (see [Windows install](#windows) above)
 - **macOS:** Xcode Command Line Tools (`xcode-select --install`). HEVC playback works natively via AVFoundation — no extra codecs needed. Local `npm run tauri build` produces a DMG for the host architecture only; CI uses a matrix build for both Intel and Apple Silicon.
 - **Linux:** `webkit2gtk-4.1`, `gstreamer1.0-libav`, `gstreamer1.0-plugins-bad`, plus Tauri's standard build deps (see [Tauri prerequisites](https://tauri.app/start/prerequisites/)). For full distro-specific setup — including the distrobox path for atomic distros like Bazzite/Silverblue — see [LINUX_DEV_SETUP.md](LINUX_DEV_SETUP.md).
+- **Optional — ffmpeg** for the timelapse feature. Not bundled and not required for playback or import; install from your platform's usual source (Windows: [gyan.dev builds](https://www.gyan.dev/ffmpeg/builds/) or `winget install ffmpeg`; macOS: `brew install ffmpeg`; Linux: distro package). The app prompts for the binary path the first time you open the Timelapse tab and validates it before use.
 
 ### Build and run
 
@@ -126,19 +134,21 @@ First build compiles the Rust backend (~2 minutes). Subsequent builds use increm
 
 ### Tech stack
 
-| Layer             | Technology                                                                                 |
-| ----------------- | ------------------------------------------------------------------------------------------ |
-| App framework     | Tauri v2 (Rust backend, WebView2 on Windows / WKWebView on macOS / WebKitGTK 4.1 on Linux) |
-| Frontend          | React 19, TypeScript, Tailwind CSS v4, Zustand                                             |
-| Maps              | Leaflet + react-leaflet + OpenStreetMap                                                    |
-| Video sync        | `requestVideoFrameCallback` API                                                            |
-| Container parsing | `mp4` crate (pure Rust, no ffprobe)                                                        |
-| GPS decoding      | Custom ShenShu MetaData (Wolf Box) + NovaTek gps0 atom (Miltona) parsers                   |
-| Audio analysis    | `symphonia` (pure Rust decoder, AAC / MP3 / ISO-MP4) for silence detection                 |
-| File hashing      | SHA-256 via `sha2` crate                                                                   |
-| Tag + Place store | SQLite via `rusqlite` (bundled) + `rusqlite_migration`                                     |
-| File deletion     | `trash` crate — OS recycle bin (recoverable)                                               |
-| CI/CD             | GitHub Actions + NSIS (Windows) + DMG (macOS, dual-arch) + AppImage (Linux) + auto-updater |
+| Layer              | Technology                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------ |
+| App framework      | Tauri v2 (Rust backend, WebView2 on Windows / WKWebView on macOS / WebKitGTK 4.1 on Linux) |
+| Frontend           | React 19, TypeScript, Tailwind CSS v4, Zustand                                             |
+| Maps               | Leaflet + react-leaflet + OpenStreetMap                                                    |
+| Video sync         | `requestVideoFrameCallback` API                                                            |
+| Container parsing  | `mp4` crate (pure Rust, no ffprobe)                                                        |
+| GPS decoding       | Custom ShenShu MetaData (Wolf Box) + NovaTek gps0 atom (Miltona) parsers                   |
+| Audio analysis     | `symphonia` (pure Rust decoder, AAC / MP3 / ISO-MP4) for silence detection                 |
+| File hashing       | SHA-256 via `sha2` crate                                                                   |
+| Tag + Place store  | SQLite via `rusqlite` (bundled) + `rusqlite_migration`                                     |
+| File deletion      | `trash` crate — OS recycle bin (recoverable)                                               |
+| Timelapse encoding | ffmpeg (user-supplied, not bundled), with NVENC + NVDEC when available                     |
+| Parallelism        | `rayon` (metadata probing, scan workers, parallel timelapse rebuild)                       |
+| CI/CD              | GitHub Actions + NSIS (Windows) + DMG (macOS, dual-arch) + AppImage (Linux) + auto-updater |
 
 See [DESIGN.md](DESIGN.md) for architecture decisions and [RELEASING.md](RELEASING.md) for release instructions.
 

@@ -39,11 +39,12 @@ Trip Viewer is a **Tauri v2** desktop app: Rust backend (`src-tauri/src/`) commu
 
 ### Frontend structure
 
-- **`App.tsx`** — sidebar layout with trip list, import button, version footer
-- **`components/video/`** — `VideoGrid`, `ChannelPanel`, `PlayerShell`. All three video elements are **always rendered in the same DOM order** (front, interior, rear); swap behavior uses CSS grid placement only. Moving them in the tree would cause React to unmount/remount the `<video>` elements and pause playback.
-- **`components/import/`** — confirm dialog, progress UI, unknown files dialog, summary. Progress events stream from Rust via `window.emit()`, frontend listens with `@tauri-apps/api/event`.
-- **`engine/useSyncEngine.ts`** — video sync engine. Uses `requestVideoFrameCallback` to track the front channel as the master clock; interior/rear are slaved to it. Front ref is the timing master regardless of which channel is visually primary.
-- **`state/store.ts`** — Zustand store with `LibrarySlice`, `PlaybackSlice`, `ImportSlice`. `primaryChannel` controls layout but not sync.
+- **`App.tsx`** — sidebar (trip list, SD + folder import buttons, storage summary, version footer) plus a top tab bar (`MainNavTabs`) that switches between Player, Scan, Review, Timelapse, optional Issues, and Places. The Issues tab only renders when there are scan errors; Places lives at the right of the bar.
+- **`components/video/`** — `VideoGrid`, `ChannelPanel`, `PlayerShell`. The grid renders one `<video>` per channel reported by the active segment (1 to 4). Channels are **always rendered in stable DOM order** for the dashcam's kind set; swap behavior uses CSS grid placement only. Moving them in the tree would cause React to unmount/remount the `<video>` elements and pause playback.
+- **`components/import/`** — confirm dialog, progress UI, unknown files dialog, summary. Progress events stream from Rust via `window.emit()`, frontend listens with `@tauri-apps/api/event`. There are two import flows: SD-card (destructive, wipes source) and folder (non-destructive).
+- **`components/timelapse/`** — Timelapse Library view, ffmpeg config modal, per-trip rebuild, scope picker (new & unfinished / retry failed / rebuild all).
+- **`engine/useSyncEngine.ts`** — video sync engine. Uses `requestVideoFrameCallback` against a stable master ref (front when present, otherwise the first channel); other channels are slaved to it. Master ref is the timing master regardless of which channel is visually primary.
+- **`state/store.ts`** — Zustand store with `LibrarySlice`, `PlaybackSlice`, `ImportSlice`, plus timelapse state. `primaryChannel` controls layout but not sync.
 
 ## Locked architectural decisions (do not revisit without strong reason)
 
@@ -69,10 +70,10 @@ The SD card import pipeline in `src-tauri/src/import/` has strict safety guarant
 
 ## Video layout rules
 
-1. All three `<ChannelPanel>` components are always rendered — hidden via CSS grid placement, not conditional rendering.
-2. Refs (`frontRef`, `interiorRef`, `rearRef`) are **stable per channel kind**, never swapped. The sync engine depends on this.
-3. Audio follows `isMaster` prop (which tracks `primaryChannel`); sync timing is always driven by `frontRef`.
-4. On trip/segment change, `primaryChannel` resets to `"front"` in the store action.
+1. Every channel reported by the active segment gets a `<ChannelPanel>` and stays mounted — hidden via CSS grid placement, not conditional rendering. Channel count is dashcam-dependent (1 for Miltona, 2 for Thinkware, 3 for Wolf Box, up to 4 for Generic).
+2. Refs are **stable per channel kind**, never swapped. The sync engine depends on this.
+3. Audio follows `isMaster` prop (which tracks `primaryChannel`); sync timing is always driven by the master ref (front when the dashcam has one, otherwise the first channel).
+4. On trip/segment change, `primaryChannel` resets to `null` in the store action; `VideoGrid` then sets it to the new segment's master channel.
 
 ## Event system (Rust → frontend)
 

@@ -84,7 +84,7 @@ distrobox enter tripviewer-dev -- bash -c '
 
 Expect: cargo build succeeds, and `avdec_h265: libav HEVC ... decoder` appears.
 
-> **`npm run tauri build` (AppImage bundling) is currently not viable on Fedora derivatives.** Tauri's bundler downloads `linuxdeploy-plugin-gstreamer` but never invokes it, so no GStreamer plugin `.so` files end up bundled. The resulting AppImage's bundled libgstreamer doesn't reliably load host plugins on Bazzite (Fedora 43) even with `GST_PLUGIN_SYSTEM_PATH_1_0` and friends set, leading to `appsink not found` / `autoaudiosink not found` and a frozen player on launch. Use `npm run tauri dev` (next section) for actual development and testing on Linux. A proper bundling fix is a v0.3+ workstream — see the runtime AppImage section at the bottom of this doc.
+> **`npm run tauri build` (AppImage bundling) is currently not viable on Fedora derivatives.** Tauri's bundler downloads `linuxdeploy-plugin-gstreamer` but never invokes it, so no GStreamer plugin `.so` files end up bundled. The resulting AppImage's bundled libgstreamer doesn't reliably load host plugins on Bazzite (Fedora 43) even with `GST_PLUGIN_SYSTEM_PATH_1_0` and friends set, leading to `appsink not found` / `autoaudiosink not found` and a frozen player on launch. Use `npm run tauri dev` (next section) for actual development and testing on Linux. A proper bundling fix is still pending as of v0.3.1 — see the runtime AppImage section at the bottom of this doc.
 
 ### Daily use
 
@@ -159,12 +159,12 @@ The only host requirement is **libfuse2** (to mount the AppImage), which Fedora,
 
 The optional **timelapse** feature shells out to ffmpeg, which is *not* bundled. On Bazzite, ffmpeg from RPM Fusion non-free (with NVENC/NVDEC) ships preinstalled at `/usr/bin/ffmpeg`. On other distros, install ffmpeg however you normally would and point the app's settings at the binary.
 
-### Known issue: v0.2.0 release AppImage on Fedora derivatives
+### Known issue: release AppImage on Fedora derivatives
 
-The released `Trip Viewer_0.2.0_amd64.AppImage` from GitHub does **not** work on Fedora 41+, Bazzite, Silverblue, Kinoite, or other distros with GLib 2.80+ / GStreamer 1.26+. The CI build runs on Ubuntu 22.04, which ships GLib 2.72 / GStreamer 1.20; the bundled WebKit can't load the host's newer GStreamer plugins because the bundled libs lack symbols like `g_once_init_leave_pointer` and `gst_id_str_as_str` that newer plugins require. Symptoms include `GStreamer element autoaudiosink not found` and a long cascade of `Failed to load plugin … undefined symbol …` warnings, followed by the player freezing when you try to load a trip.
+The released `Trip Viewer_*_amd64.AppImage` from GitHub does **not** work on Fedora 41+, Bazzite, Silverblue, Kinoite, or other distros with GLib 2.80+ / GStreamer 1.26+. The CI build runs on Ubuntu 22.04, which ships GLib 2.72 / GStreamer 1.20; the bundled WebKit can't load the host's newer GStreamer plugins because the bundled libs lack symbols like `g_once_init_leave_pointer` and `gst_id_str_as_str` that newer plugins require. Symptoms include `GStreamer element autoaudiosink not found` and a long cascade of `Failed to load plugin … undefined symbol …` warnings, followed by the player freezing when you try to load a trip. Verified against v0.2.0 and still present in v0.3.1.
 
-A locally-built AppImage from the dev container has matching libgstreamer/libglib ABI but still fails for a separate reason (Tauri's bundler does not invoke `linuxdeploy-plugin-gstreamer`, so no GStreamer plugins end up bundled — and the bundled libgstreamer doesn't reliably fall back to host plugins on Fedora). So **there is currently no working AppImage path on Bazzite/Fedora 43**.
+A locally-built AppImage from the dev container has matching libgstreamer/libglib ABI but still fails for a separate reason (Tauri's bundler does not invoke `linuxdeploy-plugin-gstreamer`, so no GStreamer plugins end up bundled — and the bundled libgstreamer doesn't reliably fall back to host plugins on Fedora). So **there is currently no working AppImage path on Bazzite/Fedora 43+**.
 
 **Workaround for daily use on Fedora derivatives**: develop and run from inside the dev container — `npm run tauri dev` for a hot-reload session, or run the compiled release binary directly with `distrobox enter tripviewer-dev -- /path/to/trip-viewer/src-tauri/target/release/tripviewer` after a `npm run tauri build`. (`distrobox-export --bin <path>` will also expose the binary on the host PATH.)
 
-A proper fix — bundling GStreamer plugins via `linuxdeploy-plugin-gstreamer` as a post-build step — is planned for v0.3+.
+A proper fix — bundling GStreamer plugins via `linuxdeploy-plugin-gstreamer` as a post-build step — is still on the roadmap.

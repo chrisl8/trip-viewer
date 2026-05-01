@@ -1,6 +1,6 @@
 # Trip Viewer — Design Document
 
-An open-source, multi-channel, GPS-aware dashcam viewer with hardware-accelerated playback and integrated SD card import. Built for Wolf Box 3-channel dashcams, designed to be extensible to other manufacturers. MIT licensed.
+An open-source, multi-channel, GPS-aware dashcam viewer with hardware-accelerated playback and integrated SD card import. Originally built for Wolf Box 3-channel dashcams; now also supports Thinkware 2-channel, Miltona MNCD60 single-channel, and a generic 4-channel format, with a modular parser architecture for adding more. MIT licensed.
 
 **Repository:** [github.com/chrisl8/trip-viewer](https://github.com/chrisl8/trip-viewer)
 
@@ -21,7 +21,7 @@ There is **no open-source, multi-channel, GPS-aware dashcam viewer** that uses h
 
 | Feature                       | Wolf Box    | DCV              | DVPlayer   | bbplay    | **Trip Viewer** |
 | ----------------------------- | ----------- | ---------------- | ---------- | --------- | --------------- |
-| Multi-channel sync playback   | 3ch         | 2ch PiP          | 2-4ch      | n-ch      | **3ch**         |
+| Multi-channel sync playback   | 3ch         | 2ch PiP          | 2-4ch      | n-ch      | **1–4ch**       |
 | Live GPS map                  | yes         | yes              | yes        | yes       | **yes**         |
 | Speed/heading display         | yes         | yes              | yes        | yes       | **yes**         |
 | Variable playback speed       | buried      | yes              | yes        | yes       | **yes**         |
@@ -31,6 +31,7 @@ There is **no open-source, multi-channel, GPS-aware dashcam viewer** that uses h
 | Hardware-accelerated decoding | no          | yes              | yes        | ?         | **yes**         |
 | SD card import with verify    | no          | no               | no         | no        | **yes**         |
 | Click-to-swap channels        | no          | no               | no         | no        | **yes**         |
+| Pre-rendered timelapses       | no          | no               | no         | no        | **yes**         |
 | Open source                   | no          | no               | no         | no        | **yes**         |
 
 ---
@@ -41,9 +42,10 @@ There is **no open-source, multi-channel, GPS-aware dashcam viewer** that uses h
 
 - **Tauri v2** — Rust backend, web frontend, ~3 MB installer. Uses the system WebView2 runtime (pre-installed on Windows 10/11) on Windows and WebKitGTK 4.1 on Linux, instead of bundling Chromium.
 - **React 19 + TypeScript** — frontend with Zustand for state, Tailwind CSS v4 for styling.
-- **3x HTML5 `<video>` elements** — synchronized via `requestVideoFrameCallback` for frame-accurate sync across front/interior/rear channels. Hardware-accelerated decoding via the browser's native HEVC decoder.
-- **Leaflet + OpenStreetMap** — live GPS map with track polyline and interpolated vehicle marker.
+- **N HTML5 `<video>` elements** — one per channel, synchronized via `requestVideoFrameCallback` against a stable master ref (front when present, otherwise the first channel). The grid adapts to the dashcam's channel count (1 for Miltona, 2 for Thinkware, 3 for Wolf Box, up to 4 for the generic format). Hardware-accelerated decoding via the browser's native HEVC decoder.
+- **Leaflet + OpenStreetMap** — live GPS map with track polyline and interpolated vehicle marker. Auto-pans to follow the vehicle, but holds during user drag/zoom gestures.
 - **Pure Rust container parsing** — `mp4` crate for metadata, custom binary parser for ShenShu GPS format. No ffprobe dependency.
+- **Optional ffmpeg for timelapse** — the timelapse feature shells out to a user-supplied ffmpeg binary (configured in-app, not bundled) to pre-render fast-playback MP4s with GPS-driven variable speed. NVENC/NVDEC is used when available. Distinct from the rejected "ffprobe for metadata" decision below — playback and import remain ffmpeg-free; timelapse is opt-in.
 
 ### Why this architecture
 
@@ -70,16 +72,21 @@ On Windows the app renders front, interior, and rear simultaneously by default. 
 
 | Layer | Technology |
 | ----- | ---------- |
-| Framework | Tauri v2 (Rust backend, WebView2 on Windows / WebKitGTK 4.1 on Linux) |
+| Framework | Tauri v2 (Rust backend, WebView2 on Windows / WKWebView on macOS / WebKitGTK 4.1 on Linux) |
 | Frontend | React 19, TypeScript, Tailwind CSS v4 |
 | State | Zustand |
 | Maps | Leaflet + react-leaflet + OpenStreetMap tiles |
 | Video sync | `requestVideoFrameCallback` API |
 | Container parsing | `mp4` crate (pure Rust) |
-| GPS decoding | Custom ShenShu MetaData binary parser (NMEA DDMM.MMMM format) |
+| GPS decoding | Custom ShenShu MetaData binary parser (Wolf Box) + NovaTek `gps0` atom parser (Miltona) |
+| Audio analysis | `symphonia` (pure Rust decoder, AAC / MP3 / ISO-MP4) for silence detection |
 | File hashing | `sha2` crate (SHA-256, optimized in dev builds) |
+| Tag + Place store | SQLite via `rusqlite` (bundled) + `rusqlite_migration` |
+| File deletion | `trash` crate — OS recycle bin (recoverable) |
+| Timelapse encoding | ffmpeg (user-supplied, opt-in) with NVENC + NVDEC when available |
+| Parallelism | `rayon` (metadata probing, scan workers, parallel timelapse rebuild with bounded per-job memory) |
 | Platform APIs | `windows-sys` on Windows (drive enumeration, disk space); `libc::statvfs` on Linux |
-| Installer | NSIS on Windows, AppImage on Linux, via `tauri-action` (Flatpak planned) |
+| Installer | NSIS on Windows, DMG on macOS (dual-arch), AppImage on Linux, via `tauri-action` (Flatpak planned) |
 | Auto-update | `tauri-plugin-updater` with GitHub Releases |
 | CI/CD | GitHub Actions (build on tag push, draft release) |
 
@@ -120,36 +127,58 @@ File detection uses Wolf Box naming: `YYYY_MM_DD_HHMMSS_EE_C.MP4` where `EE` is 
 
 ### Playback
 
-- **3-channel synchronized playback** — front/interior/rear play in lockstep via `requestVideoFrameCallback` with drift correction
+- **N-channel synchronized playback** — one `<video>` per channel, kept in lockstep via `requestVideoFrameCallback` with drift correction. Channel count adapts to the dashcam (1 to 4).
 - **Click-to-swap layout** — click a side video to promote it to the main position; videos stay playing during swap (stable DOM, CSS-only repositioning)
-- **Fullscreen main video** — click the main panel to enter fullscreen (browser Fullscreen API), Escape to exit
-- **Transport controls** — play/pause, seek ±5s/±30s, speed (0.5x/1x/2x/4x/8x)
-- **Keyboard shortcuts** — Space, arrows, Shift+arrows, brackets for speed, D for drift HUD
+- **Fullscreen main video** — double-click the main panel to enter fullscreen (browser Fullscreen API), Escape to exit
+- **Transport controls** — play/pause, seek ±5s/±30s, speed (0.5x/1x/2x/4x/8x), source mode picker (originals vs. timelapse tier)
+- **Keyboard shortcuts** — Space, arrows, Shift+arrows, brackets for speed, D for drift HUD, M to enable multi-channel on Linux
 - **Segment auto-advance** — continuous playback across multi-segment trips
-- **HEVC support gate** — startup check with Store deep-link if HEVC decoder is missing
+- **HEVC support gate** — startup check with Store deep-link on Windows / apt-install hint on Linux if HEVC decoder is missing
 
 ### GPS & Map
 
 - **Live GPS map** — OpenStreetMap with Leaflet, track polyline drawn as video plays
 - **Interpolated vehicle marker** — smooth position updates between GPS samples
-- **Speed & heading HUD** — real-time readouts overlaid on the map panel
-- **Custom GPS parser** — reverse-engineered ShenShu MetaData binary format from Wolf Box firmware
+- **Speed & heading HUD** — real-time readouts overlaid on the map panel; heading holds last moving direction when stopped, speed snaps to 0 at full stop
+- **Auto-pan with gesture release** — map follows the vehicle, but holds in place during user drag/zoom so you can inspect a moment without being yanked back
+- **Custom GPS parsers** — reverse-engineered ShenShu MetaData (Wolf Box) and NovaTek `gps0` atom (Miltona) binary formats
 
-### File Management
+### Library & file management
 
-- **Folder scanner** — recursive MP4 discovery, Wolf Box filename parsing, fuzzy triplet matching, trip grouping
-- **Remember last folder** — auto-reopens on next launch via localStorage
-- **SD card import** — full pipeline: discover removable drives → stage with SHA-256 verification → wipe source → distribute to Videos/Photos. Duplicate detection, collision handling, unknown file prompts, cancel support, interrupt safety, lock file, logging with 30-day rotation
-- **Import progress UI** — live progress bar with speed, file counter, phase indicators, cancel button
-- **Import summary** — completion dialog with per-source stats and date range of imported footage
+- **Multi-format dashcam support** — Wolf Box 3-channel, Thinkware 2-channel, Miltona MNCD60 single-channel, generic 4-channel. Modular parser architecture in `scan/naming.rs` for adding more.
+- **Folder scanner** — recursive MP4 discovery, per-format filename parsing, fuzzy triplet matching, trip grouping. Skips `Timelapses/` and dot-directories on rescan.
+- **SD card import** — full pipeline: discover removable drives → stage with SHA-256 verification → wipe source → distribute to Videos/Photos. Duplicate detection, collision handling, unknown file prompts, cancel support, interrupt safety, lock file with PID recovery, logging with 30-day rotation
+- **Import from a folder** — non-destructive variant of the same pipeline for files already on disk; no source wipe
+- **Import progress UI** — live progress bar with speed, file counter, phase indicators, cancel button; events throttled to ~15/sec to avoid IPC saturation
+- **Trip operations** — delete a whole trip (originals, timelapses, tags, optional source folder), or mark two or more trips and merge them manually. Merge dialog has a strategy picker for the surviving trip's timelapses (concatenate vs. drop and rebuild).
+- **Storage usage** — sidebar surfaces total bytes used and reclaimable bytes (originals that can be dropped now that timelapses exist), with a one-click filter
+
+### Tagging & review
+
+- **Auto-tagging scan pipeline** — background scan tags segments as `event` (dashcam flag), `stationary` (GPS-derived), `silent`/`no_audio` (Symphonia-driven audio analysis), and place matches. Per-trip × per-scan coverage matrix in the Scan view shows what each scan run touched.
+- **Places** — saved named locations (lat/lon + radius), set manually or with one click from the player. Auto-tag matching segments on the next scan.
+- **Review view** — full-library table with tag-based filtering and bulk actions (Keep, bulk delete). Bulk actions are scoped to the intersection of selection and filter so the action button always reflects what will run.
+- **In-player selection mode** — timeline-driven multi-select with shift-click ranges and a single bulk-delete that trashes every channel file
+- **Issues view** — classified triage list for files the scanner couldn't ingest (invalid filename, unreadable, missing `moov`, corrupt boxes, no video track, other) with reveal-in-folder, copy-path, move-to-trash, and filter-gated bulk delete. Tab only appears when there's something to triage.
+- **Recoverable deletes** — everything goes through the `trash` crate to the OS recycle bin
+
+### Timelapse
+
+- **Pre-render pipeline** — ffmpeg-driven background encoder that produces 8× / 16× / 60× fast-playback MP4s per (trip, tier, channel). 8× is constant; 16× and 60× use GPS-derived event detection (hard braking, hard acceleration, sharp turns) plus the dashcam's own event flag to slow down through interesting moments.
+- **NVENC + NVDEC path** — used automatically when the configured ffmpeg binary reports the capability
+- **Parallel rebuild** — multi-job rebuild with bounded per-job memory so a "rebuild all" pass doesn't oversubscribe the GPU
+- **Timelapse Library view** — per-trip status table with per-trip Rebuild button and scope picker (new & unfinished / retry failed / rebuild all)
+- **Originals-as-cache** — timelapses are an archival format, not a cache. Deleting originals leaves timelapses; the trip stays in the library and plays from the timelapse tier. Only "Delete trip…" removes everything.
+- **Console-window suppression** — installed Windows builds suppress the ffmpeg console window flash on every invocation
 
 ### Distribution
 
 - **NSIS installer** — ~3 MB Windows setup exe
-- **AppImage** — single-file Linux binary with bundled GStreamer plugins for HEVC playback
+- **DMG installer** — signed and notarized, dual-arch (Intel + Apple Silicon) via CI matrix
+- **AppImage** — single-file Linux binary; CI bundles WebKitGTK + GStreamer codec plugins via `linuxdeploy`
 - **Flatpak (Flathub)** — planned; would ship a sandboxed Linux package using `org.freedesktop.Platform.ffmpeg-full` for codec support with Flathub handling updates. Not in this release.
 - **GitHub Actions CI** — auto-build on version tag, draft release with installer + updater manifest
-- **Auto-updater** — checks GitHub Releases on startup for NSIS and AppImage builds (would be disabled in Flatpak when added, since Flathub manages updates)
+- **Auto-updater** — checks GitHub Releases on startup for NSIS, DMG, and AppImage builds (would be disabled in Flatpak when added, since Flathub manages updates)
 - **Tauri signing keys** — update artifacts signed for integrity verification
 
 ---
@@ -160,27 +189,24 @@ File detection uses Wolf Box naming: `YYYY_MM_DD_HHMMSS_EE_C.MP4` where `EE` is 
 
 - **Audio source selection** — see which channel provides audio, switch it to a different channel
 - **Flip camera view** — mirror a video horizontally, persist the preference
-- **Error file review** — inspect files that failed to parse, see what's wrong, delete from the interface
 
 ### Medium-term (polish and generalize)
 
-- **Camera plugin system** — camera-specific parsers as plugins (Viofo, BlackVue, GoPro, generic fallback)
+- **More dashcam parsers** — Viofo, BlackVue, GoPro on top of the existing Wolf Box / Thinkware / Miltona / Generic 4-channel set. Modular naming-parser architecture is already in place; each addition is small.
 - **Speed/altitude/g-force graphs** — if accelerometer data is available in the GPS stream
 - **Clip export** — select a time range, export to a new MP4
 - **Snapshot capture** — save a frame as an image
 - **GPX/KML export** — export GPS tracks for use in mapping tools
 - **Bookmarking** — flag moments on the timeline for later review
-- **Settings** — preferred map tile source, units (mph/kmh), default playback speed
+- **Settings UI** — currently scattered (ffmpeg path lives in the Timelapse modal). Consolidate, plus add preferred map tile source, units (mph/kmh), default playback speed.
 
 ### Long-term (analysis and automation)
 
 - **Trip journal / map** — all trips plotted on a world map, click to jump to footage
-- **Batch GPS extraction** — process entire folder → trip map overview
-- **Scene change detection** — thumbnail timeline of interesting moments
+- **Scene change detection** — thumbnail timeline of interesting moments beyond the existing GPS-derived event detection
 - **Audio spike detection** — flag horn honks, crash sounds
 - **Object detection** — YOLO on keyframes (vehicles, people, signs)
 - **OCR** — extract text from frames (speed limit signs, license plates)
 - **AI-powered search** — "find the clip where I passed the red barn" (local vision model)
-- **Timelapse generation** — from full trip footage
 - **Speed overlay** — bake GPS speed into exported clips
 - **OpenStreetMap contribution** — extract GPS traces and frames for mappers
