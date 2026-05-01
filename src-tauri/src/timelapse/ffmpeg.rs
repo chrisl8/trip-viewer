@@ -601,6 +601,15 @@ fn apply_loglevel_flags(cmd: &mut Command) {
 /// Apply the encoder-specific output args (codec, preset, quality).
 /// Shared across the single-shot and per-window paths so the two
 /// produce byte-identical encodes when fed equivalent input.
+///
+/// `-tag:v hvc1` is force-set on every HEVC output regardless of
+/// encoder. ffmpeg's mp4 muxer defaults to writing `hev1` for libx265
+/// output, but Safari / WKWebView (macOS) and parts of WebView2's
+/// media path reject `hev1`-tagged HEVC and play only `hvc1`. The two
+/// tags describe identical bitstreams (the parameter sets just live
+/// inline vs. in the sample description); forcing `hvc1` costs
+/// nothing and unlocks playback on the OS-level decoders the app
+/// relies on.
 fn apply_encoder_flags(cmd: &mut Command, encoder: Encoder, cpu_pool_threads: Option<usize>) {
     match encoder {
         Encoder::HevcNvenc => {
@@ -635,6 +644,7 @@ fn apply_encoder_flags(cmd: &mut Command, encoder: Encoder, cpu_pool_threads: Op
                 .arg(&x265_params);
         }
     }
+    cmd.arg("-tag:v").arg("hvc1");
 }
 
 /// Spawn `cmd`, drain its stderr to a bounded tail, and poll `cancel`
