@@ -45,13 +45,17 @@ pub async fn scan_folder(
     path: String,
     db: tauri::State<'_, crate::db::DbHandle>,
 ) -> Result<ScanResult, AppError> {
-    let result = scan_folder_sync(Path::new(&path))?;
+    let mut result = scan_folder_sync(Path::new(&path))?;
     let scan_started_ms = chrono::Utc::now().timestamp_millis();
     // Persistence is best-effort; a DB failure must not block the user
     // from seeing their scan results, they just won't have tags yet.
+    // We swap in the merge-applied trip list so the frontend renders
+    // the same view the DB now has: natural trips that match a
+    // `manual_trip_merges` directive get folded into their primary.
     if let Ok(mut conn) = db.lock() {
-        if let Err(e) = crate::db::segments::persist_and_gc(&mut conn, &result.trips, scan_started_ms) {
-            eprintln!("[db] persist_and_gc failed: {e}");
+        match crate::db::segments::persist_and_gc(&mut conn, &result.trips, scan_started_ms) {
+            Ok(merged) => result.trips = merged,
+            Err(e) => eprintln!("[db] persist_and_gc failed: {e}"),
         }
     }
     Ok(result)

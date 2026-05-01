@@ -241,7 +241,19 @@ pub(crate) fn apply_merges_to_trips(
     Ok(out)
 }
 
-pub fn persist_and_gc(conn: &mut Connection, trips: &[Trip], scan_started_ms: i64) -> Result<(), AppError> {
+/// Persist `trips` with merge directives applied, GC stale rows, and
+/// return the coalesced trip list the caller should hand to the frontend.
+///
+/// Returning the coalesced view is load-bearing: without it, scan_folder
+/// would render the natural (unmerged) grouping to the UI while the DB
+/// has the merge applied — the merged trip's primary keeps its segments
+/// and timelapse_jobs while the natural absorbed trips appear as empty
+/// of timelapses on the next folder reopen.
+pub fn persist_and_gc(
+    conn: &mut Connection,
+    trips: &[Trip],
+    scan_started_ms: i64,
+) -> Result<Vec<Trip>, AppError> {
     let tx = conn.transaction()?;
 
     // Apply user merges before persisting. A merge directive says
@@ -284,7 +296,7 @@ pub fn persist_and_gc(conn: &mut Connection, trips: &[Trip], scan_started_ms: i6
     )?;
 
     tx.commit()?;
-    Ok(())
+    Ok(coalesced)
 }
 
 #[cfg(test)]
@@ -630,5 +642,37 @@ mod tests {
             n_segs_under_primary, 2,
             "both segments should now live under the primary trip",
         );
+    }
+
+    #[test]
+    fn persist_and_gc_returns_merged_trips_for_caller() {
+        // The frontend renders whatever scan_folder returns. If
+        // persist_and_gc applied the merge to the DB but the natural
+        // (unmerged) trips were handed back, the next folder reopen
+        // would show three separate trips while their timelapse_jobs
+        // sit under the merged primary's id. Lock the contract here.
+        let db = open_in_memory().unwrap();
+        let seg_a = sample_segment("C:/vids/a.mp4", 0);
+        let seg_b = sample_segment("C:/vids/b.mp4", 600);
+        let trip_a = sample_trip(vec![seg_a]);
+        let trip_b = sample_trip(vec![seg_b]);
+        let primary = trip_a.id;
+        let absorbed = trip_b.id;
+
+        {
+            let conn = db.lock().unwrap();
+            crate::db::manual_trip_merges::insert_merge(
+                &conn, primary, absorbed, 500,
+            )
+            .unwrap();
+        }
+        let returned = {
+            let mut conn = db.lock().unwrap();
+            persist_and_gc(&mut conn, &[trip_a, trip_b], 1_000).unwrap()
+        };
+
+        assert_eq!(returned.len(), 1, "two natural trips should fold into one");
+        assert_eq!(returned[0].id, primary);
+        assert_eq!(returned[0].segments.len(), 2);
     }
 }
