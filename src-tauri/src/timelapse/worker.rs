@@ -11,8 +11,9 @@
 //! The worker signature doesn't change between stages.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use rusqlite::params;
@@ -82,6 +83,11 @@ struct WorkItem {
 /// Run the timelapse encode loop on a blocking thread. Always clears
 /// `running=false` before returning so future start calls aren't
 /// blocked, mirroring `scans::worker::run_scan_loop`.
+///
+/// `concurrency` is the worker pool size used inside each per-trip
+/// chunk: `1` reproduces the old strictly-sequential behavior, larger
+/// values fan out the per-trip (tier × channel) jobs to multiple
+/// concurrent ffmpeg processes.
 #[allow(clippy::too_many_arguments)]
 pub fn run_timelapse_loop(
     app: AppHandle,
@@ -94,6 +100,7 @@ pub fn run_timelapse_loop(
     scope: JobScope,
     ffmpeg_path: String,
     caps: FfmpegCapabilities,
+    concurrency: usize,
 ) {
     let result = run_inner(
         &app,
@@ -105,6 +112,7 @@ pub fn run_timelapse_loop(
         scope,
         &ffmpeg_path,
         &caps,
+        concurrency,
     );
     if let Ok(mut guard) = state.lock() {
         guard.running = false;
@@ -126,6 +134,7 @@ fn run_inner(
     scope: JobScope,
     ffmpeg_path: &str,
     caps: &FfmpegCapabilities,
+    concurrency: usize,
 ) -> Result<(), AppError> {
     let encoder = Encoder::pick(caps);
     let output_root = resolve_output_root(db)?;
@@ -141,330 +150,166 @@ fn run_inner(
         },
     );
 
-    let mut done: u64 = 0;
-    let mut failed: u64 = 0;
-    let mut last_emit = Instant::now();
+    // libx265 needs its internal thread pool sized to a fair share of
+    // CPU when N>1 ffmpegs run in parallel; otherwise each x265
+    // invocation spawns all-cores and N of them thrash the OS
+    // scheduler. NVENC's encode threads live on the GPU, so the cap
+    // doesn't apply there.
+    let cpu_pool_threads: Option<usize> = if matches!(encoder, Encoder::LibX265) && concurrency > 1
+    {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        Some((cores / concurrency).max(1))
+    } else {
+        None
+    };
+
+    // Cross-worker progress state. `last_emit` gates the 250 ms
+    // throttle that keeps IPC traffic down when many workers report
+    // simultaneously; counters are summed at the end for the closing
+    // emit.
+    let done = AtomicU64::new(0);
+    let failed = AtomicU64::new(0);
+    let last_emit = Mutex::new(Instant::now());
     const EMIT_INTERVAL: Duration = Duration::from_millis(250);
 
-    // Per-trip cache. The GPS stitch + event detection is the same for
-    // every (tier, channel) unit of the same trip, so we compute it
-    // once when the trip_id changes and reuse it for the rest. The
-    // work list is grouped by trip already (build_work_list's outer
-    // loop is trips) so this stays hot for adjacent items.
-    let mut cached: Option<TripEncodeContext> = None;
+    // Group the flat work list into per-trip slices. The list is
+    // already trip-grouped (build_work_list's outer loop is trips),
+    // so we walk it once and slice on trip_id boundaries.
+    let chunks = group_work_by_trip(&work);
+    let pool_size = concurrency.max(1);
 
-    for item in &work {
+    for chunk in &chunks {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
+        let trip_id = chunk[0].trip_id.as_str();
 
-        // Flip the row to status='running' before the prep work, not
-        // after. Per-trip prep (GPS extraction across all segments,
-        // sibling scan, black-placeholder generation when needed) can
-        // take many seconds; if `mark_running` waits until just before
-        // ffmpeg starts, the Trips table polling shows "pending" the
-        // whole time. Failure paths overwrite running with failed, so
-        // the state machine stays correct.
-        mark_running(db, item)?;
-
-        // Emit progress at the top of each iteration rather than the
-        // bottom. Several failure paths below `continue` past the
-        // bottom of the loop, which used to hide a stream of fast
-        // failures (e.g. CameraDoesNotRecord for every I/R job on a
-        // single-channel dashcam) — the internal `failed` counter
-        // climbed but no event reached the frontend, so the bar sat
-        // at 0/N indefinitely. Top-of-loop emit fires regardless of
-        // which path the iteration takes. The 250 ms throttle still
-        // prevents IPC saturation. `current_*` describes the upcoming
-        // item ("now working on…") rather than the previous one.
-        if last_emit.elapsed() >= EMIT_INTERVAL {
-            let _ = app.emit(
-                "timelapse:progress",
-                TimelapseProgressEvent {
-                    total,
-                    done,
-                    failed,
-                    current_trip_id: Some(item.trip_id.clone()),
-                    current_tier: Some(item.tier.as_str().to_string()),
-                    current_channel: Some(item.channel.as_str().to_string()),
-                },
-            );
-            last_emit = Instant::now();
-        }
-
-        // Refresh the cache if we've moved to a new trip.
-        if cached.as_ref().map(|c| c.trip_id.as_str()) != Some(item.trip_id.as_str()) {
-            cached = match build_trip_context(db, &item.trip_id) {
-                Ok(ctx) => Some(ctx),
-                Err(e) => {
-                    failed += 1;
-                    record_failed(db, item, &format!("trip lookup failed: {e}"))?;
-                    continue;
+        // Build per-trip context once before the parallel block. This
+        // is the same GPS stitch + event detection the sequential
+        // loop performed once per trip; failure here fails every job
+        // in the chunk identically.
+        let ctx = match build_trip_context(db, trip_id) {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("trip lookup failed: {e}");
+                for item in *chunk {
+                    let _ = record_failed(db, item, &msg);
+                    failed.fetch_add(1, Ordering::Relaxed);
                 }
-            };
-        }
-        let ctx = cached.as_ref().expect("cache was just populated");
+                emit_progress_throttled(
+                    app,
+                    total,
+                    &done,
+                    &failed,
+                    &last_emit,
+                    EMIT_INTERVAL,
+                    None,
+                );
+                continue;
+            }
+        };
 
         if ctx.front_sources.is_empty() {
-            failed += 1;
-            record_failed(db, item, "no segments found for trip")?;
+            for item in *chunk {
+                let _ = record_failed(db, item, "no segments found for trip");
+                failed.fetch_add(1, Ordering::Relaxed);
+            }
+            emit_progress_throttled(
+                app,
+                total,
+                &done,
+                &failed,
+                &last_emit,
+                EMIT_INTERVAL,
+                None,
+            );
             continue;
         }
 
-        // Interior/Rear outcomes: Complete → encode as-is.
-        // CameraDoesNotRecord → skip (single-channel cameras).
-        // PadWithBlack → generate placeholder MP4s for the missing
-        // positions so the concat stream stays the expected duration
-        // and stays in sync with the front/interior channels.
-        let resolution = match resolve_channel_sources(
-            &ctx.front_sources,
-            &ctx.front_durations,
-            item.channel,
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                record_failed(
-                    db,
-                    item,
-                    &format!("sibling lookup failed: {e}"),
-                )?;
-                failed += 1;
-                continue;
-            }
-        };
+        // Worker pool for this trip's (tier × channel) jobs. Every
+        // worker pulls the next index off `next_index` until the
+        // chunk drains or cancel fires. `thread::scope` joins all
+        // spawns before the outer for-loop advances, so the per-trip
+        // `ctx` borrow stays live for every reader.
+        let next_index = AtomicUsize::new(0);
+        let ctx_ref: &TripEncodeContext = &ctx;
+        thread::scope(|s| {
+            for _ in 0..pool_size {
+                s.spawn(|| {
+                    loop {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let i = next_index.fetch_add(1, Ordering::Relaxed);
+                        if i >= chunk.len() {
+                            break;
+                        }
+                        let item = &chunk[i];
 
-        // Scratch placeholder files + their containing per-job dir,
-        // both cleaned up at the end of the iteration regardless of
-        // encode outcome. Lifting `scratch_dir` here means the
-        // post-encode cleanup can remove the now-empty dir without
-        // having to rebuild the path; otherwise empty
-        // `<library>/Timelapses/.tmp/<trip>_<tier>_<channel>/` dirs
-        // would accumulate one per padded job over time.
-        let mut scratch_files: Vec<PathBuf> = Vec::new();
-        let mut scratch_dir: Option<PathBuf> = None;
+                        // Top-of-loop emit so failure paths (which return
+                        // ProcessOutcome::Failed without doing IO) still
+                        // surface a "now working on…" event rather than
+                        // hiding behind a stale current_*.
+                        emit_progress_throttled(
+                            app,
+                            total,
+                            &done,
+                            &failed,
+                            &last_emit,
+                            EMIT_INTERVAL,
+                            Some(item),
+                        );
 
-        let (sources, padded_count) = match resolution {
-            SiblingResolution::Complete(v) => (v, 0usize),
-            SiblingResolution::CameraDoesNotRecord => {
-                record_failed(
-                    db,
-                    item,
-                    "no files for this channel (camera may not record it)",
-                )?;
-                failed += 1;
-                continue;
-            }
-            SiblingResolution::PadWithBlack {
-                entries,
-                missing_count,
-                reference_sibling,
-            } => {
-                // Probe one real sibling to match codec/resolution/fps.
-                // Concat demuxer is strict — mismatched params get the
-                // placeholder rejected at encode time.
-                let meta = match crate::metadata::mp4_probe::probe(
-                    Path::new(&reference_sibling),
-                ) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        record_failed(
+                        match process_item(
                             db,
+                            cancel,
                             item,
-                            &format!(
-                                "failed to probe reference sibling \
-                                 {reference_sibling} to size black placeholders: {e}"
-                            ),
-                        )?;
-                        failed += 1;
-                        continue;
-                    }
-                };
-                let width = meta.width.max(16);
-                let height = meta.height.max(16);
-                // Simple integer fps. Dashcam footage is almost always
-                // 30/1; NTSC-ish 30000/1001 rounds to 30 which the
-                // concat demuxer accepts via rate-tolerant muxing.
-                let fps = (meta.fps_num / meta.fps_den.max(1)).max(1);
-
-                // Probe the reference sibling for pix_fmt + color tags
-                // so the placeholders match the real files' decoded
-                // frame parameters. Without this match, ffmpeg's
-                // auto_scaler trips on a -40 ENOSYS reinit when the
-                // first segment is a placeholder (yuv420p, untagged)
-                // and slot 1 is real Wolf Box footage (yuvj420p, BT.709
-                // tagged). One probe per (trip, channel); falls back to
-                // Wolf Box-shaped defaults if parsing fails.
-                let color_meta = ffmpeg::probe_color_metadata(
-                    ffmpeg_path,
-                    Path::new(&reference_sibling),
-                );
-
-                let dir = output_root.join(".tmp").join(format!(
-                    "{}_{}_{}",
-                    item.trip_id,
-                    item.tier.as_str(),
-                    item.channel.as_str()
-                ));
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    // create_dir_all may have created the leaf and
-                    // failed on a later metadata step (rare), so
-                    // attempt an inline cleanup before bailing — the
-                    // post-encode unified cleanup is unreachable from
-                    // this `continue`. `remove_dir` is empty-only and
-                    // best-effort: no-op if the dir wasn't created.
-                    let _ = std::fs::remove_dir(&dir);
-                    record_failed(
-                        db,
-                        item,
-                        &format!("scratch dir create failed: {e}"),
-                    )?;
-                    failed += 1;
-                    continue;
-                }
-                scratch_dir = Some(dir.clone());
-
-                let mut built: Vec<String> = Vec::with_capacity(entries.len());
-                let mut placeholder_err: Option<AppError> = None;
-                for (i, entry) in entries.into_iter().enumerate() {
-                    match entry {
-                        ConcatEntry::Real(s) => built.push(s),
-                        ConcatEntry::MissingPlaceholder { duration_s } => {
-                            let path = dir.join(format!("ph_{i}.mp4"));
-                            match ffmpeg::generate_black_placeholder(
-                                ffmpeg_path,
-                                &path,
-                                width,
-                                height,
-                                fps,
-                                duration_s,
-                                encoder,
-                                &color_meta,
-                            ) {
-                                Ok(()) => {
-                                    built.push(path.to_string_lossy().to_string());
-                                    scratch_files.push(path);
-                                }
-                                Err(e) => {
-                                    placeholder_err = Some(e);
-                                    break;
-                                }
+                            ctx_ref,
+                            encoder,
+                            ffmpeg_path,
+                            caps,
+                            &output_root,
+                            cpu_pool_threads,
+                        ) {
+                            ProcessOutcome::Done => {
+                                done.fetch_add(1, Ordering::Relaxed);
+                            }
+                            ProcessOutcome::Failed => {
+                                failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                            ProcessOutcome::Cancelled => {
+                                // Cancel flag is already set by the
+                                // user; the chunk-loop's top-level
+                                // check fires on the next iteration.
+                                break;
                             }
                         }
                     }
-                }
-                if let Some(e) = placeholder_err {
-                    // Don't clean up here — the unified post-encode
-                    // cleanup below handles files + dir for every exit
-                    // path, including this one (encode is skipped via
-                    // the early `continue` after `record_failed`).
-                    for f in &scratch_files {
-                        let _ = std::fs::remove_file(f);
-                    }
-                    if let Some(d) = &scratch_dir {
-                        let _ = std::fs::remove_dir(d);
-                    }
-                    record_failed(
-                        db,
-                        item,
-                        &format!("black placeholder generation failed: {e}"),
-                    )?;
-                    failed += 1;
-                    continue;
-                }
-                (built, missing_count)
+                });
             }
-        };
-
-        let output_path = output_root.join(format!(
-            "{}_{}_{}.mp4",
-            item.trip_id,
-            item.tier.as_str(),
-            item.channel.as_str()
-        ));
-
-        let args = EncodeArgs {
-            ffmpeg_path,
-            source_paths: &sources,
-            output_path: &output_path,
-            tier: item.tier,
-            channel: item.channel,
-            encoder,
-            windows: &ctx.windows,
-            total_duration_s: ctx.total_duration_s,
-        };
-        let encode_result = ffmpeg::encode_trip_channel(&args, cancel);
-
-        // Clean up scratch placeholders before handling the encode
-        // result so we never leak temp files, even on cancel. Then
-        // try to remove the per-job scratch dir itself — `remove_dir`
-        // only succeeds when the dir is empty, which is the post-
-        // cleanup state, so an unrelated stray file would be left
-        // alone rather than silently nuked.
-        for f in &scratch_files {
-            let _ = std::fs::remove_file(f);
-        }
-        if let Some(d) = &scratch_dir {
-            let _ = std::fs::remove_dir(d);
-        }
-
-        match encode_result {
-            Ok(path) => {
-                // Compute the piecewise speed curve and serialize as
-                // JSON so the frontend player can map file-time ↔
-                // concat-time during playback. Per (trip, tier); the
-                // three channels of the same (trip, tier) get an
-                // identical curve because they use the same filter.
-                let curve = crate::timelapse::speed_curve::build_curve(
-                    &ctx.windows,
-                    item.tier,
-                    ctx.total_duration_s,
-                );
-                let curve_json = crate::timelapse::speed_curve::serialize_curve(&curve);
-                let output_size_bytes = std::fs::metadata(&path)
-                    .ok()
-                    .map(|m| m.len() as i64);
-                record_done(
-                    db,
-                    item,
-                    &path,
-                    &caps.version,
-                    encoder.as_str(),
-                    padded_count as i64,
-                    &curve_json,
-                    output_size_bytes,
-                )?;
-                done += 1;
-            }
-            Err(AppError::Internal(ref msg)) if msg == "cancelled" => {
-                // Revert the row so a re-run picks this trip up.
-                reset_pending(db, item)?;
-                break;
-            }
-            Err(e) => {
-                failed += 1;
-                record_failed(db, item, &e.to_string())?;
-            }
-        }
-
+        });
     }
 
-    // Sweep the parent .tmp/ if every per-job dir cleaned up and it's
-    // now empty. `remove_dir` is empty-only, so a half-cleaned state
-    // (e.g. a future job left mid-encode by a process kill) is left
-    // alone rather than touched.
+    // Sweep .tmp/ if every per-job dir cleaned up. `remove_dir` is
+    // empty-only, so a half-cleaned state from a process kill is
+    // left alone rather than touched.
     let tmp_root = output_root.join(".tmp");
     let _ = std::fs::remove_dir(&tmp_root);
 
-    // Final progress emit so the UI reflects the closing tally. The
-    // top-of-loop emit can't cover this — there's no next iteration
-    // to anchor it to — and `timelapse:done` doesn't update the
-    // progress payload on the frontend.
+    let final_done = done.load(Ordering::Relaxed);
+    let final_failed = failed.load(Ordering::Relaxed);
+
+    // Final progress emit with closing tallies. The throttle gate
+    // would otherwise swallow this — there's no next iteration to
+    // unblock it.
     let _ = app.emit(
         "timelapse:progress",
         TimelapseProgressEvent {
             total,
-            done,
-            failed,
+            done: final_done,
+            failed: final_failed,
             current_trip_id: None,
             current_tier: None,
             current_channel: None,
@@ -476,13 +321,324 @@ fn run_inner(
         "timelapse:done",
         TimelapseDoneEvent {
             total,
-            done,
-            failed,
+            done: final_done,
+            failed: final_failed,
             cancelled,
         },
     );
 
     Ok(())
+}
+
+/// Group the flat work list into per-trip slices. The input is
+/// already ordered by trip (build_work_list's outer loop is trips),
+/// so we just scan for trip_id boundaries.
+fn group_work_by_trip(work: &[WorkItem]) -> Vec<&[WorkItem]> {
+    let mut chunks: Vec<&[WorkItem]> = Vec::new();
+    if work.is_empty() {
+        return chunks;
+    }
+    let mut start = 0usize;
+    for i in 1..work.len() {
+        if work[i].trip_id != work[i - 1].trip_id {
+            chunks.push(&work[start..i]);
+            start = i;
+        }
+    }
+    chunks.push(&work[start..]);
+    chunks
+}
+
+/// Emit a `timelapse:progress` event if the throttle interval has
+/// elapsed since the previous emit. Counters are read with
+/// `Relaxed`: the IPC payload is for human-paced UI, so a frame-
+/// level race between done/failed updates and the emit produces
+/// numbers stale by at most one increment, which the next emit
+/// corrects.
+fn emit_progress_throttled(
+    app: &AppHandle,
+    total: u64,
+    done: &AtomicU64,
+    failed: &AtomicU64,
+    last_emit: &Mutex<Instant>,
+    interval: Duration,
+    item: Option<&WorkItem>,
+) {
+    {
+        let mut guard = match last_emit.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if guard.elapsed() < interval {
+            return;
+        }
+        *guard = Instant::now();
+    }
+
+    let _ = app.emit(
+        "timelapse:progress",
+        TimelapseProgressEvent {
+            total,
+            done: done.load(Ordering::Relaxed),
+            failed: failed.load(Ordering::Relaxed),
+            current_trip_id: item.map(|i| i.trip_id.clone()),
+            current_tier: item.map(|i| i.tier.as_str().to_string()),
+            current_channel: item.map(|i| i.channel.as_str().to_string()),
+        },
+    );
+}
+
+enum ProcessOutcome {
+    Done,
+    Failed,
+    Cancelled,
+}
+
+/// Run one (trip, tier, channel) encode end-to-end. The caller owns
+/// the progress counters and increments them based on the returned
+/// outcome. All DB/file side effects are confined to this function;
+/// caller-side state lives in the `process_item`-free scope.
+#[allow(clippy::too_many_arguments)]
+fn process_item(
+    db: &DbHandle,
+    cancel: &CancelFlag,
+    item: &WorkItem,
+    ctx: &TripEncodeContext,
+    encoder: Encoder,
+    ffmpeg_path: &str,
+    caps: &FfmpegCapabilities,
+    output_root: &Path,
+    cpu_pool_threads: Option<usize>,
+) -> ProcessOutcome {
+    if let Err(e) = mark_running(db, item) {
+        eprintln!("[timelapse] mark_running failed: {e}");
+        return ProcessOutcome::Failed;
+    }
+
+    // Interior/Rear outcomes: Complete → encode as-is.
+    // CameraDoesNotRecord → skip (single-channel cameras).
+    // PadWithBlack → generate placeholder MP4s for the missing
+    // positions so the concat stream stays the expected duration
+    // and stays in sync with the front/interior channels.
+    let resolution = match resolve_channel_sources(
+        &ctx.front_sources,
+        &ctx.front_durations,
+        item.channel,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = record_failed(db, item, &format!("sibling lookup failed: {e}"));
+            return ProcessOutcome::Failed;
+        }
+    };
+
+    // Always create the per-job scratch dir. Two paths need it:
+    // placeholder generation (PadWithBlack) and the multi-window
+    // encode pipeline (curve.len() > 1). Unifying the create+sweep
+    // logic up here keeps cleanup consistent across cancel and error
+    // paths and means stray .tmp dirs can't accumulate.
+    let scratch_dir = output_root.join(".tmp").join(format!(
+        "{}_{}_{}",
+        item.trip_id,
+        item.tier.as_str(),
+        item.channel.as_str()
+    ));
+    if let Err(e) = std::fs::create_dir_all(&scratch_dir) {
+        let _ = std::fs::remove_dir(&scratch_dir);
+        let _ = record_failed(db, item, &format!("scratch dir create failed: {e}"));
+        return ProcessOutcome::Failed;
+    }
+
+    let (sources, padded_count) = match resolution {
+        SiblingResolution::Complete(v) => (v, 0usize),
+        SiblingResolution::CameraDoesNotRecord => {
+            sweep_scratch_dir(&scratch_dir);
+            let _ = record_failed(
+                db,
+                item,
+                "no files for this channel (camera may not record it)",
+            );
+            return ProcessOutcome::Failed;
+        }
+        SiblingResolution::PadWithBlack {
+            entries,
+            missing_count,
+            reference_sibling,
+        } => {
+            // Probe one real sibling to match codec/resolution/fps.
+            // Concat demuxer is strict — mismatched params get the
+            // placeholder rejected at encode time.
+            let meta = match crate::metadata::mp4_probe::probe(Path::new(&reference_sibling)) {
+                Ok(m) => m,
+                Err(e) => {
+                    sweep_scratch_dir(&scratch_dir);
+                    let _ = record_failed(
+                        db,
+                        item,
+                        &format!(
+                            "failed to probe reference sibling \
+                             {reference_sibling} to size black placeholders: {e}"
+                        ),
+                    );
+                    return ProcessOutcome::Failed;
+                }
+            };
+            let width = meta.width.max(16);
+            let height = meta.height.max(16);
+            // Simple integer fps. Dashcam footage is almost always
+            // 30/1; NTSC-ish 30000/1001 rounds to 30 which the concat
+            // demuxer accepts via rate-tolerant muxing.
+            let fps = (meta.fps_num / meta.fps_den.max(1)).max(1);
+
+            // Probe pix_fmt + color tags so the placeholders match
+            // the real files' decoded frame parameters. Without this
+            // match, ffmpeg's auto_scaler trips on a -40 ENOSYS reinit
+            // when the first segment is a placeholder (yuv420p,
+            // untagged) and slot 1 is real Wolf Box footage (yuvj420p,
+            // BT.709 tagged). Falls back to Wolf Box-shaped defaults
+            // if parsing fails.
+            let color_meta =
+                ffmpeg::probe_color_metadata(ffmpeg_path, Path::new(&reference_sibling));
+
+            let mut built: Vec<String> = Vec::with_capacity(entries.len());
+            let mut placeholder_err: Option<AppError> = None;
+            for (i, entry) in entries.into_iter().enumerate() {
+                match entry {
+                    ConcatEntry::Real(s) => built.push(s),
+                    ConcatEntry::MissingPlaceholder { duration_s } => {
+                        let path = scratch_dir.join(format!("ph_{i}.mp4"));
+                        match ffmpeg::generate_black_placeholder(
+                            ffmpeg_path,
+                            &path,
+                            width,
+                            height,
+                            fps,
+                            duration_s,
+                            encoder,
+                            &color_meta,
+                        ) {
+                            Ok(()) => {
+                                built.push(path.to_string_lossy().to_string());
+                            }
+                            Err(e) => {
+                                placeholder_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(e) = placeholder_err {
+                sweep_scratch_dir(&scratch_dir);
+                let _ = record_failed(
+                    db,
+                    item,
+                    &format!("black placeholder generation failed: {e}"),
+                );
+                return ProcessOutcome::Failed;
+            }
+            (built, missing_count)
+        }
+    };
+
+    // Build the speed curve once. Used by `encode_trip_channel` to
+    // dispatch single-shot vs multi-window, by `compose_filter` for
+    // the single-shot filter, and by `serialize_curve` for the JSON
+    // metadata persisted on the timelapse_jobs row. One source of
+    // truth for the (trip, tier) speed shape.
+    let curve = crate::timelapse::speed_curve::build_curve(
+        &ctx.windows,
+        item.tier,
+        ctx.total_duration_s,
+    );
+
+    let output_path = output_root.join(format!(
+        "{}_{}_{}.mp4",
+        item.trip_id,
+        item.tier.as_str(),
+        item.channel.as_str()
+    ));
+
+    let args = EncodeArgs {
+        ffmpeg_path,
+        source_paths: &sources,
+        output_path: &output_path,
+        tier: item.tier,
+        channel: item.channel,
+        encoder,
+        curve: &curve,
+        scratch_dir: &scratch_dir,
+        cpu_pool_threads,
+    };
+    let started = Instant::now();
+    let encode_result = ffmpeg::encode_trip_channel(&args, cancel);
+    let elapsed = started.elapsed();
+
+    // Sweep the per-job scratch dir: placeholders, multi-window
+    // source/window temp files, and any partial debris. Best-effort
+    // — leaving a stray file is preferable to failing the worker
+    // loop on a permissions hiccup.
+    sweep_scratch_dir(&scratch_dir);
+
+    match encode_result {
+        Ok(path) => {
+            let curve_json = crate::timelapse::speed_curve::serialize_curve(&curve);
+            let output_size_bytes = std::fs::metadata(&path).ok().map(|m| m.len() as i64);
+            if let Err(e) = record_done(
+                db,
+                item,
+                &path,
+                &caps.version,
+                encoder.as_str(),
+                padded_count as i64,
+                &curve_json,
+                output_size_bytes,
+            ) {
+                eprintln!("[timelapse] record_done failed: {e}");
+                return ProcessOutcome::Failed;
+            }
+            // Per-job timing log. The DB has created_at_ms /
+            // completed_at_ms on the row already, but those are only
+            // visible via direct query; this surfaces the wallclock
+            // in the app log so a slow encode is greppable after the
+            // fact without joining tables.
+            eprintln!(
+                "[timelapse] job done: trip={} tier={} channel={} elapsed={:.1}s padded={} segments={}",
+                item.trip_id,
+                item.tier.as_str(),
+                item.channel.as_str(),
+                elapsed.as_secs_f64(),
+                padded_count,
+                curve.len()
+            );
+            ProcessOutcome::Done
+        }
+        Err(AppError::Internal(ref msg)) if msg == "cancelled" => {
+            // Revert the row so a re-run picks this trip up.
+            let _ = reset_pending(db, item);
+            ProcessOutcome::Cancelled
+        }
+        Err(e) => {
+            let _ = record_failed(db, item, &e.to_string());
+            ProcessOutcome::Failed
+        }
+    }
+}
+
+/// Best-effort cleanup of a per-job scratch directory: remove every
+/// file under it, then the directory itself. Used at the end of
+/// `process_item` regardless of encode outcome so temp files from
+/// placeholder generation, multi-window source-prep, or aborted
+/// per-window encodes don't accumulate. Failures are swallowed —
+/// a leftover .tmp file is a smaller problem than a worker loop
+/// that won't advance because cleanup hit a transient I/O error.
+fn sweep_scratch_dir(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 fn mark_running(db: &DbHandle, item: &WorkItem) -> Result<(), AppError> {
@@ -550,10 +706,10 @@ fn reset_pending(db: &DbHandle, item: &WorkItem) -> Result<(), AppError> {
     )
 }
 
-/// Per-trip state cached across (tier, channel) units. Computed once
-/// when the worker transitions to a new trip_id.
+/// Per-trip state shared across the (tier × channel) jobs of one trip.
+/// Built once before the worker pool spins up; every worker reads it
+/// concurrently for the duration of the chunk.
 struct TripEncodeContext {
-    trip_id: String,
     front_sources: Vec<String>,
     /// Per-segment duration (parallel to `front_sources`). Used to
     /// generate correctly-sized black placeholders when a sibling is
@@ -576,7 +732,6 @@ fn build_trip_context(
     let stitched = stitch_trip_gps(&segments);
     let windows = events::detect_events(&stitched);
     Ok(TripEncodeContext {
-        trip_id: trip_id.to_string(),
         front_sources,
         front_durations,
         windows,

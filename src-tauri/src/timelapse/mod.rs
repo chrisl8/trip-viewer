@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 pub mod cleanup;
 pub mod commands;
+pub mod concurrency;
 pub mod events;
 pub mod ffmpeg;
 pub mod speed_curve;

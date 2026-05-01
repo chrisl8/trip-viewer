@@ -183,6 +183,13 @@ pub fn build_curve(
 /// — typically `"0:v"` for a single source, or a label like `"vcat"`
 /// when the caller has already prepended a concat filter that joins
 /// multiple inputs into one stream.
+///
+/// Production code now builds the curve once in the worker and goes
+/// straight to `compose_filter_from_curve`; this wrapper is kept for
+/// the test suite (which exercises the curve→filter mapping by tier
+/// and window shape rather than by curve directly) and as the public
+/// entry-point should an external caller want it.
+#[allow(dead_code)]
 pub fn compose_filter(
     windows: &[EventWindow],
     tier: Tier,
@@ -191,7 +198,19 @@ pub fn compose_filter(
     input_label: &str,
 ) -> String {
     let curve = build_curve(windows, tier, total_duration_s);
+    compose_filter_from_curve(&curve, scale_filter, input_label)
+}
 
+/// Same as `compose_filter` but takes a pre-built curve. Used by the
+/// encode dispatcher in `ffmpeg.rs`, which builds the curve once per
+/// job and uses it for both filter composition (single-shot path) and
+/// the JSON metadata persisted to `timelapse_jobs.speed_curve_json`.
+/// Avoids the duplicate `build_curve` call.
+pub fn compose_filter_from_curve(
+    curve: &[CurveSegment],
+    scale_filter: &str,
+    input_label: &str,
+) -> String {
     // Head normalization stage. CPU `scale` and CUDA `scale_cuda`
     // differ in how pix_fmt is set: scale needs a separate `format=`
     // filter (host frames), scale_cuda accepts pix_fmt as an option
@@ -204,8 +223,9 @@ pub fn compose_filter(
 
     // Single-segment (fixed tier or no windows): no trim needed —
     // just normalize and apply the global rate change.
-    if curve.len() == 1 {
-        return format!("[{input_label}]{head},setpts=PTS/{}[out]", curve[0].rate);
+    if curve.len() <= 1 {
+        let rate = curve.first().map(|s| s.rate).unwrap_or(1);
+        return format!("[{input_label}]{head},setpts=PTS/{rate}[out]");
     }
 
     let n = curve.len();
@@ -229,6 +249,20 @@ pub fn compose_filter(
     }
     body.push_str(&format!("concat=n={n}:v=1[out]"));
     body
+}
+
+/// Build the per-window filter for the multi-window encoding path.
+/// Single input, scale-and-format normalization, then `setpts=PTS/rate`.
+/// No split, no concat — this is the whole point of the multi-window
+/// path: one stream end-to-end per ffmpeg, so memory stays bounded by
+/// the decoder's own queues regardless of how many windows the curve
+/// has.
+pub fn compose_window_filter(scale_filter: &str, rate: u32) -> String {
+    if scale_filter == "scale_cuda" {
+        format!("[0:v]scale_cuda={OUT_WIDTH}:-2:format=yuv420p,setpts=PTS/{rate}[out]")
+    } else {
+        format!("[0:v]format=yuv420p,{scale_filter}={OUT_WIDTH}:-2,setpts=PTS/{rate}[out]")
+    }
 }
 
 #[cfg(test)]
@@ -545,6 +579,33 @@ mod tests {
             var.starts_with("[vcat]format=yuv420p,scale=1920:-2,split=3[v0][v1][v2];"),
             "head shape wrong: {var}"
         );
+    }
+
+    #[test]
+    fn window_filter_cpu_shape() {
+        let got = compose_window_filter("scale", 16);
+        assert_eq!(got, "[0:v]format=yuv420p,scale=1920:-2,setpts=PTS/16[out]");
+    }
+
+    #[test]
+    fn window_filter_cuda_shape() {
+        let got = compose_window_filter("scale_cuda", 8);
+        assert_eq!(
+            got,
+            "[0:v]scale_cuda=1920:-2:format=yuv420p,setpts=PTS/8[out]"
+        );
+    }
+
+    #[test]
+    fn window_filter_has_no_split_or_concat() {
+        // Memory regression test: the whole reason this filter exists
+        // is to avoid the split=N → trim → concat=N graph that was
+        // pinning 12–36 GB per ffmpeg on variable-tier jobs. Make sure
+        // those structures don't sneak back in.
+        let got = compose_window_filter("scale_cuda", 60);
+        assert!(!got.contains("split="));
+        assert!(!got.contains("concat="));
+        assert!(!got.contains("trim="));
     }
 
     #[test]

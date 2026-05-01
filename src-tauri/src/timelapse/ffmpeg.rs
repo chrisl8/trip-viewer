@@ -26,8 +26,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::error::AppError;
-use crate::timelapse::speed_curve;
-use crate::timelapse::types::{Channel, EventWindow, FfmpegCapabilities, Tier};
+use crate::timelapse::speed_curve::{self, CurveSegment};
+use crate::timelapse::types::{Channel, FfmpegCapabilities, Tier};
 use crate::timelapse::CancelFlag;
 
 // On Windows, a GUI-subsystem process (the installed build sets
@@ -149,18 +149,50 @@ pub struct EncodeArgs<'a> {
     pub ffmpeg_path: &'a str,
     pub source_paths: &'a [String],
     pub output_path: &'a Path,
+    #[allow(dead_code)] // surfaced via EncodeArgs for future logging/metrics
     pub tier: Tier,
     #[allow(dead_code)] // referenced by future log lines and metrics
     pub channel: Channel,
     pub encoder: Encoder,
-    pub windows: &'a [EventWindow],
-    pub total_duration_s: f64,
+    /// Pre-built speed curve. The dispatcher in `encode_trip_channel`
+    /// reads `curve.len()` to choose between the single-shot filter
+    /// graph (1 segment) and the multi-window pipeline (2+ segments).
+    /// Worker builds the curve once per job and reuses it for the
+    /// persisted JSON metadata, so we accept it as input rather than
+    /// rebuilding from `(windows, tier, total_duration)`.
+    pub curve: &'a [CurveSegment],
+    /// Per-job scratch directory for temp files. The multi-window
+    /// path writes a stream-copied source MP4 and one MP4 per curve
+    /// segment here, then deletes them on success or failure. Caller
+    /// guarantees the directory exists and sweeps any leftover files
+    /// after `encode_trip_channel` returns.
+    pub scratch_dir: &'a Path,
+    /// Cap on the per-encode CPU thread pool. Honored only by the
+    /// `LibX265` path (NVENC's encode threads are GPU-side). Used when
+    /// the worker runs N parallel ffmpegs to keep the combined x265
+    /// thread count near the host's logical-core count instead of N×
+    /// oversubscribing it. `None` = let x265 pick its own pool size.
+    pub cpu_pool_threads: Option<usize>,
 }
 
-/// Encode one (trip, tier, channel) output. Blocks until ffmpeg exits,
-/// polling `cancel` every 500ms; if cancelled, kills the child and
-/// deletes the partial output before returning. Returns
-/// `Ok(output_path)` on success.
+/// Encode one (trip, tier, channel) output. Blocks until the encode
+/// completes, polling `cancel` every 500ms; if cancelled, kills any
+/// in-flight ffmpeg child and deletes partial output before returning.
+/// Returns `Ok(output_path)` on success.
+///
+/// Dispatches between two pipelines based on curve length:
+/// - **Single segment** (fixed tiers, or variable tiers with no event
+///   windows): one ffmpeg invocation feeding all source segments
+///   through a `concat → scale → setpts` graph. Memory bounded by the
+///   decoder's own queues (~2 GB).
+/// - **Multi segment** (variable tiers with event windows): split into
+///   three phases — stream-copy the sources into a temp single MP4,
+///   encode each curve segment from that source as its own small
+///   ffmpeg, then stream-copy the per-window outputs into the final
+///   file. The per-process memory profile is bounded by a single-
+///   stream pipeline regardless of how many windows the curve has —
+///   the previous `split=N → trim → concat=N` graph buffered frames
+///   on inactive concat inputs and pinned 12–36 GB per job.
 pub fn encode_trip_channel(
     args: &EncodeArgs<'_>,
     cancel: &CancelFlag,
@@ -179,73 +211,353 @@ pub fn encode_trip_channel(
         let _ = fs::remove_file(args.output_path);
     }
 
-    let n_inputs = args.source_paths.len();
-    // For 2+ inputs, prepend a concat filter that joins them into one
-    // stream (`[vcat]`) which the existing speed-curve filter then
-    // consumes. Single-input case skips the concat prefix and reads
-    // directly from input 0's video stream — same shape as before the
-    // refactor.
-    //
-    // We select the *first* video stream explicitly via `[N:v:0]`
-    // rather than `[N:v]`. The concat filter wants exactly v=1 per
-    // input; `[N:v]` matches all video streams, so a (rare) multi-
-    // video-stream file would feed several into a slot expecting one
-    // and the filter graph would fail to instantiate. Audio streams
-    // are not referenced anywhere — combined with `concat=...:a=0`
-    // and the output-side `-an` below, audio is dropped at every
-    // level, so audio-bearing dashcam files (e.g. Wolf Box's in-cabin
-    // mic) feed through without trouble.
-    let head_label = if n_inputs == 1 { "0:v:0" } else { "vcat" };
-    let speed_filter = speed_curve::compose_filter(
-        args.windows,
-        args.tier,
-        args.total_duration_s,
-        args.encoder.scale_filter(),
-        head_label,
-    );
-    let filter = if n_inputs == 1 {
-        speed_filter
+    if args.curve.len() <= 1 {
+        encode_single_shot(args, cancel)
     } else {
-        let mut prefix = String::new();
-        for i in 0..n_inputs {
-            prefix.push_str(&format!("[{i}:v:0]"));
-        }
-        prefix.push_str(&format!("concat=n={n_inputs}:v=1:a=0[vcat];"));
-        prefix.push_str(&speed_filter);
-        prefix
-    };
+        encode_multi_window(args, cancel)
+    }
+}
 
-    let mut cmd = ffmpeg_command(args.ffmpeg_path);
-    cmd.arg("-y")
-        .arg("-hide_banner")
-        .arg("-nostats")
-        .arg("-loglevel")
-        .arg("error");
+/// Two-phase pipeline for single-segment curves: stream-copy the
+/// input segments into a single MP4 via the concat demuxer, then
+/// encode that single source with a one-input filter graph. This
+/// replaces the older "N `-i` inputs through a `concat` filter"
+/// approach, which allocated a separate NVDEC context per input —
+/// observed ~200 MB of host RAM per `-hwaccel cuda` input, scaling
+/// linearly with segment count and pushing a 200-segment trip to
+/// 40 GB resident.
+///
+/// With one prepared source there's exactly one decoder context
+/// regardless of how many segments the trip has. Stream-copy concat
+/// also means phase 1 doesn't decode at all, so memory there is
+/// trivial.
+fn encode_single_shot(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<PathBuf, AppError> {
+    fs::create_dir_all(args.scratch_dir)
+        .map_err(|e| AppError::Internal(format!("scratch dir create failed: {e}")))?;
 
-    // Per-input hwaccel flags. NVENC pipeline keeps NVDEC → scale_cuda
-    // → NVENC entirely on the GPU; without this each frame round-trips
-    // through host memory and one CPU core caps throughput.
-    //
-    // The hwaccel options bind to the *next* `-i` only — so this loop
-    // re-emits them in front of every input rather than once at the
-    // top of the command line.
-    for src in args.source_paths {
-        if args.encoder.needs_cuda_hwaccel() {
-            cmd.arg("-hwaccel")
-                .arg("cuda")
-                .arg("-hwaccel_output_format")
-                .arg("cuda");
+    // Phase 1: source prep. Concat-demuxer + `-c copy` produces a
+    // single MP4 holding every input segment back-to-back, with no
+    // re-encode. Wolf Box recordings + matched-parameter black
+    // placeholders share codec/resolution/fps/pix_fmt by construction,
+    // so the demuxer accepts them without normalization.
+    let source_path = args.scratch_dir.join("__single_source.mp4");
+    if let Err(e) = prepare_concat_source(args.source_paths, &source_path, args.ffmpeg_path, cancel)
+    {
+        if source_path.exists() {
+            let _ = fs::remove_file(&source_path);
         }
-        cmd.arg("-i").arg(src);
+        return Err(e);
     }
 
-    cmd.arg("-filter_complex")
+    // Phase 2: one ffmpeg, one input, one decoder context. Filter
+    // is the same simple `scale + setpts` shape used for per-window
+    // encodes in the multi-window path; the single-segment curve's
+    // rate determines the speed factor.
+    let rate = args.curve.first().map(|s| s.rate).unwrap_or(1);
+    let filter = speed_curve::compose_window_filter(args.encoder.scale_filter(), rate);
+
+    let mut cmd = ffmpeg_command(args.ffmpeg_path);
+    apply_loglevel_flags(&mut cmd);
+
+    if args.encoder.needs_cuda_hwaccel() {
+        cmd.arg("-hwaccel")
+            .arg("cuda")
+            .arg("-hwaccel_output_format")
+            .arg("cuda");
+    }
+
+    cmd.arg("-i")
+        .arg(&source_path)
+        .arg("-filter_complex")
         .arg(&filter)
         .arg("-map")
         .arg("[out]")
         .arg("-an");
 
-    match args.encoder {
+    apply_encoder_flags(&mut cmd, args.encoder, args.cpu_pool_threads);
+
+    cmd.arg(args.output_path);
+
+    let result = run_ffmpeg_with_cancel(cmd, cancel);
+    let _ = fs::remove_file(&source_path);
+
+    match result {
+        Ok(()) => Ok(args.output_path.to_path_buf()),
+        Err(e) => {
+            if args.output_path.exists() {
+                let _ = fs::remove_file(args.output_path);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Three-phase pipeline that fans the per-window encodes out into
+/// independent ffmpeg invocations instead of a single big filter
+/// graph. Trades a few extra spawns for a per-process memory profile
+/// that's bounded by a single decoder pipeline (~1–2 GB) instead of
+/// the `split=N` fan-out's `~N × frame_buffer` cost.
+fn encode_multi_window(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<PathBuf, AppError> {
+    fs::create_dir_all(args.scratch_dir).map_err(|e| {
+        AppError::Internal(format!("scratch dir create failed: {e}"))
+    })?;
+
+    let source_path = args.scratch_dir.join("__multi_source.mp4");
+    let prep_result = prepare_concat_source(
+        args.source_paths,
+        &source_path,
+        args.ffmpeg_path,
+        cancel,
+    );
+    if let Err(e) = prep_result {
+        if source_path.exists() {
+            let _ = fs::remove_file(&source_path);
+        }
+        return Err(e);
+    }
+
+    // Phase 2: per-window encode. Each ffmpeg consumes the prepared
+    // source with a fast input seek, scales, applies the segment's
+    // rate, and writes a small MP4. Sequential within the job so we
+    // don't undo the memory savings by running them in parallel.
+    let mut window_paths: Vec<PathBuf> = Vec::with_capacity(args.curve.len());
+    let mut window_err: Option<AppError> = None;
+    for (i, seg) in args.curve.iter().enumerate() {
+        let duration = (seg.concat_end - seg.concat_start).max(0.0);
+        if duration <= 0.0 {
+            // build_curve drops zero-width segments today, but if a
+            // future change leaks one through, skipping it here keeps
+            // the pipeline robust rather than failing the whole job.
+            continue;
+        }
+        let window_path = args.scratch_dir.join(format!("__multi_window_{i}.mp4"));
+        match encode_window(
+            &source_path,
+            seg.concat_start,
+            duration,
+            seg.rate,
+            args.encoder,
+            &window_path,
+            args.ffmpeg_path,
+            args.cpu_pool_threads,
+            cancel,
+        ) {
+            Ok(()) => window_paths.push(window_path),
+            Err(e) => {
+                window_err = Some(e);
+                break;
+            }
+        }
+    }
+
+    // Source MP4 is no longer needed once the per-window encodes have
+    // finished (or aborted). Free the disk regardless of outcome.
+    let _ = fs::remove_file(&source_path);
+
+    if let Some(e) = window_err {
+        for w in &window_paths {
+            let _ = fs::remove_file(w);
+        }
+        return Err(e);
+    }
+
+    if window_paths.is_empty() {
+        return Err(AppError::Internal(
+            "multi-window encode produced no segments — curve had no usable spans".into(),
+        ));
+    }
+
+    // Phase 3: stream-copy concat the per-window outputs into the
+    // final file. No re-encode, no decode — purely muxing.
+    let result = concat_window_outputs(
+        &window_paths,
+        args.output_path,
+        args.ffmpeg_path,
+        cancel,
+    );
+    for w in &window_paths {
+        let _ = fs::remove_file(w);
+    }
+    match result {
+        Ok(()) => Ok(args.output_path.to_path_buf()),
+        Err(e) => {
+            if args.output_path.exists() {
+                let _ = fs::remove_file(args.output_path);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Phase 1 of the multi-window pipeline: stream-copy the input
+/// segments into a single MP4 via the concat demuxer. No re-encode
+/// — ffmpeg runs in pure mux mode so memory and CPU are trivial.
+/// Output is the same total bitrate as the inputs combined.
+fn prepare_concat_source(
+    sources: &[String],
+    output: &Path,
+    ffmpeg_path: &str,
+    cancel: &CancelFlag,
+) -> Result<(), AppError> {
+    let parent = output.parent().ok_or_else(|| {
+        AppError::Internal("multi-window source output has no parent dir".into())
+    })?;
+    let list_path = parent.join("__multi_source_list.txt");
+    write_concat_list(sources, &list_path)?;
+
+    let mut cmd = ffmpeg_command(ffmpeg_path);
+    apply_loglevel_flags(&mut cmd);
+    cmd.arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(&list_path)
+        .arg("-c")
+        .arg("copy")
+        .arg("-an")
+        .arg(output);
+
+    let result = run_ffmpeg_with_cancel(cmd, cancel);
+    let _ = fs::remove_file(&list_path);
+    result
+}
+
+/// Phase 2 of the multi-window pipeline: encode one curve segment as
+/// its own MP4. Single input (the prepared source), single-stream
+/// filter graph (`scale + setpts`), one ffmpeg per call. Uses keyframe-
+/// aligned input seek (`-ss` before `-i`) for speed; HEVC GOP boundary
+/// alignment of ~1 s at the segment start is acceptable because the
+/// player uses the persisted curve metadata for time mapping, not
+/// frame-accurate window edges.
+#[allow(clippy::too_many_arguments)]
+fn encode_window(
+    source: &Path,
+    window_start_s: f64,
+    window_duration_s: f64,
+    rate: u32,
+    encoder: Encoder,
+    output: &Path,
+    ffmpeg_path: &str,
+    cpu_pool_threads: Option<usize>,
+    cancel: &CancelFlag,
+) -> Result<(), AppError> {
+    if output.exists() {
+        let _ = fs::remove_file(output);
+    }
+
+    let filter = speed_curve::compose_window_filter(encoder.scale_filter(), rate);
+
+    let mut cmd = ffmpeg_command(ffmpeg_path);
+    apply_loglevel_flags(&mut cmd);
+
+    if encoder.needs_cuda_hwaccel() {
+        cmd.arg("-hwaccel")
+            .arg("cuda")
+            .arg("-hwaccel_output_format")
+            .arg("cuda");
+    }
+
+    cmd.arg("-ss")
+        .arg(format!("{window_start_s:.3}"))
+        .arg("-t")
+        .arg(format!("{window_duration_s:.3}"))
+        .arg("-i")
+        .arg(source)
+        .arg("-filter_complex")
+        .arg(&filter)
+        .arg("-map")
+        .arg("[out]")
+        .arg("-an");
+
+    apply_encoder_flags(&mut cmd, encoder, cpu_pool_threads);
+
+    cmd.arg(output);
+
+    match run_ffmpeg_with_cancel(cmd, cancel) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if output.exists() {
+                let _ = fs::remove_file(output);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Phase 3 of the multi-window pipeline: stream-copy concat the
+/// per-window outputs into the final MP4. No re-encode — purely a
+/// muxer pass. The concat-demuxer issue noted in the module-level
+/// docs (it can't survive parameter changes mid-stream when feeding
+/// NVDEC) doesn't apply here: stream copy bypasses the decoder
+/// entirely, and all per-window outputs were produced by the same
+/// encoder with identical parameters one moment apart.
+fn concat_window_outputs(
+    windows: &[PathBuf],
+    output: &Path,
+    ffmpeg_path: &str,
+    cancel: &CancelFlag,
+) -> Result<(), AppError> {
+    let parent = output.parent().ok_or_else(|| {
+        AppError::Internal("multi-window concat output has no parent dir".into())
+    })?;
+    let list_path = parent.join("__multi_windows_list.txt");
+    let strs: Vec<String> = windows
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    write_concat_list(&strs, &list_path)?;
+
+    let mut cmd = ffmpeg_command(ffmpeg_path);
+    apply_loglevel_flags(&mut cmd);
+    cmd.arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(&list_path)
+        .arg("-c")
+        .arg("copy")
+        .arg("-an")
+        .arg(output);
+
+    let result = run_ffmpeg_with_cancel(cmd, cancel);
+    let _ = fs::remove_file(&list_path);
+    result
+}
+
+/// Write a concat-demuxer list file. Paths are wrapped in single
+/// quotes; embedded apostrophes are escaped per the demuxer's rules
+/// (close quote, backslash-quote, reopen). Backslashes are left as
+/// path separators on Windows — the demuxer treats them literally,
+/// not as escape characters.
+fn write_concat_list(paths: &[String], list_path: &Path) -> Result<(), AppError> {
+    let mut content = String::new();
+    for p in paths {
+        content.push_str("file '");
+        content.push_str(&p.replace('\'', "'\\''"));
+        content.push_str("'\n");
+    }
+    fs::write(list_path, content)
+        .map_err(|e| AppError::Internal(format!("failed to write concat list: {e}")))
+}
+
+/// Apply the universal ffmpeg quiet-mode flags to a Command. Used by
+/// every spawn site so we don't emit progress noise that the worker's
+/// stderr drain would just have to throw away.
+fn apply_loglevel_flags(cmd: &mut Command) {
+    cmd.arg("-y")
+        .arg("-hide_banner")
+        .arg("-nostats")
+        .arg("-loglevel")
+        .arg("error");
+}
+
+/// Apply the encoder-specific output args (codec, preset, quality).
+/// Shared across the single-shot and per-window paths so the two
+/// produce byte-identical encodes when fed equivalent input.
+fn apply_encoder_flags(cmd: &mut Command, encoder: Encoder, cpu_pool_threads: Option<usize>) {
+    match encoder {
         Encoder::HevcNvenc => {
             cmd.arg("-c:v")
                 .arg("hevc_nvenc")
@@ -255,6 +567,19 @@ pub fn encode_trip_channel(
                 .arg("26");
         }
         Encoder::LibX265 => {
+            // x265's `pools=N` sizes the encoder's internal worker
+            // pool. Without it, every ffmpeg spawns x265 with all-cores;
+            // when the supervisor runs N parallel encodes the combined
+            // thread count is N× the host's core count and the OS
+            // scheduler thrashes. `pools=N` keeps each encode's slice
+            // proportional. `cpu_pool_threads = None` (single-job
+            // runs) lets x265 pick its own pool size unchanged.
+            let mut x265_params = String::from("log-level=error");
+            if let Some(threads) = cpu_pool_threads {
+                if threads >= 1 {
+                    x265_params.push_str(&format!(":pools={threads}"));
+                }
+            }
             cmd.arg("-c:v")
                 .arg("libx265")
                 .arg("-crf")
@@ -262,17 +587,35 @@ pub fn encode_trip_channel(
                 .arg("-preset")
                 .arg("medium")
                 .arg("-x265-params")
-                .arg("log-level=error");
+                .arg(&x265_params);
         }
     }
+}
 
-    cmd.arg(args.output_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+/// Spawn `cmd`, drain its stderr to a bounded tail, and poll `cancel`
+/// every 500 ms until the child exits or the user aborts. On clean
+/// exit returns `Ok(())`. On cancel returns
+/// `Err(AppError::Internal("cancelled"))` — the literal string is
+/// matched by the worker to distinguish cancel from a real failure.
+/// On non-zero exit returns the last 8 lines of stderr.
+///
+/// The child's stdout is wired to /dev/null and stderr is piped into
+/// a `drain_to_tail` reader thread; this caps captured stderr at
+/// 64 KB regardless of how chatty the child gets, which is the fix
+/// for the parent-process OOM that hit when CUDA exhaustion made
+/// ffmpeg emit one error line per frame.
+fn run_ffmpeg_with_cancel(mut cmd: Command, cancel: &CancelFlag) -> Result<(), AppError> {
+    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()
         .map_err(|e| AppError::Internal(format!("failed to spawn ffmpeg: {e}")))?;
+
+    const STDERR_TAIL_BYTES: usize = 64 * 1024;
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|s| thread::spawn(move || drain_to_tail(s, STDERR_TAIL_BYTES)));
 
     // Poll for exit or cancel. 500ms is a compromise between cancel
     // responsiveness and CPU wakeups — the worker-level progress
@@ -295,31 +638,55 @@ pub fn encode_trip_channel(
         }
     };
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| AppError::Internal(format!("ffmpeg wait_with_output failed: {e}")))?;
+    let exit_status = child
+        .wait()
+        .map_err(|e| AppError::Internal(format!("ffmpeg wait failed: {e}")))?;
+
+    let stderr_tail = stderr_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
 
     if cancelled {
-        // Partial output is garbage (no moov atom) — nuke it.
-        if args.output_path.exists() {
-            let _ = fs::remove_file(args.output_path);
-        }
         return Err(AppError::Internal("cancelled".into()));
     }
 
-    if !output.status.success() {
-        if args.output_path.exists() {
-            let _ = fs::remove_file(args.output_path);
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !exit_status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_tail);
         let tail = tail_lines(&stderr, 8);
         return Err(AppError::Internal(format!(
-            "ffmpeg exited with {}: {tail}",
-            output.status
+            "ffmpeg exited with {exit_status}: {tail}"
         )));
     }
 
-    Ok(args.output_path.to_path_buf())
+    Ok(())
+}
+
+/// Read a child's stderr to EOF while keeping only the last
+/// `max_bytes` of output in memory. Reads in 4 KB chunks; whenever the
+/// buffer grows past 2× the cap, it drains the front half. The
+/// amortized cost is O(total bytes read) and the steady-state memory
+/// footprint is `2 * max_bytes` regardless of how chatty the child is.
+fn drain_to_tail<R: std::io::Read>(mut reader: R, max_bytes: usize) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::with_capacity(max_bytes.saturating_mul(2));
+    let high_water = max_bytes.saturating_mul(2).max(8192);
+    let mut chunk = [0u8; 4096];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > high_water {
+                    let drop = buf.len() - max_bytes;
+                    buf.drain(..drop);
+                }
+            }
+        }
+    }
+    if buf.len() > max_bytes {
+        let drop = buf.len() - max_bytes;
+        buf.drain(..drop);
+    }
+    buf
 }
 
 fn tail_lines(s: &str, n: usize) -> String {

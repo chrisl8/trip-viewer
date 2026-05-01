@@ -9,13 +9,20 @@ use tauri::{AppHandle, State};
 
 use crate::db::{self, DbHandle};
 use crate::error::AppError;
-use crate::timelapse::ffmpeg;
+use crate::timelapse::concurrency::{detect_recommended_concurrency, MAX_CONCURRENCY};
+use crate::timelapse::ffmpeg::{self, Encoder};
 use crate::timelapse::types::{Channel, FfmpegCapabilities, JobScope, Tier};
 use crate::timelapse::worker::{new_cancel_flag, run_timelapse_loop, SharedWorkerState};
 
 const SETTING_FFMPEG_PATH: &str = "ffmpeg_path";
 const SETTING_FFMPEG_VERSION: &str = "ffmpeg_version";
 const SETTING_NVENC_HEVC: &str = "nvenc_hevc";
+/// Override key for the worker pool size. When absent, the worker
+/// auto-detects via `detect_recommended_concurrency`. Power users can
+/// `UPDATE settings SET value=... WHERE key='timelapse_max_concurrent_jobs'`
+/// to pin a specific value (e.g. 1 for sequential, 4 for max). Bounded
+/// to `1..=MAX_CONCURRENCY` regardless of override.
+const SETTING_TIMELAPSE_CONCURRENCY: &str = "timelapse_max_concurrent_jobs";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,7 +113,7 @@ pub async fn start_timelapse(
     db: State<'_, DbHandle>,
     worker_state: State<'_, SharedWorkerState>,
 ) -> Result<(), AppError> {
-    let (ffmpeg_path, caps) = {
+    let (ffmpeg_path, caps, concurrency_override) = {
         let conn = db
             .lock()
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
@@ -126,8 +133,24 @@ pub async fn start_timelapse(
                 ))
             }
         };
-        (path, caps)
+        let override_str = db::settings::get(&conn, SETTING_TIMELAPSE_CONCURRENCY)?;
+        let concurrency_override = override_str.and_then(|s| s.parse::<usize>().ok());
+        (path, caps, concurrency_override)
     };
+
+    // Concurrency: explicit override wins, otherwise auto-detect from
+    // hardware. Both paths get clamped to `1..=MAX_CONCURRENCY` so a
+    // garbage setting can't crash the worker pool or exhaust GPU
+    // sessions.
+    let encoder = Encoder::pick(&caps);
+    let concurrency = concurrency_override
+        .unwrap_or_else(|| detect_recommended_concurrency(encoder))
+        .clamp(1, MAX_CONCURRENCY);
+    eprintln!(
+        "[timelapse] starting: encoder={} concurrency={}",
+        encoder.as_str(),
+        concurrency
+    );
 
     let cancel = {
         let mut state = worker_state
@@ -157,6 +180,7 @@ pub async fn start_timelapse(
             args.scope,
             ffmpeg_path,
             caps,
+            concurrency,
         );
     });
 
