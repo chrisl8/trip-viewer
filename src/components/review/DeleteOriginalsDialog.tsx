@@ -86,11 +86,17 @@ export function DeleteOriginalsDialog({
           {originalsBytes != null && ` (${formatBytes(originalsBytes)})`} will
           be moved to the OS trash. Recoverable from there.
         </p>
-        <p className="mt-2 rounded-md bg-emerald-950 px-2 py-1 text-xs text-emerald-300">
-          The timelapse archive
-          {archiveBytes != null && ` (${formatBytes(archiveBytes)})`} will be
-          kept and stays playable in this trip.
-        </p>
+        {archiveBytes != null ? (
+          <p className="mt-2 rounded-md bg-emerald-950 px-2 py-1 text-xs text-emerald-300">
+            The timelapse archive ({formatBytes(archiveBytes)}) will be
+            kept and stays playable in this trip.
+          </p>
+        ) : (
+          <p className="mt-2 rounded-md bg-amber-950 px-2 py-1 text-xs text-amber-300">
+            This trip has no timelapse archive. Once the OS trash is emptied,
+            this footage won't be recoverable.
+          </p>
+        )}
         {errorMessage && (
           <p className="mt-2 rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
             {errorMessage}

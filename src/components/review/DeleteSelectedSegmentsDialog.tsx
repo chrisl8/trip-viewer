@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import clsx from "clsx";
 import { useStore } from "../../state/store";
 import { CATEGORY_COLORS } from "../../utils/tagColors";
+import { formatBytes } from "../../utils/format";
 
 interface Props {
   busy: boolean;
@@ -54,6 +55,14 @@ export function DeleteSelectedSegmentsDialog({
     return { count, totalDuration, fileCount, keptCount };
   }, [trips, loadedTripId, selectedSegmentIds, tagsBySegmentId]);
 
+  const archiveBytes = useStore((s) => {
+    const tripJobs = s.timelapseJobs.filter(
+      (j) => j.tripId === loadedTripId && j.outputSizeBytes != null,
+    );
+    if (tripJobs.length === 0) return null;
+    return tripJobs.reduce((sum, j) => sum + (j.outputSizeBytes ?? 0), 0);
+  });
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onCancel();
@@ -81,6 +90,17 @@ export function DeleteSelectedSegmentsDialog({
           {summary.fileCount === 1 ? "channel file" : "channel files"} will
           move to the OS trash. Recoverable from there.
         </p>
+        {archiveBytes != null ? (
+          <p className="mt-2 rounded-md bg-emerald-950 px-2 py-1 text-xs text-emerald-300">
+            This trip's timelapse archive ({formatBytes(archiveBytes)}) is
+            kept and stays playable.
+          </p>
+        ) : (
+          <p className="mt-2 rounded-md bg-amber-950 px-2 py-1 text-xs text-amber-300">
+            This trip has no timelapse archive. Once the OS trash is emptied,
+            this footage won't be recoverable.
+          </p>
+        )}
         {summary.keptCount > 0 && (
           <p className="mt-2 rounded-md bg-amber-950 px-2 py-1 text-xs text-amber-300">
             {summary.keptCount} of these{" "}

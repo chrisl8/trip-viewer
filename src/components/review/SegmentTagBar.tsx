@@ -298,7 +298,7 @@ export function SegmentTagBar({ segment }: Props) {
                 : "bg-red-700 text-white hover:bg-red-600",
             )}
           >
-            Delete selected
+            Delete selected…
           </button>
           <button
             onClick={() => exitSelectionMode()}
