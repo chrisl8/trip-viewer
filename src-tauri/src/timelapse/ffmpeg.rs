@@ -49,6 +49,51 @@ pub(crate) fn ffmpeg_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
     Command::new(program)
 }
 
+/// macOS only: returns true if the file at `path` has the
+/// `com.apple.quarantine` extended attribute. Files downloaded from
+/// the internet (Safari, browser, AirDrop) get this attribute set;
+/// Gatekeeper then refuses to run unsigned/un-notarized binaries that
+/// carry it. `xattr -p` exits 0 when the attribute is present, non-zero
+/// when it's not. Any other failure (file missing, xattr binary missing
+/// on a stripped system) is treated as "not quarantined" so the caller
+/// surfaces the underlying probe error rather than a misleading
+/// quarantine prompt.
+#[cfg(target_os = "macos")]
+pub fn has_quarantine_attr(path: &str) -> bool {
+    Command::new("xattr")
+        .arg("-p")
+        .arg("com.apple.quarantine")
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// macOS only: strips `com.apple.quarantine` from `path`. Treats
+/// "already absent" as success so retries are idempotent.
+#[cfg(target_os = "macos")]
+pub fn clear_quarantine_attr(path: &str) -> Result<(), AppError> {
+    let output = Command::new("xattr")
+        .arg("-d")
+        .arg("com.apple.quarantine")
+        .arg(path)
+        .output()
+        .map_err(|e| AppError::Internal(format!("could not run xattr: {e}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("No such xattr") {
+        return Ok(());
+    }
+    Err(AppError::Internal(format!(
+        "xattr -d failed: {}",
+        stderr.trim()
+    )))
+}
+
 /// Run `ffmpeg -version` and `ffmpeg -encoders`, returning the parsed
 /// capabilities. Returns an error if the binary can't be executed or
 /// doesn't produce recognizable ffmpeg output.

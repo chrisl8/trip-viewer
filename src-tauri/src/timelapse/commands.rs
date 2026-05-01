@@ -69,6 +69,50 @@ pub async fn clear_timelapse_settings(db: State<'_, DbHandle>) -> Result<(), App
     Ok(())
 }
 
+/// macOS only: returns true if the file at `path` carries the
+/// `com.apple.quarantine` extended attribute. Frontend calls this
+/// after `test_ffmpeg` fails to decide whether to offer the
+/// "clear quarantine" recovery path. Returns false on every other
+/// platform so the frontend can call it unconditionally.
+#[tauri::command]
+pub async fn is_ffmpeg_quarantined(path: String) -> Result<bool, AppError> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(ffmpeg::has_quarantine_attr(&path))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(false)
+    }
+}
+
+/// macOS only: strips `com.apple.quarantine` from the file at `path`
+/// so Gatekeeper will let it run. Equivalent to right-clicking the
+/// binary in Finder and choosing Open. The user has to click a button
+/// to invoke this; the app never strips xattrs silently.
+#[tauri::command]
+pub async fn clear_ffmpeg_quarantine(path: String) -> Result<(), AppError> {
+    #[cfg(target_os = "macos")]
+    {
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| AppError::Internal(format!("cannot stat {path}: {e}")))?;
+        if !metadata.is_file() {
+            return Err(AppError::Internal(format!(
+                "{path} is not a regular file"
+            )));
+        }
+        ffmpeg::clear_quarantine_attr(&path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err(AppError::Internal(
+            "clear_ffmpeg_quarantine is only available on macOS".into(),
+        ))
+    }
+}
+
 /// Run `ffmpeg -version` and `-encoders` on the given path, cache the
 /// result to the `settings` table, and return it. The frontend's
 /// "Test" button calls this.

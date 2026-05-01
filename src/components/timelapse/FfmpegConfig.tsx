@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  clearFfmpegQuarantine,
   clearTimelapseSettings,
+  isFfmpegQuarantined,
   pickFfmpegBinary,
   testFfmpeg,
   type FfmpegCapabilities,
@@ -28,6 +30,11 @@ export function FfmpegConfig({ onClose }: Props) {
   const [caps, setCaps] = useState<FfmpegCapabilities | null>(existingCaps);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // When the test fails on macOS because the binary has the
+  // `com.apple.quarantine` xattr, we hide the raw error and show a
+  // dedicated banner offering to clear the flag.
+  const [quarantined, setQuarantined] = useState(false);
+  const [clearingQuarantine, setClearingQuarantine] = useState(false);
 
   // Sync local `path` when the store value loads (or later changes).
   // `useState(existing)` only runs on first render — without this, the
@@ -68,15 +75,44 @@ export function FfmpegConfig({ onClose }: Props) {
   async function runTest(p: string) {
     setTesting(true);
     setError(null);
+    setQuarantined(false);
     try {
       const c = await testFfmpeg(p);
       setCaps(c);
       await refreshSettings();
     } catch (e) {
       setCaps(null);
-      setError(String(e));
+      // On macOS, a failed probe is usually Gatekeeper blocking a
+      // downloaded binary. Check the xattr; if it's there, show the
+      // recovery banner instead of a raw error.
+      let isQuarantined = false;
+      try {
+        isQuarantined = await isFfmpegQuarantined(p);
+      } catch {
+        // Detection itself failed — fall back to showing the original
+        // error rather than guessing.
+      }
+      if (isQuarantined) {
+        setQuarantined(true);
+      } else {
+        setError(String(e));
+      }
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function onClearQuarantineAndRetry() {
+    setClearingQuarantine(true);
+    setError(null);
+    try {
+      await clearFfmpegQuarantine(path);
+      setQuarantined(false);
+      await runTest(path);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setClearingQuarantine(false);
     }
   }
 
@@ -172,6 +208,35 @@ export function FfmpegConfig({ onClose }: Props) {
           )}
         </div>
 
+        {quarantined && (
+          <div className="mt-3 rounded-md border border-amber-700 bg-amber-950/60 px-3 py-2 text-xs text-amber-200">
+            <div className="font-medium text-amber-100">
+              macOS quarantined this binary
+            </div>
+            <div className="mt-1">
+              When you download an executable from the web, macOS marks
+              it with a quarantine flag and Gatekeeper refuses to run
+              unsigned binaries that carry it. The app can clear that
+              flag (the same effect as right-clicking → Open in Finder)
+              so ffmpeg can run.
+            </div>
+            <button
+              onClick={() => void onClearQuarantineAndRetry()}
+              disabled={clearingQuarantine}
+              className={clsx(
+                "mt-2 rounded-md px-3 py-1 text-xs",
+                clearingQuarantine
+                  ? "cursor-not-allowed bg-amber-900 text-amber-300"
+                  : "bg-amber-700 text-white hover:bg-amber-600",
+              )}
+            >
+              {clearingQuarantine
+                ? "Clearing…"
+                : "Clear quarantine flag and retry"}
+            </button>
+          </div>
+        )}
+
         {error && (
           <div className="mt-3 rounded-md bg-red-950 px-3 py-2 text-xs text-red-300">
             {error}
@@ -182,16 +247,28 @@ export function FfmpegConfig({ onClose }: Props) {
           <div className="mb-1 font-medium text-neutral-300">
             Don&apos;t have ffmpeg?
           </div>
-          <div>
-            On Windows, open a terminal and run:{" "}
-            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-200">
-              winget install ffmpeg
-            </code>
-            . It typically installs to{" "}
-            <code className="text-neutral-300">
-              %LOCALAPPDATA%\Microsoft\WinGet\Packages\…\ffmpeg.exe
-            </code>
-            .
+          <div className="flex flex-col gap-1">
+            <div>
+              <span className="text-neutral-300">Windows:</span>{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-200">
+                winget install ffmpeg
+              </code>
+            </div>
+            <div>
+              <span className="text-neutral-300">macOS:</span>{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-200">
+                brew install ffmpeg
+              </code>{" "}
+              <span className="text-neutral-500">
+                (or download from the web — the app will offer to clear
+                macOS&apos;s quarantine flag)
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-300">Linux:</span>{" "}
+              install <code className="text-neutral-300">ffmpeg</code>{" "}
+              from your distro&apos;s package manager.
+            </div>
           </div>
           <button
             onClick={() =>
@@ -199,7 +276,7 @@ export function FfmpegConfig({ onClose }: Props) {
             }
             className="mt-2 text-sky-400 underline hover:text-sky-300"
           >
-            Other platforms / manual download →
+            Manual download →
           </button>
         </div>
 

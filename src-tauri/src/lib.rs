@@ -203,6 +203,8 @@ pub fn run() {
             timelapse::commands::get_timelapse_settings,
             timelapse::commands::clear_timelapse_settings,
             timelapse::commands::test_ffmpeg,
+            timelapse::commands::is_ffmpeg_quarantined,
+            timelapse::commands::clear_ffmpeg_quarantine,
             timelapse::commands::start_timelapse,
             timelapse::commands::cancel_timelapse,
             timelapse::commands::list_timelapse_jobs,

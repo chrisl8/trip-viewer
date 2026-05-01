@@ -88,6 +88,19 @@ export function clearTimelapseSettings(): Promise<void> {
   return invoke<void>("clear_timelapse_settings");
 }
 
+/** macOS only: returns true if the file has the `com.apple.quarantine`
+ *  extended attribute. Always false on Windows/Linux, so it's safe to
+ *  call unconditionally after a `testFfmpeg` failure. */
+export function isFfmpegQuarantined(path: string): Promise<boolean> {
+  return invoke<boolean>("is_ffmpeg_quarantined", { path });
+}
+
+/** macOS only: strip `com.apple.quarantine` from the binary so
+ *  Gatekeeper will run it. Errors on non-macOS platforms. */
+export function clearFfmpegQuarantine(path: string): Promise<void> {
+  return invoke<void>("clear_ffmpeg_quarantine", { path });
+}
+
 export function startTimelapse(args: StartTimelapseArgs): Promise<void> {
   return invoke<void>("start_timelapse", { args });
 }
