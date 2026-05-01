@@ -1007,9 +1007,11 @@ fn should_enqueue(
 }
 
 /// Determine `<library_root>/Timelapses/` and create it if needed.
-/// Prefers the cached `library_root` setting; falls back to deriving
-/// it from any segment's master_path by walking upwards for a
-/// directory named "Videos".
+/// Prefers the cached `library_root` setting; otherwise derives a root
+/// from any segment's `master_path`. The "real" library root (a path
+/// with `Videos/` as an immediate child) is cached for next time;
+/// fallback roots used when no `Videos/` ancestor is present are not
+/// cached, so a future structured import can still claim the slot.
 fn resolve_output_root(db: &DbHandle) -> Result<PathBuf, AppError> {
     let root = {
         let conn = db
@@ -1019,14 +1021,16 @@ fn resolve_output_root(db: &DbHandle) -> Result<PathBuf, AppError> {
     };
     let library_root = match root {
         Some(p) => PathBuf::from(p),
-        None => {
-            let discovered = discover_library_root(db)?;
-            let conn = db
-                .lock()
-                .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-            db::settings::set(&conn, "library_root", &discovered.to_string_lossy())?;
-            discovered
-        }
+        None => match discover_library_root(db)? {
+            DiscoveredRoot::Library(p) => {
+                let conn = db
+                    .lock()
+                    .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+                db::settings::set(&conn, "library_root", &p.to_string_lossy())?;
+                p
+            }
+            DiscoveredRoot::SegmentParent(p) => p,
+        },
     };
     let out = library_root.join("Timelapses");
     std::fs::create_dir_all(&out)?;
@@ -1036,6 +1040,7 @@ fn resolve_output_root(db: &DbHandle) -> Result<PathBuf, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::open_in_memory;
     use std::env::temp_dir;
     use std::fs;
 
@@ -1046,6 +1051,76 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         temp_dir().join(format!("tripviewer-{tag}-{}-{}", std::process::id(), n))
+    }
+
+    fn insert_segment_with_path(db: &DbHandle, master_path: &str) {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO segments (id, trip_id, start_time_ms, duration_s,
+                master_path, is_event, camera_kind, gps_supported, last_seen_ms)
+             VALUES ('seg', 'trip', 0, 60.0, ?1, 0, 'wolfbox', 1, 0)",
+            params![master_path],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn discover_library_root_uses_videos_ancestor_when_present() {
+        let db = open_in_memory().unwrap();
+        // SD-card / folder-import layout: <root>/Videos/<file>
+        insert_segment_with_path(&db, "/library/Videos/2026_04_12_132511_00_F.MP4");
+        match discover_library_root(&db).unwrap() {
+            DiscoveredRoot::Library(p) => {
+                assert_eq!(p, PathBuf::from("/library"));
+            }
+            DiscoveredRoot::SegmentParent(p) => {
+                panic!("expected Library, got SegmentParent({})", p.display())
+            }
+        }
+    }
+
+    #[test]
+    fn discover_library_root_falls_back_to_segment_parent_when_no_videos_ancestor() {
+        let db = open_in_memory().unwrap();
+        // scan_folder layout: arbitrary path, no Videos/ ancestor.
+        insert_segment_with_path(
+            &db,
+            "/Users/chrisl8/Dashcam Tests/Wolfbox Example/2026_04_12_132511_00_F.MP4",
+        );
+        match discover_library_root(&db).unwrap() {
+            DiscoveredRoot::SegmentParent(p) => {
+                assert_eq!(
+                    p,
+                    PathBuf::from("/Users/chrisl8/Dashcam Tests/Wolfbox Example")
+                );
+            }
+            DiscoveredRoot::Library(p) => {
+                panic!("expected SegmentParent, got Library({})", p.display())
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_output_root_does_not_cache_fallback_root() {
+        let db = open_in_memory().unwrap();
+        let scan_dir = unique_dir("scan-fallback");
+        let _ = fs::remove_dir_all(&scan_dir);
+        fs::create_dir_all(&scan_dir).unwrap();
+        let segment = scan_dir.join("2026_04_12_132511_00_F.MP4");
+        insert_segment_with_path(&db, segment.to_str().unwrap());
+
+        let out = resolve_output_root(&db).unwrap();
+        assert_eq!(out, scan_dir.join("Timelapses"));
+        assert!(out.is_dir(), "Timelapses/ directory should be created");
+
+        // Fallback discovery must not persist library_root — a future
+        // structured import should still be able to claim the slot.
+        let conn = db.lock().unwrap();
+        let cached = db::settings::get(&conn, "library_root").unwrap();
+        assert!(cached.is_none(), "fallback root must not be cached, got {cached:?}");
+        drop(conn);
+
+        let _ = fs::remove_dir_all(&scan_dir);
     }
 
     #[test]
@@ -1321,7 +1396,22 @@ mod tests {
     }
 }
 
-fn discover_library_root(db: &DbHandle) -> Result<PathBuf, AppError> {
+/// Result of probing the segments table for a library root.
+///
+/// `Library` is the "structured" answer — the segment path lived under
+/// a `Videos/` directory, so we know its parent is a real library root
+/// laid out by the import pipeline. Safe to cache.
+///
+/// `SegmentParent` is the fallback: the segment was scanned in place
+/// from an arbitrary folder. Timelapses go next to the source files,
+/// but we don't cache the path because a later structured import to a
+/// different location should be allowed to win on rediscovery.
+enum DiscoveredRoot {
+    Library(PathBuf),
+    SegmentParent(PathBuf),
+}
+
+fn discover_library_root(db: &DbHandle) -> Result<DiscoveredRoot, AppError> {
     let conn = db
         .lock()
         .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
@@ -1342,12 +1432,17 @@ fn discover_library_root(db: &DbHandle) -> Result<PathBuf, AppError> {
     for ancestor in p.ancestors() {
         if ancestor.file_name().map(|n| n == "Videos").unwrap_or(false) {
             if let Some(parent) = ancestor.parent() {
-                return Ok(parent.to_path_buf());
+                return Ok(DiscoveredRoot::Library(parent.to_path_buf()));
             }
         }
     }
-    Err(AppError::Internal(format!(
-        "could not locate 'Videos' directory in segment path: {}",
-        p.display()
-    )))
+    // No Videos/ ancestor — segment was scanned in place. Drop
+    // Timelapses/ next to the source MP4s.
+    let parent = p.parent().ok_or_else(|| {
+        AppError::Internal(format!(
+            "segment path has no parent directory: {}",
+            p.display()
+        ))
+    })?;
+    Ok(DiscoveredRoot::SegmentParent(parent.to_path_buf()))
 }
