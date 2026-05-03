@@ -455,7 +455,7 @@ mod tests {
 
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip.clone()], 1_000).unwrap();
+            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000).unwrap();
         }
         {
             let mut conn = db.lock().unwrap();
@@ -532,7 +532,7 @@ mod tests {
 
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip.clone()], 1_000).unwrap();
+            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000).unwrap();
         }
 
         // Second scan sees only seg_a. seg_b should be gc'd.

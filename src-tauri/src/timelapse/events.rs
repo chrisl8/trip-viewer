@@ -419,8 +419,8 @@ mod diagnostics {
             HARD_BRAKE_MPS2, HARD_ACCEL_MPS2
         );
         eprintln!(
-            "{:>10}  {:>8}  {:>8}  {:>8}  {:>10}  {}",
-            "time", "dv/dt", "v-before", "v-after", "|Δh|/s", "kind"
+            "{:>10}  {:>8}  {:>8}  {:>8}  {:>10}  kind",
+            "time", "dv/dt", "v-before", "v-after", "|Δh|/s"
         );
         for pair in gps.windows(2) {
             let (a, b) = (&pair[0], &pair[1]);

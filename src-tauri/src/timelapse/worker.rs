@@ -1041,6 +1041,57 @@ fn resolve_output_root(db: &DbHandle) -> Result<PathBuf, AppError> {
     Ok(out)
 }
 
+/// Result of probing the segments table for a library root.
+///
+/// `Library` is the "structured" answer — the segment path lived under
+/// a `Videos/` directory, so we know its parent is a real library root
+/// laid out by the import pipeline. Safe to cache.
+///
+/// `SegmentParent` is the fallback: the segment was scanned in place
+/// from an arbitrary folder. Timelapses go next to the source files,
+/// but we don't cache the path because a later structured import to a
+/// different location should be allowed to win on rediscovery.
+enum DiscoveredRoot {
+    Library(PathBuf),
+    SegmentParent(PathBuf),
+}
+
+fn discover_library_root(db: &DbHandle) -> Result<DiscoveredRoot, AppError> {
+    let conn = db
+        .lock()
+        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+    let sample: Option<String> = conn
+        .query_row(
+            "SELECT master_path FROM segments LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(sample_path) = sample else {
+        return Err(AppError::Internal(
+            "cannot derive library root: no segments in DB".into(),
+        ));
+    };
+    let p = PathBuf::from(sample_path);
+    // Walk up until we find a "Videos" directory; its parent is the root.
+    for ancestor in p.ancestors() {
+        if ancestor.file_name().map(|n| n == "Videos").unwrap_or(false) {
+            if let Some(parent) = ancestor.parent() {
+                return Ok(DiscoveredRoot::Library(parent.to_path_buf()));
+            }
+        }
+    }
+    // No Videos/ ancestor — segment was scanned in place. Drop
+    // Timelapses/ next to the source MP4s.
+    let parent = p.parent().ok_or_else(|| {
+        AppError::Internal(format!(
+            "segment path has no parent directory: {}",
+            p.display()
+        ))
+    })?;
+    Ok(DiscoveredRoot::SegmentParent(parent.to_path_buf()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1398,55 +1449,4 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
-}
-
-/// Result of probing the segments table for a library root.
-///
-/// `Library` is the "structured" answer — the segment path lived under
-/// a `Videos/` directory, so we know its parent is a real library root
-/// laid out by the import pipeline. Safe to cache.
-///
-/// `SegmentParent` is the fallback: the segment was scanned in place
-/// from an arbitrary folder. Timelapses go next to the source files,
-/// but we don't cache the path because a later structured import to a
-/// different location should be allowed to win on rediscovery.
-enum DiscoveredRoot {
-    Library(PathBuf),
-    SegmentParent(PathBuf),
-}
-
-fn discover_library_root(db: &DbHandle) -> Result<DiscoveredRoot, AppError> {
-    let conn = db
-        .lock()
-        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-    let sample: Option<String> = conn
-        .query_row(
-            "SELECT master_path FROM segments LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .ok();
-    let Some(sample_path) = sample else {
-        return Err(AppError::Internal(
-            "cannot derive library root: no segments in DB".into(),
-        ));
-    };
-    let p = PathBuf::from(sample_path);
-    // Walk up until we find a "Videos" directory; its parent is the root.
-    for ancestor in p.ancestors() {
-        if ancestor.file_name().map(|n| n == "Videos").unwrap_or(false) {
-            if let Some(parent) = ancestor.parent() {
-                return Ok(DiscoveredRoot::Library(parent.to_path_buf()));
-            }
-        }
-    }
-    // No Videos/ ancestor — segment was scanned in place. Drop
-    // Timelapses/ next to the source MP4s.
-    let parent = p.parent().ok_or_else(|| {
-        AppError::Internal(format!(
-            "segment path has no parent directory: {}",
-            p.display()
-        ))
-    })?;
-    Ok(DiscoveredRoot::SegmentParent(parent.to_path_buf()))
 }
