@@ -143,8 +143,22 @@ export function Timeline({ onSeekTripTime }: Props) {
     const w = (seg.durationS / totalDuration) * 100;
     const active = seg.id === (activeSegmentId ?? trip.segments[0]?.id);
     const selected = selectedSegmentIds.has(seg.id);
+    const tombstone = seg.isTombstone === true;
     segCumulative += seg.durationS;
     const segId = seg.id;
+    // Tombstones: render with the diagonal-hatch pattern instead of a
+    // solid fill, so the user can see at a glance that originals are
+    // gone for this range. Selection / active highlighting still applies
+    // — we paint the hatch under whatever colored frame the state would
+    // normally use, and use a translucent overlay to keep the "active"
+    // / "selected" cues legible.
+    const baseFill = selected
+      ? "#f43f5e"
+      : active
+        ? "#3b82f6"
+        : seg.isEvent
+          ? "#f59e0b"
+          : "#374151";
     segRects.push(
       <rect
         key={seg.id}
@@ -153,15 +167,7 @@ export function Timeline({ onSeekTripTime }: Props) {
         width={`${w}%`}
         height={SEG_BAR_H}
         rx={2}
-        fill={
-          selected
-            ? "#f43f5e"
-            : active
-              ? "#3b82f6"
-              : seg.isEvent
-                ? "#f59e0b"
-                : "#374151"
-        }
+        fill={tombstone ? "url(#tombstone-hatch)" : baseFill}
         onClick={
           selectionMode
             ? (e) => {
@@ -174,8 +180,29 @@ export function Timeline({ onSeekTripTime }: Props) {
             : undefined
         }
         style={selectionMode ? { cursor: "pointer" } : undefined}
-      />,
+      >
+        {tombstone && (
+          <title>Originals deleted — covered by timelapse</title>
+        )}
+      </rect>,
     );
+    if (tombstone && (selected || active)) {
+      // Translucent state overlay on top of the hatch so highlight cues
+      // still register without obscuring the hatch.
+      segRects.push(
+        <rect
+          key={`state-${seg.id}`}
+          x={`${x}%`}
+          y={SPEED_AREA_H + 2}
+          width={`${w}%`}
+          height={SEG_BAR_H}
+          rx={2}
+          fill={baseFill}
+          fillOpacity={0.35}
+          pointerEvents="none"
+        />,
+      );
+    }
     if (selected) {
       // Thin rose outline above the segment bar so selection reads at a
       // glance even on a narrow timeline. SVG `stroke` on the rect
@@ -235,6 +262,24 @@ export function Timeline({ onSeekTripTime }: Props) {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
     >
+      {/* Diagonal-hatch fill for tombstone segments (originals deleted,
+          covered by the trip's timelapse archive). preserveAspectRatio
+          is "none" so the timeline stretches arbitrarily; we use
+          patternUnits=userSpaceOnUse and a small stride so the hatch
+          density stays readable at any width. */}
+      <defs>
+        <pattern
+          id="tombstone-hatch"
+          patternUnits="userSpaceOnUse"
+          width={2}
+          height={4}
+          patternTransform="rotate(45)"
+        >
+          <rect width={2} height={4} fill="#4b5563" />
+          <rect width={1} height={4} fill="#1f2937" />
+        </pattern>
+      </defs>
+
       {/* Speed curve */}
       {speedPath && (
         <path

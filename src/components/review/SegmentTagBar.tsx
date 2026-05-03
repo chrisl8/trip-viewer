@@ -38,7 +38,6 @@ export function SegmentTagBar({ segment }: Props) {
   const selectedTripId = useStore((s) => s.selectedTripId);
   const refreshTripTagCounts = useStore((s) => s.refreshTripTagCounts);
   const refreshPlaces = useStore((s) => s.refreshPlaces);
-  const removeSegmentFromTrip = useStore((s) => s.removeSegmentFromTrip);
   const removeSegmentsFromTrip = useStore((s) => s.removeSegmentsFromTrip);
   const setActiveSegmentId = useStore((s) => s.setActiveSegmentId);
   const setIsPlaying = useStore((s) => s.setIsPlaying);
@@ -129,14 +128,17 @@ export function SegmentTagBar({ segment }: Props) {
         return;
       }
 
-      removeSegmentFromTrip(selectedTripId, segment.id);
+      const tomb = report.tombstonedSegmentIds.includes(segment.id)
+        ? [segment.id]
+        : [];
+      removeSegmentsFromTrip(selectedTripId, [segment.id], tomb);
+      // If the segment was tombstoned, advancing past it keeps the
+      // user on the trip; the player's auto-switch picks up the next
+      // tombstone span when it boundary-crosses. If it was hard-
+      // deleted, the next non-tombstone segment is the natural target.
       if (nextId) {
         setActiveSegmentId(nextId);
       } else {
-        // Last segment in the trip — stop playback. If the trip itself
-        // is now empty, removeSegmentFromTrip already advanced
-        // selectedTripId; the user lands on the next trip's player or
-        // an empty state.
         setIsPlaying(false);
         setActiveSegmentId(null);
       }
@@ -212,8 +214,10 @@ export function SegmentTagBar({ segment }: Props) {
       // at file granularity but our backend also reports any-success
       // per segment internally, we approximate: if NO failures, every
       // selected segment is gone.
+      const tombstoneSet = new Set(report.tombstonedSegmentIds);
       if (report.failures.length === 0) {
-        removeSegmentsFromTrip(selectedTripId, idsToDelete);
+        const tomb = idsToDelete.filter((id) => tombstoneSet.has(id));
+        removeSegmentsFromTrip(selectedTripId, idsToDelete, tomb);
       } else {
         // Conservative: figure out which segments lost all their files
         // by checking which paths failed. Any segment with any failure
@@ -228,7 +232,8 @@ export function SegmentTagBar({ segment }: Props) {
         }
         const removed = idsToDelete.filter((id) => !survivors.has(id));
         if (removed.length > 0) {
-          removeSegmentsFromTrip(selectedTripId, removed);
+          const tomb = removed.filter((id) => tombstoneSet.has(id));
+          removeSegmentsFromTrip(selectedTripId, removed, tomb);
         }
         setDeleteError(
           `${report.failures.length} file${report.failures.length === 1 ? "" : "s"} couldn't be moved to trash`,

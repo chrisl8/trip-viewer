@@ -95,6 +95,7 @@ fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
         gps_supported: camera_kind.gps_supported(),
         camera_kind,
         size_bytes: None,
+        is_tombstone: false,
     }
 }
 

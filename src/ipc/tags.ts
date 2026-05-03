@@ -49,6 +49,13 @@ export interface DeleteReport {
   segmentsRemoved: number;
   filesTrashed: number;
   failures: DeleteFailure[];
+  /**
+   * Segment IDs that were converted to tombstones (timeline gap kept
+   * in place because the trip has a completed timelapse). The rest of
+   * `segmentsRemoved` were hard-deleted; the frontend splices those
+   * out and converts these to `isTombstone: true` in place.
+   */
+  tombstonedSegmentIds: string[];
 }
 
 export function deleteSegmentsToTrash(

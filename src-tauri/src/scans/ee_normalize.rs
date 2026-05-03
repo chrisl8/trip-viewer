@@ -69,6 +69,7 @@ mod tests {
             camera_kind: CameraKind::WolfBox,
             gps_supported: true,
             duration_s: 60.0,
+            is_tombstone: false,
         }
     }
 

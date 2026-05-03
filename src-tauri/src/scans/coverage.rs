@@ -61,10 +61,17 @@ pub fn list_scan_coverage(db: &DbHandle) -> Result<Vec<TripScanCoverage>, AppErr
     // any failed-count tally. Without this, a single deleted MP4
     // makes the trip read "9/10 done · 1 failed" forever even though
     // the missing file is just gone.
+    //
+    // Tombstones (`is_tombstone = 1`) are intentionally non-scannable —
+    // they're already excluded from the total and shouldn't be counted
+    // as "missing" failures either, so we filter them out at the SQL
+    // level rather than after-the-fact.
     let mut totals: HashMap<String, u32> = HashMap::new();
     let mut missing_segments: HashSet<String> = HashSet::new();
     {
-        let mut stmt = conn.prepare("SELECT id, trip_id, master_path FROM segments")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, trip_id, master_path FROM segments WHERE is_tombstone = 0",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,

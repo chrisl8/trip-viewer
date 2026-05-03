@@ -119,7 +119,10 @@ fn run_inner(
         // for what's really just a deleted-on-disk file. Filtering
         // here keeps `total` accurate (so the progress bar reflects
         // real work) and prevents writing phantom-failure rows.
-        segs.retain(|s| std::path::Path::new(&s.master_path).exists());
+        // Tombstones (`is_tombstone = 1`) have an empty `master_path`
+        // and no file by design — same exclusion, but keyed on the
+        // flag so we don't even hit the filesystem for them.
+        segs.retain(|s| !s.is_tombstone && std::path::Path::new(&s.master_path).exists());
         let pls = db::places::list_places(&conn).unwrap_or_default();
         (segs, pls)
     };

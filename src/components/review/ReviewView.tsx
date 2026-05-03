@@ -73,6 +73,7 @@ export function ReviewView() {
   const refreshTripTagCounts = useStore((s) => s.refreshTripTagCounts);
   const selectedTripId = useStore((s) => s.selectedTripId);
   const refreshTripTags = useStore((s) => s.refreshTripTags);
+  const removeSegmentsFromTrip = useStore((s) => s.removeSegmentsFromTrip);
 
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [selectedSegments, setSelectedSegments] = useState<Set<string>>(
@@ -293,6 +294,30 @@ export function ReviewView() {
       await refetchTags();
       await refreshTripTagCounts();
       if (selectedTripId) await refreshTripTags(selectedTripId);
+      // Reflect the deletion in the in-memory trip list. The selection
+      // can span multiple trips, so we group the operated-on IDs by
+      // their trip and call the per-trip splice/tombstone action for
+      // each. Without this, the timeline would keep painting the
+      // deleted segments as real until the next folder rescan.
+      const idsByTrip = new Map<string, string[]>();
+      const failedPaths = new Set(report.failures.map((f) => f.path));
+      for (const trip of trips) {
+        for (const seg of trip.segments) {
+          if (!filteredSelectedIds.has(seg.id)) continue;
+          const paths = pathsBySegment[seg.id] ?? [];
+          if (paths.length > 0 && paths.every((p) => failedPaths.has(p))) {
+            continue; // every file failed to trash → leave segment in place
+          }
+          const list = idsByTrip.get(trip.id) ?? [];
+          list.push(seg.id);
+          idsByTrip.set(trip.id, list);
+        }
+      }
+      const tombstoneSet = new Set(report.tombstonedSegmentIds);
+      for (const [tripId, ids] of idsByTrip) {
+        const tomb = ids.filter((id) => tombstoneSet.has(id));
+        removeSegmentsFromTrip(tripId, ids, tomb);
+      }
       // Drop only the segments we just deleted from the selection;
       // segments hidden by the filter (and thus skipped) stay
       // selected so the user can clear the filter and act on them.

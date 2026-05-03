@@ -79,6 +79,11 @@ pub struct DeleteReport {
     pub segments_removed: usize,
     pub files_trashed: usize,
     pub failures: Vec<DeleteFailure>,
+    /// Segment IDs that were converted to tombstones (kept on the
+    /// timeline as hatched gaps because the trip has a completed
+    /// timelapse archive). Disjoint from any IDs implicit in
+    /// `segments_removed` minus this list — those were hard-deleted.
+    pub tombstoned_segment_ids: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -156,18 +161,60 @@ pub async fn delete_segments_to_trash(
         any_success_per_segment.insert(seg_id.clone(), any_ok);
     }
 
-    // Phase 2: drop the DB rows for segments whose files are fully
-    // (or newly) gone. Tags and scan_runs cascade via explicit delete
-    // because sqlite FKs aren't declared on these tables.
+    // Phase 2: update the DB. For each segment whose files were
+    // successfully trashed, we either:
+    //   (a) hard-delete the row, when the trip has no completed
+    //       timelapse to play back across the deleted span; or
+    //   (b) tombstone the row (`is_tombstone = 1`, master_path = '',
+    //       size_bytes = NULL), preserving the time topology so the
+    //       timeline can render a hatched gap and the player can
+    //       auto-switch to a tier across the deleted range.
+    //
+    // After tombstoning, if a trip has zero surviving non-tombstone
+    // segments AND a completed timelapse, we hard-delete its tombstones
+    // so the trip flips cleanly to archive-only via the existing
+    // `list_archive_only_trips` path (which keys on "no segment rows").
+    // Tags and scan_runs always cascade via explicit delete because
+    // sqlite FKs aren't declared on these tables.
     {
         let mut conn = db
             .lock()
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
         let tx = conn.transaction()?;
+
+        // Trips touched by this delete — we'll re-check each at the
+        // end to decide whether to flush remaining tombstones.
+        let mut touched_trips: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
         for (seg_id, any_ok) in &any_success_per_segment {
             if !any_ok {
                 continue;
             }
+
+            // Look up the trip and decide tombstone vs. hard-delete.
+            // A row may already be missing if the user issued a delete
+            // for a stale segment id; treat that as "nothing to do".
+            let row: Option<(String,)> = tx
+                .query_row(
+                    "SELECT trip_id FROM segments WHERE id = ?1",
+                    rusqlite::params![seg_id],
+                    |r| Ok((r.get::<_, String>(0)?,)),
+                )
+                .ok();
+            let Some((trip_id,)) = row else { continue };
+
+            let has_done_timelapse: bool = tx.query_row(
+                "SELECT EXISTS (
+                    SELECT 1 FROM timelapse_jobs
+                    WHERE trip_id = ?1 AND status = ?2
+                 )",
+                rusqlite::params![&trip_id, crate::db::timelapse_jobs::STATUS_DONE],
+                |r| r.get::<_, i64>(0),
+            )? != 0;
+
+            // Tags and scan_runs go either way — a tombstone has no
+            // playable file to attach scan results or user tags to.
             tx.execute(
                 "DELETE FROM tags WHERE segment_id = ?1",
                 rusqlite::params![seg_id],
@@ -176,12 +223,68 @@ pub async fn delete_segments_to_trash(
                 "DELETE FROM scan_runs WHERE segment_id = ?1",
                 rusqlite::params![seg_id],
             )?;
-            let n = tx.execute(
-                "DELETE FROM segments WHERE id = ?1",
-                rusqlite::params![seg_id],
-            )?;
-            report.segments_removed += n;
+
+            if has_done_timelapse {
+                let n = tx.execute(
+                    "UPDATE segments
+                     SET is_tombstone = 1,
+                         master_path = '',
+                         size_bytes = NULL
+                     WHERE id = ?1",
+                    rusqlite::params![seg_id],
+                )?;
+                report.segments_removed += n;
+                if n > 0 {
+                    report.tombstoned_segment_ids.push(seg_id.clone());
+                }
+            } else {
+                let n = tx.execute(
+                    "DELETE FROM segments WHERE id = ?1",
+                    rusqlite::params![seg_id],
+                )?;
+                report.segments_removed += n;
+            }
+
+            touched_trips.insert(trip_id);
         }
+
+        // Per touched trip: if no surviving non-tombstone segments
+        // remain, drop the tombstones so the trip flips to archive-only
+        // (segment rows == 0). The timelapse_jobs guard on persist_and_gc
+        // keeps the trip row alive on subsequent scans.
+        for trip_id in &touched_trips {
+            let surviving: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM segments
+                 WHERE trip_id = ?1 AND is_tombstone = 0",
+                rusqlite::params![trip_id],
+                |r| r.get(0),
+            )?;
+            if surviving == 0 {
+                tx.execute(
+                    "DELETE FROM segments WHERE trip_id = ?1 AND is_tombstone = 1",
+                    rusqlite::params![trip_id],
+                )?;
+                // The tombstones we just reported as such have been
+                // hard-deleted under our feet; the frontend should
+                // splice them out, not leave them in the timeline.
+                report
+                    .tombstoned_segment_ids
+                    .retain(|id| {
+                        // We don't know the seg→trip mapping here without
+                        // a re-query, but it's small: any id whose row no
+                        // longer exists has been folded into the archive.
+                        let still_exists: i64 = tx
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM segments WHERE id = ?1)",
+                                rusqlite::params![id],
+                                |r| r.get(0),
+                            )
+                            .unwrap_or(0);
+                        still_exists != 0
+                    });
+            }
+        }
+
         tx.commit()?;
     }
 

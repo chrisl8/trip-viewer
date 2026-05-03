@@ -48,6 +48,14 @@ export interface Segment {
    */
   sizeBytes: number | null;
   /**
+   * True when the user deleted this segment's originals but the trip
+   * has a timelapse archive that covers its time range. The row is
+   * kept on the trip so the timeline renders a hatched gap and the
+   * player auto-switches to a tier across the deleted span. `channels`
+   * is `[]` for tombstones.
+   */
+  isTombstone?: boolean;
+  /**
    * Tags attached to this segment. Present when the caller has loaded
    * tags into the trip — live-updating state lives in the tagsSlice,
    * so renderers that need to react to scan/user-tag changes should

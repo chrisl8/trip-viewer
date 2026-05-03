@@ -85,6 +85,13 @@ pub struct Segment {
     /// been touched by a scan since. Frontend renders `None` as "—".
     #[serde(default)]
     pub size_bytes: Option<u64>,
+    /// True when the user deleted this segment's originals but the trip
+    /// has a timelapse archive that covers its time range. The row is
+    /// kept so the timeline can render a hatched gap and the player can
+    /// auto-switch to a tier across the deleted span. `channels` is `[]`
+    /// for tombstones; `master_path` is `''` in the DB.
+    #[serde(default)]
+    pub is_tombstone: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

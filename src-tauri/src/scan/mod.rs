@@ -57,6 +57,27 @@ pub async fn scan_folder(
             Ok(merged) => result.trips = merged,
             Err(e) => eprintln!("[db] persist_and_gc failed: {e}"),
         }
+        // Hydrate tombstones (segments whose originals were deleted but
+        // whose trip's timelapse archive remains). The scanner only
+        // sees real files on disk; tombstones live only in the DB.
+        // Inserting them into each trip's segments by start_time lets
+        // the timeline render hatched gaps and the player auto-switch
+        // to a tier across the deleted spans.
+        let trip_ids: Vec<String> = result.trips.iter().map(|t| t.id.to_string()).collect();
+        match crate::db::segments::load_tombstones_for_trips(&conn, &trip_ids) {
+            Ok(by_trip) => {
+                for trip in result.trips.iter_mut() {
+                    if let Some(extras) = by_trip.get(&trip.id.to_string()) {
+                        if extras.is_empty() {
+                            continue;
+                        }
+                        trip.segments.extend(extras.iter().cloned());
+                        trip.segments.sort_by_key(|s| s.start_time);
+                    }
+                }
+            }
+            Err(e) => eprintln!("[db] load_tombstones_for_trips failed: {e}"),
+        }
     }
     Ok(result)
 }

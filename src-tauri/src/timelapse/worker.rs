@@ -763,9 +763,13 @@ fn trip_segment_info(db: &DbHandle, trip_id: &str) -> Result<Vec<SegmentInfo>, A
     let conn = db
         .lock()
         .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+    // Tombstones have no scannable file — exclude them so the concat
+    // list and GPS stitcher only ever see real originals.
     let mut stmt = conn.prepare(
         "SELECT master_path, duration_s, camera_kind
-         FROM segments WHERE trip_id = ?1 ORDER BY start_time_ms ASC",
+         FROM segments
+         WHERE trip_id = ?1 AND is_tombstone = 0
+         ORDER BY start_time_ms ASC",
     )?;
     let rows = stmt.query_map(params![trip_id], |r| {
         Ok((

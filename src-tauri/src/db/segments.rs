@@ -20,6 +20,10 @@ pub struct SegmentRecord {
     pub camera_kind: CameraKind,
     pub gps_supported: bool,
     pub duration_s: f64,
+    /// True when the row is a tombstone (originals deleted but trip's
+    /// timelapse archive remains). Tombstones have no scannable file
+    /// and must be excluded from scan work and coverage tallies.
+    pub is_tombstone: bool,
 }
 
 fn camera_kind_from_str(s: &str) -> CameraKind {
@@ -42,7 +46,7 @@ fn camera_kind_to_str(kind: CameraKind) -> &'static str {
 
 pub fn all_segments(conn: &Connection) -> Result<Vec<SegmentRecord>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT id, trip_id, master_path, is_event, camera_kind, gps_supported, duration_s
+        "SELECT id, trip_id, master_path, is_event, camera_kind, gps_supported, duration_s, is_tombstone
          FROM segments ORDER BY start_time_ms",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -55,6 +59,7 @@ pub fn all_segments(conn: &Connection) -> Result<Vec<SegmentRecord>, AppError> {
             camera_kind: camera_kind_from_str(&kind_str),
             gps_supported: r.get::<_, i64>("gps_supported")? != 0,
             duration_s: r.get("duration_s")?,
+            is_tombstone: r.get::<_, i64>("is_tombstone")? != 0,
         })
     })?;
     let mut out = Vec::new();
@@ -73,9 +78,15 @@ pub fn upsert_segment(conn: &Connection, seg: &Segment, trip_id: &str, now_ms: i
     // Don't overwrite a previously-known size_bytes with NULL when
     // the current scan failed to stat the files — keeps the
     // library-wide totals stable across transient stat hiccups.
+    //
+    // is_tombstone is force-cleared on upsert: a scan path that's
+    // re-discovering a segment's master file means the originals are
+    // back, so the row is no longer a tombstone. (`scan_folder` only
+    // hands us non-tombstone segments — tombstones have no file to
+    // walk in the first place.)
     conn.execute(
-        "INSERT INTO segments (id, trip_id, start_time_ms, duration_s, master_path, is_event, camera_kind, gps_supported, last_seen_ms, size_bytes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO segments (id, trip_id, start_time_ms, duration_s, master_path, is_event, camera_kind, gps_supported, last_seen_ms, size_bytes, is_tombstone)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
          ON CONFLICT(id) DO UPDATE SET
             trip_id = excluded.trip_id,
             start_time_ms = excluded.start_time_ms,
@@ -85,7 +96,8 @@ pub fn upsert_segment(conn: &Connection, seg: &Segment, trip_id: &str, now_ms: i
             camera_kind = excluded.camera_kind,
             gps_supported = excluded.gps_supported,
             last_seen_ms = excluded.last_seen_ms,
-            size_bytes = COALESCE(excluded.size_bytes, segments.size_bytes)",
+            size_bytes = COALESCE(excluded.size_bytes, segments.size_bytes),
+            is_tombstone = 0",
         params![
             seg.id.to_string(),
             trip_id,
@@ -122,6 +134,74 @@ pub fn upsert_trip(conn: &Connection, trip: &Trip, now_ms: i64) -> Result<(), Ap
         ],
     )?;
     Ok(())
+}
+
+/// Load every tombstone segment row for the given trip IDs, returned
+/// as `Segment` objects with `channels: []`. The frontend interleaves
+/// these into each trip's segments by `start_time` so the timeline can
+/// render hatched gaps where originals used to be. Time bounds and
+/// camera metadata come straight from the row; nothing is read from disk.
+pub fn load_tombstones_for_trips(
+    conn: &Connection,
+    trip_ids: &[String],
+) -> Result<HashMap<String, Vec<Segment>>, AppError> {
+    let mut out: HashMap<String, Vec<Segment>> = HashMap::new();
+    if trip_ids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders = std::iter::repeat_n("?", trip_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, trip_id, start_time_ms, duration_s, is_event,
+                camera_kind, gps_supported, size_bytes
+         FROM segments
+         WHERE is_tombstone = 1 AND trip_id IN ({placeholders})
+         ORDER BY start_time_ms"
+    );
+    let params_iter = rusqlite::params_from_iter(trip_ids.iter());
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_iter, |r| {
+        let id_str: String = r.get(0)?;
+        let trip_id: String = r.get(1)?;
+        let start_ms: i64 = r.get(2)?;
+        let duration_s: f64 = r.get(3)?;
+        let is_event: i64 = r.get(4)?;
+        let kind_str: String = r.get(5)?;
+        let gps_supported: i64 = r.get(6)?;
+        let size_bytes: Option<i64> = r.get(7)?;
+        Ok((
+            id_str,
+            trip_id,
+            start_ms,
+            duration_s,
+            is_event != 0,
+            kind_str,
+            gps_supported != 0,
+            size_bytes,
+        ))
+    })?;
+    for row in rows {
+        let (id_str, trip_id, start_ms, duration_s, is_event, kind_str, gps_supported, size_bytes) =
+            row?;
+        let id = uuid::Uuid::parse_str(&id_str)
+            .map_err(|e| AppError::Internal(format!("invalid segment uuid {id_str}: {e}")))?;
+        let start_time = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(start_ms)
+            .ok_or_else(|| AppError::Internal(format!("invalid start_time_ms {start_ms}")))?
+            .naive_utc();
+        out.entry(trip_id).or_default().push(Segment {
+            id,
+            start_time,
+            duration_s,
+            is_event,
+            channels: Vec::new(),
+            camera_kind: camera_kind_from_str(&kind_str),
+            gps_supported,
+            size_bytes: size_bytes.map(|n| n as u64),
+            is_tombstone: true,
+        });
+    }
+    Ok(out)
 }
 
 /// Load every trip from the DB that has at least one timelapse_jobs row
@@ -274,8 +354,17 @@ pub fn persist_and_gc(
     // GC: delete tags first (no FK cascade in sqlite without explicit pragma
     // on each connection), then segments, then trips. Trips referenced by
     // any timelapse_jobs row are kept (and their trip-level tags with them).
+    //
+    // Tombstones (`is_tombstone = 1`) are excluded from the segments GC
+    // clause: they have no master file for the scan to touch, so their
+    // `last_seen_ms` is permanently stale by definition. They live until
+    // the trip is fully deleted or the user re-imports footage that
+    // re-binds the row (upsert clears the flag).
     tx.execute(
-        "DELETE FROM tags WHERE segment_id IN (SELECT id FROM segments WHERE last_seen_ms < ?1)
+        "DELETE FROM tags WHERE segment_id IN (
+            SELECT id FROM segments
+            WHERE last_seen_ms < ?1 AND is_tombstone = 0
+         )
             OR trip_id IN (
                 SELECT id FROM trips
                 WHERE last_seen_ms < ?1
@@ -284,10 +373,16 @@ pub fn persist_and_gc(
         params![scan_started_ms],
     )?;
     tx.execute(
-        "DELETE FROM scan_runs WHERE segment_id IN (SELECT id FROM segments WHERE last_seen_ms < ?1)",
+        "DELETE FROM scan_runs WHERE segment_id IN (
+            SELECT id FROM segments
+            WHERE last_seen_ms < ?1 AND is_tombstone = 0
+         )",
         params![scan_started_ms],
     )?;
-    tx.execute("DELETE FROM segments WHERE last_seen_ms < ?1", params![scan_started_ms])?;
+    tx.execute(
+        "DELETE FROM segments WHERE last_seen_ms < ?1 AND is_tombstone = 0",
+        params![scan_started_ms],
+    )?;
     tx.execute(
         "DELETE FROM trips
          WHERE last_seen_ms < ?1
@@ -332,6 +427,7 @@ mod tests {
             camera_kind: CameraKind::WolfBox,
             gps_supported: true,
             size_bytes: None,
+            is_tombstone: false,
         }
     }
 
@@ -502,6 +598,130 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM timelapse_jobs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(jobs, 1);
+    }
+
+    #[test]
+    fn tombstone_segments_survive_gc() {
+        // A tombstone has no master file for the scan to touch, so its
+        // last_seen_ms is permanently stale. The GC clause must skip
+        // tombstones — otherwise the next folder scan would silently
+        // delete them and the partial-archive timeline would collapse.
+        let db = open_in_memory().unwrap();
+        let seg_real = sample_segment("C:/vids/a.mp4", 0);
+        let seg_tomb = sample_segment("C:/vids/b.mp4", 60);
+        let trip = sample_trip(vec![seg_real.clone(), seg_tomb.clone()]);
+
+        // First scan persists both.
+        {
+            let mut conn = db.lock().unwrap();
+            persist_and_gc(&mut conn, &[trip], 1_000).unwrap();
+            // Mark seg_tomb as a tombstone (in real life delete_segments_to_trash
+            // does this; here we simulate it directly).
+            conn.execute(
+                "UPDATE segments SET is_tombstone = 1, master_path = '' WHERE id = ?1",
+                params![seg_tomb.id.to_string()],
+            )
+            .unwrap();
+            // Add a timelapse_jobs row so the trip is genuinely
+            // partial-archive (the only time tombstones are created).
+            let trip_id = derive_trip_id(seg_real.id);
+            conn.execute(
+                "INSERT INTO timelapse_jobs
+                    (trip_id, tier, channel, status, output_path, created_at_ms, completed_at_ms)
+                 VALUES (?1, '8x', 'F', 'done', '/tl/8x_F.mp4', 1500, 1500)",
+                params![trip_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Second scan sees only seg_real (the tombstone has no file).
+        // Without the is_tombstone guard, the GC would delete the
+        // tombstone row alongside any genuinely vanished segment.
+        let trip2 = sample_trip(vec![seg_real]);
+        {
+            let mut conn = db.lock().unwrap();
+            persist_and_gc(&mut conn, &[trip2], 2_000).unwrap();
+        }
+
+        let conn = db.lock().unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM segments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 2, "tombstone must survive the post-scan GC");
+        let tomb_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM segments WHERE is_tombstone = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tomb_count, 1);
+    }
+
+    #[test]
+    fn upsert_clears_is_tombstone_when_originals_return() {
+        // Edge case: user re-imports the original files for a tombstoned
+        // segment. The UUIDv5 derivation makes the seg id stable across
+        // (path, start_time), so the upsert lands on the existing
+        // tombstone row. The flag must clear so the row plays as a
+        // normal segment again.
+        let db = open_in_memory().unwrap();
+        let seg = sample_segment("C:/vids/a.mp4", 0);
+        let trip = sample_trip(vec![seg.clone()]);
+
+        {
+            let mut conn = db.lock().unwrap();
+            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000).unwrap();
+            conn.execute(
+                "UPDATE segments SET is_tombstone = 1, master_path = '' WHERE id = ?1",
+                params![seg.id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Re-scan with the file present again.
+        {
+            let mut conn = db.lock().unwrap();
+            persist_and_gc(&mut conn, &[trip], 2_000).unwrap();
+        }
+
+        let conn = db.lock().unwrap();
+        let (is_tomb, path): (i64, String) = conn
+            .query_row(
+                "SELECT is_tombstone, master_path FROM segments WHERE id = ?1",
+                params![seg.id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(is_tomb, 0, "re-imported segment must lose tombstone flag");
+        assert_eq!(path, "C:/vids/a.mp4", "master_path restored from re-scan");
+    }
+
+    #[test]
+    fn load_tombstones_returns_only_tombstones_for_requested_trips() {
+        let db = open_in_memory().unwrap();
+        let seg_real = sample_segment("C:/vids/a.mp4", 0);
+        let seg_tomb = sample_segment("C:/vids/b.mp4", 60);
+        let trip = sample_trip(vec![seg_real.clone(), seg_tomb.clone()]);
+        let trip_id = trip.id.to_string();
+
+        {
+            let mut conn = db.lock().unwrap();
+            persist_and_gc(&mut conn, &[trip], 1_000).unwrap();
+            conn.execute(
+                "UPDATE segments SET is_tombstone = 1, master_path = '' WHERE id = ?1",
+                params![seg_tomb.id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let conn = db.lock().unwrap();
+        let map = load_tombstones_for_trips(&conn, std::slice::from_ref(&trip_id)).unwrap();
+        let entries = map.get(&trip_id).expect("trip should have a bucket");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, seg_tomb.id);
+        assert!(entries[0].is_tombstone);
+        assert!(entries[0].channels.is_empty());
     }
 
     #[test]

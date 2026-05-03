@@ -166,9 +166,15 @@ export interface AppState
    *  becomes empty *and* has no timelapse archive; otherwise the trip
    *  is left in place with `archiveOnly: true` so it stays discoverable. */
   removeSegmentFromTrip: (tripId: string, segmentId: string) => void;
-  /** Batch version for multi-segment delete. Accepts a Set/Array of
-   *  segment IDs and removes them all atomically (single store update). */
-  removeSegmentsFromTrip: (tripId: string, segmentIds: string[]) => void;
+  /** Batch version for multi-segment delete. Accepts the IDs the
+   *  backend operated on plus the subset that were converted to
+   *  tombstones (kept in the trip with `isTombstone: true` so the
+   *  timeline renders a hatched gap). The rest are hard-spliced. */
+  removeSegmentsFromTrip: (
+    tripId: string,
+    segmentIds: string[],
+    tombstonedIds?: string[],
+  ) => void;
   /** Fetch archive-only trips from the DB and merge them into `trips`,
    *  sorted by startTime. Idempotent — re-running just refreshes the
    *  archive set without disturbing scanned trips. */
@@ -374,7 +380,7 @@ export const useStore = create<AppState>((set) => ({
   },
   removeSegmentFromTrip: (tripId, segmentId) =>
     useStore.getState().removeSegmentsFromTrip(tripId, [segmentId]),
-  removeSegmentsFromTrip: (tripId, segmentIds) => {
+  removeSegmentsFromTrip: (tripId, segmentIds, tombstonedIds) => {
     // Schedule a backend reconcile right after the synchronous local
     // update. The local rule (keep trip if `timelapseJobs` has any row
     // for it) is correct only when the frontend's job cache is in
@@ -387,19 +393,38 @@ export const useStore = create<AppState>((set) => ({
       void useStore.getState().refreshLibrarySummary();
     };
     setTimeout(reconcile, 0);
+    const tombstoneSet = new Set(tombstonedIds ?? []);
     set((s) => {
       const tripIdx = s.trips.findIndex((t) => t.id === tripId);
       if (tripIdx < 0) return {};
       const trip = s.trips[tripIdx];
-      const dropSet = new Set(segmentIds);
-      const remaining = trip.segments.filter((seg) => !dropSet.has(seg.id));
+      const opSet = new Set(segmentIds);
+      // Build the next segment list:
+      //  - tombstoned IDs stay in place but get `isTombstone: true`
+      //    and an empty channels array (the originals are gone).
+      //  - other operated-on IDs get spliced (hard-deleted upstream).
+      //  - untouched segments pass through.
+      const nextSegments = trip.segments
+        .map((seg) => {
+          if (!opSet.has(seg.id)) return seg;
+          if (tombstoneSet.has(seg.id)) {
+            return {
+              ...seg,
+              channels: [],
+              isTombstone: true,
+              sizeBytes: null,
+            };
+          }
+          return null;
+        })
+        .filter((seg): seg is (typeof trip.segments)[number] => seg !== null);
+      const survivingNonTombstone = nextSegments.filter((seg) => !seg.isTombstone);
       const nextTrips = [...s.trips];
-      if (remaining.length === 0) {
-        // Trip has no source segments left. If it has any timelapse
-        // jobs, keep it as archive-only so the user can still play the
-        // pre-rendered timelapse — segment deletion is the disk-reclaim
-        // step in the timelapse-as-archive workflow, not a "remove
-        // trip" action. The backend GC has the matching rule.
+      if (survivingNonTombstone.length === 0) {
+        // No real segments left. Backend has hard-deleted any tombstones
+        // it just created (so the trip can flip cleanly to archive-only).
+        // If there's a timelapse archive, keep the trip in place with
+        // empty segments + archiveOnly; otherwise drop it entirely.
         const hasArchive = s.timelapseJobs.some((j) => j.tripId === tripId);
         if (hasArchive) {
           nextTrips[tripIdx] = {
@@ -409,9 +434,6 @@ export const useStore = create<AppState>((set) => ({
           };
           return { trips: nextTrips };
         }
-        // No archive — drop the trip entirely and advance the
-        // selection to the next adjacent trip (preferring the one that
-        // was after this one, falling back to the previous, then null).
         nextTrips.splice(tripIdx, 1);
         let nextSelected: string | null = s.selectedTripId;
         if (s.selectedTripId === tripId) {
@@ -425,15 +447,22 @@ export const useStore = create<AppState>((set) => ({
             s.loadedTripId === tripId ? nextSelected : s.loadedTripId,
         };
       }
-      // Trip still has segments; rewrite it in place.
-      nextTrips[tripIdx] = { ...trip, segments: remaining };
+      // Mix of survivors + (possibly) tombstones. Trip stays as a
+      // normal trip; the timeline will render hatched gaps for the
+      // tombstones based on `isTombstone`.
+      nextTrips[tripIdx] = { ...trip, segments: nextSegments };
       return { trips: nextTrips };
     });
   },
   deleteOriginalsForTrip: async (tripId) => {
     const trip = useStore.getState().trips.find((t) => t.id === tripId);
     if (!trip) {
-      return { segmentsRemoved: 0, filesTrashed: 0, failures: [] };
+      return {
+        segmentsRemoved: 0,
+        filesTrashed: 0,
+        failures: [],
+        tombstonedSegmentIds: [],
+      };
     }
     const segmentIds = trip.segments.map((s) => s.id);
     const inMemoryPaths: Record<string, string[]> = {};
@@ -456,7 +485,9 @@ export const useStore = create<AppState>((set) => ({
     }
     const removed = segmentIds.filter((id) => !survivors.has(id));
     if (removed.length > 0) {
-      useStore.getState().removeSegmentsFromTrip(tripId, removed);
+      useStore
+        .getState()
+        .removeSegmentsFromTrip(tripId, removed, report.tombstonedSegmentIds);
     }
     return report;
   },
