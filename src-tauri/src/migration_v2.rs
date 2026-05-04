@@ -26,12 +26,17 @@
 //! discovery fails), the legacy file stays where it is and we re-check
 //! every launch.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
+use uuid::Uuid;
 
 use crate::app_settings::AppSettingsHandle;
+use crate::db::DbHandle;
 use crate::error::AppError;
+use crate::model::{derive_segment_id, derive_trip_id};
+use crate::paths;
 use crate::timelapse::worker::{discover_library_root, DiscoveredRoot};
 
 /// Outcome of a migration attempt. The string is logged to stderr for
@@ -180,6 +185,227 @@ pub fn run_if_needed(
     })?;
 
     Ok(MigrationOutcome::Migrated { archive_root })
+}
+
+/// Rewrite `segments.master_path` to archive-relative form *and*
+/// recompute every segment / trip UUID off the new path so the IDs
+/// are stable when the same archive is opened on a different OS.
+///
+/// Cascades through every FK column so tag and timelapse-job links
+/// survive: `tags.segment_id`, `tags.trip_id`, `scan_runs.segment_id`,
+/// `segments.trip_id`, `timelapse_jobs.trip_id`,
+/// `manual_trip_merges.{primary,absorbed}_trip_id`.
+///
+/// Idempotent at the call site: gated by
+/// `AppSettings.cross_os_migrated_archives` so it runs at most once
+/// per archive root. Within the function we still skip rows that
+/// don't need rewriting (path already relative, or path lives outside
+/// the archive root).
+pub fn rebuild_for_cross_os(
+    db: &DbHandle,
+    settings: &AppSettingsHandle,
+) -> Result<RebuildOutcome, AppError> {
+    let archive_root = db.archive_root().to_path_buf();
+    let archive_str = archive_root.to_string_lossy().into_owned();
+
+    if settings
+        .read()
+        .cross_os_migrated_archives
+        .iter()
+        .any(|p| p == &archive_str)
+    {
+        return Ok(RebuildOutcome::AlreadyDone);
+    }
+
+    let segments_remapped = rebuild_in_transaction(db, &archive_str)?;
+
+    settings.update(|s| {
+        if !s.cross_os_migrated_archives.iter().any(|p| p == &archive_str) {
+            s.cross_os_migrated_archives.push(archive_str.clone());
+        }
+    })?;
+
+    Ok(RebuildOutcome::Migrated { segments_remapped })
+}
+
+pub enum RebuildOutcome {
+    AlreadyDone,
+    Migrated { segments_remapped: usize },
+}
+
+fn rebuild_in_transaction(db: &DbHandle, archive_str: &str) -> Result<usize, AppError> {
+    // Snapshot rows we may need to remap. Done with a short-lived lock
+    // so we can release before re-locking for the transaction; SQLite
+    // doesn't support nested transactions and `db.lock()` returns the
+    // single shared connection.
+    struct SegRow {
+        id: String,
+        master_path: String,
+        start_ms: i64,
+    }
+    struct TripRow {
+        id: String,
+        first_seg_id: Option<String>,
+    }
+
+    let (segs, trips) = {
+        let conn = db
+            .lock()
+            .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+        let segs: Vec<SegRow> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, master_path, start_time_ms FROM segments
+                 WHERE is_tombstone = 0 AND master_path != ''",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(SegRow {
+                    id: r.get(0)?,
+                    master_path: r.get(1)?,
+                    start_ms: r.get(2)?,
+                })
+            })?;
+            let mut v = Vec::new();
+            for r in rows {
+                v.push(r?);
+            }
+            v
+        };
+        let trips: Vec<TripRow> = {
+            let mut stmt = conn.prepare(
+                "SELECT t.id,
+                        (SELECT s.id FROM segments s
+                         WHERE s.trip_id = t.id
+                         ORDER BY s.start_time_ms LIMIT 1) AS first_seg_id
+                 FROM trips t",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(TripRow {
+                    id: r.get(0)?,
+                    first_seg_id: r.get(1)?,
+                })
+            })?;
+            let mut v = Vec::new();
+            for r in rows {
+                v.push(r?);
+            }
+            v
+        };
+        (segs, trips)
+    };
+
+    let mut seg_id_remap: HashMap<String, String> = HashMap::new();
+    let mut seg_path_remap: HashMap<String, String> = HashMap::new();
+
+    for s in &segs {
+        let Some(rel) = paths::relativize_str(&s.master_path, archive_str) else {
+            // Path doesn't live under archive_root — leave the row
+            // alone. Its UUID stays absolute-derived, which is OS-
+            // specific but at least internally consistent. PR 3's
+            // archive switcher gives users a way to relocate these.
+            continue;
+        };
+        let already_relative = !Path::new(&s.master_path).is_absolute();
+        if already_relative && rel == s.master_path {
+            // Nothing to do — already in storage form.
+            continue;
+        }
+        let start_time = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(s.start_ms)
+            .ok_or_else(|| AppError::Internal(format!("invalid start_time_ms {}", s.start_ms)))?
+            .naive_utc();
+        let new_id = derive_segment_id(&rel, start_time).to_string();
+        if new_id == s.id {
+            // UUID happens to land on the same value (path unchanged).
+            // Skip cascade work for this row.
+            continue;
+        }
+        seg_id_remap.insert(s.id.clone(), new_id);
+        seg_path_remap.insert(s.id.clone(), rel);
+    }
+
+    let mut trip_id_remap: HashMap<String, String> = HashMap::new();
+    for t in &trips {
+        let Some(first_old) = t.first_seg_id.as_ref() else {
+            continue;
+        };
+        let Some(first_new) = seg_id_remap.get(first_old) else {
+            continue;
+        };
+        let new_first_uuid = Uuid::parse_str(first_new).map_err(|e| {
+            AppError::Internal(format!("non-UUID in segment id mapping {first_new}: {e}"))
+        })?;
+        let new_trip_id = derive_trip_id(new_first_uuid).to_string();
+        if new_trip_id == t.id {
+            continue;
+        }
+        trip_id_remap.insert(t.id.clone(), new_trip_id);
+    }
+
+    if seg_id_remap.is_empty() && trip_id_remap.is_empty() {
+        return Ok(0);
+    }
+
+    let mut conn = db
+        .lock()
+        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+    let tx = conn.transaction()?;
+
+    // Cascade FK-style references first (while old IDs still resolve
+    // in segments/trips). No FK CONSTRAINTs in our schema, so the
+    // ordering is for code-level consistency rather than DB safety.
+    for (old_id, new_id) in &seg_id_remap {
+        tx.execute(
+            "UPDATE tags SET segment_id = ?1 WHERE segment_id = ?2",
+            params![new_id, old_id],
+        )?;
+        tx.execute(
+            "UPDATE scan_runs SET segment_id = ?1 WHERE segment_id = ?2",
+            params![new_id, old_id],
+        )?;
+    }
+    for (old_id, new_id) in &trip_id_remap {
+        tx.execute(
+            "UPDATE tags SET trip_id = ?1 WHERE trip_id = ?2",
+            params![new_id, old_id],
+        )?;
+        tx.execute(
+            "UPDATE timelapse_jobs SET trip_id = ?1 WHERE trip_id = ?2",
+            params![new_id, old_id],
+        )?;
+        tx.execute(
+            "UPDATE manual_trip_merges SET primary_trip_id = ?1 WHERE primary_trip_id = ?2",
+            params![new_id, old_id],
+        )?;
+        tx.execute(
+            "UPDATE manual_trip_merges SET absorbed_trip_id = ?1 WHERE absorbed_trip_id = ?2",
+            params![new_id, old_id],
+        )?;
+        tx.execute(
+            "UPDATE segments SET trip_id = ?1 WHERE trip_id = ?2",
+            params![new_id, old_id],
+        )?;
+    }
+
+    // Now update the canonical rows. SQLite allows updating a PK
+    // directly as long as no UNIQUE conflict exists; UUID collisions
+    // between old and new are astronomically unlikely.
+    for (old_id, new_id) in &seg_id_remap {
+        let new_path = seg_path_remap
+            .get(old_id)
+            .expect("seg_id_remap and seg_path_remap built together");
+        tx.execute(
+            "UPDATE segments SET id = ?1, master_path = ?2 WHERE id = ?3",
+            params![new_id, new_path, old_id],
+        )?;
+    }
+    for (old_id, new_id) in &trip_id_remap {
+        tx.execute(
+            "UPDATE trips SET id = ?1 WHERE id = ?2",
+            params![new_id, old_id],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(seg_id_remap.len())
 }
 
 /// One-shot cleanup of orphan files in `app_data_dir` that previous

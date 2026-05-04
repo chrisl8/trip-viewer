@@ -22,10 +22,12 @@ use crate::error::AppError;
 
 const SETTINGS_FILENAME: &str = "settings.json";
 
-/// Schema version 1: the four legacy SQLite keys live here.
+/// On-disk schema version of `settings.json` itself. v1 added the
+/// per-machine keys extracted from the SQLite settings table.
 ///
-/// Bumped only when the on-disk shape changes incompatibly. Adding new
-/// `Option<T>` fields with `#[serde(default)]` does not require a bump.
+/// The cross-OS DB-rewrite tracks separately in `cross_os_migrated`
+/// because it depends on having an archive open, and an archive may
+/// be added or replaced after the JSON is at v1.
 const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -44,6 +46,13 @@ pub struct AppSettings {
     pub recent_archives: Vec<RecentArchive>,
     #[serde(default)]
     pub last_archive: Option<String>,
+    /// Set once per-archive after the cross-OS DB rewrite (segment UUIDs
+    /// rebuilt from archive-relative paths, `master_path` columns
+    /// relativized). Maps archive root path → done. Keyed by path
+    /// rather than baked into a single boolean so a user with multiple
+    /// archives can have each migrate independently.
+    #[serde(default)]
+    pub cross_os_migrated_archives: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

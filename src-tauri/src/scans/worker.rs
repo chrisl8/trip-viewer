@@ -102,11 +102,12 @@ fn run_inner(
     scope: ScanScope,
     trip_ids: Option<&[String]>,
 ) -> Result<(), AppError> {
+    let archive_root = db.archive_root().to_path_buf();
     let (segments, places) = {
         let conn = db
             .lock()
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-        let mut segs = db::segments::all_segments(&conn)?;
+        let mut segs = db::segments::all_segments(&conn, &archive_root)?;
         if let Some(ids) = trip_ids {
             let trip_set: std::collections::HashSet<&str> =
                 ids.iter().map(|s| s.as_str()).collect();

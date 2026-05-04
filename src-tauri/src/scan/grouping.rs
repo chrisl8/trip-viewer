@@ -32,7 +32,11 @@ pub struct GroupingOutput {
     pub trips: Vec<Trip>,
 }
 
-pub fn group(items: Vec<GroupingInput>, trip_gap_s: i64) -> GroupingOutput {
+pub fn group(
+    items: Vec<GroupingInput>,
+    trip_gap_s: i64,
+    archive_root: &std::path::Path,
+) -> GroupingOutput {
     // Bucket by group_key — every parser is responsible for producing a
     // key that uniquely identifies a recording instance.
     let mut buckets: HashMap<String, Vec<GroupingInput>> = HashMap::new();
@@ -49,7 +53,7 @@ pub fn group(items: Vec<GroupingInput>, trip_gap_s: i64) -> GroupingOutput {
     // upstream) — there is no separate "unmatched" category anymore.
     let mut segments: Vec<Segment> = Vec::with_capacity(buckets.len());
     for (_, bucket) in buckets {
-        segments.push(make_segment(bucket));
+        segments.push(make_segment(bucket, archive_root));
     }
 
     // Merge segments whose start times are within SEGMENT_FUZZY_WINDOW_S
@@ -63,7 +67,7 @@ pub fn group(items: Vec<GroupingInput>, trip_gap_s: i64) -> GroupingOutput {
     GroupingOutput { trips }
 }
 
-fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
+fn make_segment(bucket: Vec<GroupingInput>, archive_root: &std::path::Path) -> Segment {
     // Use the earliest timestamp in the bucket as the segment start.
     // Event mode comes from any file (they all share group_key, so they
     // all share event_mode by construction).
@@ -85,7 +89,18 @@ fn make_segment(bucket: Vec<GroupingInput>) -> Segment {
     // show up in one bucket, keep the first after canonical sort.
     channels.dedup_by(|a, b| a.label == b.label);
 
-    let id = crate::model::derive_segment_id(&channels[0].file_path, start_time);
+    // Derive the segment UUID from the master channel's *archive-relative*
+    // path so the same file produces the same UUID regardless of which
+    // OS or mount point the archive is opened on. Falls back to the
+    // absolute path when the file lives outside the active archive (a
+    // scan-folder-of-arbitrary-directory case): the resulting UUID is
+    // OS-specific but at least stable within that scan.
+    let master_abs = std::path::Path::new(&channels[0].file_path);
+    let id_key = match crate::paths::to_archive_relative(master_abs, archive_root) {
+        Ok(rel) => rel,
+        Err(_) => channels[0].file_path.clone(),
+    };
+    let id = crate::model::derive_segment_id(&id_key, start_time);
     Segment {
         id,
         start_time,
@@ -309,7 +324,7 @@ mod tests {
             input("2026_03_23_094634_00_I.MP4"),
             input("2026_03_23_094634_00_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 3);
@@ -325,7 +340,7 @@ mod tests {
             input("REC_2026_03_06_07_25_52_F.MP4"),
             input("REC_2026_03_06_07_25_52_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 2);
@@ -337,7 +352,7 @@ mod tests {
     fn single_file_becomes_one_channel_segment() {
         // No more "unmatched" for partially-recorded segments.
         let items = vec![input("2026_03_23_094634_00_F.MP4")];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 1);
     }
@@ -350,7 +365,7 @@ mod tests {
             input("2026_03_06_072552_C.MP4"),
             input("2026_03_06_072552_D.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 4);
     }
@@ -362,7 +377,7 @@ mod tests {
             input("2026_03_15_173951_02_I.MP4"),
             input("2026_03_15_173951_02_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         assert!(out.trips[0].segments[0].is_event);
     }
 
@@ -376,7 +391,7 @@ mod tests {
             input("2026_03_23_094934_00_I.MP4"),
             input("2026_03_23_094934_00_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments.len(), 2);
     }
@@ -391,7 +406,7 @@ mod tests {
             input("2026_03_23_114634_00_I.MP4"),
             input("2026_03_23_114634_00_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         assert_eq!(out.trips.len(), 2);
     }
 
@@ -405,7 +420,7 @@ mod tests {
             input("2026_03_23_094634_00_I.MP4"),
             input("2026_03_23_094634_00_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         assert_eq!(out.trips.len(), 1);
         let segs = &out.trips[0].segments;
         assert!(segs[0].start_time < segs[1].start_time);
@@ -419,7 +434,7 @@ mod tests {
             input("2026_03_23_094635_02_I.MP4"),
             input("2026_03_23_094635_02_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         // Two segments: one 1-channel (Normal Front), one 2-channel (Event I+R).
         let total_segments: usize = out.trips.iter().map(|t| t.segments.len()).sum();
         assert_eq!(total_segments, 2);
@@ -435,7 +450,7 @@ mod tests {
             input("REC_2026_03_23_09_46_34_F.MP4"),
             input("REC_2026_03_23_09_46_34_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS);
+        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
         let all_segments: Vec<&Segment> =
             out.trips.iter().flat_map(|t| t.segments.iter()).collect();
         assert_eq!(all_segments.len(), 2);

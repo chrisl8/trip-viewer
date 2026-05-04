@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::model::{Segment, Trip};
+use crate::paths;
 use crate::scan::naming::CameraKind;
 
 /// Thin DB-row view of a segment. Carries exactly the fields the scan
@@ -44,17 +46,21 @@ fn camera_kind_to_str(kind: CameraKind) -> &'static str {
     }
 }
 
-pub fn all_segments(conn: &Connection) -> Result<Vec<SegmentRecord>, AppError> {
+pub fn all_segments(
+    conn: &Connection,
+    archive_root: &Path,
+) -> Result<Vec<SegmentRecord>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT id, trip_id, master_path, is_event, camera_kind, gps_supported, duration_s, is_tombstone
          FROM segments ORDER BY start_time_ms",
     )?;
     let rows = stmt.query_map([], |r| {
         let kind_str: String = r.get("camera_kind")?;
+        let stored_path: String = r.get("master_path")?;
         Ok(SegmentRecord {
             id: r.get("id")?,
             trip_id: r.get("trip_id")?,
-            master_path: r.get("master_path")?,
+            master_path: absolutize_stored(&stored_path, archive_root),
             is_event: r.get::<_, i64>("is_event")? != 0,
             camera_kind: camera_kind_from_str(&kind_str),
             gps_supported: r.get::<_, i64>("gps_supported")? != 0,
@@ -69,12 +75,55 @@ pub fn all_segments(conn: &Connection) -> Result<Vec<SegmentRecord>, AppError> {
     Ok(out)
 }
 
-pub fn upsert_segment(conn: &Connection, seg: &Segment, trip_id: &str, now_ms: i64) -> Result<(), AppError> {
-    let master_path = seg
+/// Convert a stored `master_path` value back into an absolute path on
+/// the current machine. Forgiving: tombstones store the empty string
+/// (passed through), legacy rows from before cross-OS portability
+/// stored absolute paths (returned as-is so the user's existing data
+/// keeps working until the data migration relativizes it). New writes
+/// always store relative + forward-slash paths.
+fn absolutize_stored(stored: &str, archive_root: &Path) -> String {
+    if stored.is_empty() {
+        return String::new();
+    }
+    let p = Path::new(stored);
+    if p.is_absolute() {
+        stored.to_string()
+    } else {
+        paths::from_archive_relative(stored, archive_root)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// Convert an in-memory absolute path into the storage form for
+/// `master_path`: archive-relative with forward-slash separators.
+/// Falls back to the original string if the path doesn't live under
+/// the archive root — happens during scans of folders outside the
+/// active archive, which we accept rather than reject so the scanner
+/// stays usable while PR 3 wires up explicit archive switching.
+fn relativize_for_storage(absolute: &str, archive_root: &Path) -> String {
+    if absolute.is_empty() {
+        return String::new();
+    }
+    match paths::to_archive_relative(Path::new(absolute), archive_root) {
+        Ok(rel) => rel,
+        Err(_) => absolute.to_string(),
+    }
+}
+
+pub fn upsert_segment(
+    conn: &Connection,
+    seg: &Segment,
+    trip_id: &str,
+    now_ms: i64,
+    archive_root: &Path,
+) -> Result<(), AppError> {
+    let absolute = seg
         .channels
         .first()
         .map(|c| c.file_path.as_str())
         .unwrap_or("");
+    let master_path = relativize_for_storage(absolute, archive_root);
     // Don't overwrite a previously-known size_bytes with NULL when
     // the current scan failed to stat the files — keeps the
     // library-wide totals stable across transient stat hiccups.
@@ -333,6 +382,7 @@ pub fn persist_and_gc(
     conn: &mut Connection,
     trips: &[Trip],
     scan_started_ms: i64,
+    archive_root: &Path,
 ) -> Result<Vec<Trip>, AppError> {
     let tx = conn.transaction()?;
 
@@ -347,7 +397,7 @@ pub fn persist_and_gc(
     for trip in &coalesced {
         upsert_trip(&tx, trip, scan_started_ms)?;
         for seg in &trip.segments {
-            upsert_segment(&tx, seg, &trip.id.to_string(), scan_started_ms)?;
+            upsert_segment(&tx, seg, &trip.id.to_string(), scan_started_ms, archive_root)?;
         }
     }
 
@@ -402,6 +452,14 @@ mod tests {
     use crate::scan::naming::CameraKind;
     use chrono::NaiveDate;
 
+    /// The archive_root that `open_in_memory()` ships with. Test segment
+    /// paths fall *outside* this root on purpose — `relativize_for_storage`
+    /// gracefully degrades to storing the original string, so tests
+    /// assert on absolute-path round-trips just as before.
+    fn test_archive_root() -> std::path::PathBuf {
+        std::path::PathBuf::from("/tmp/tripviewer-test-archive")
+    }
+
     fn sample_segment(master_path: &str, seconds: i64) -> Segment {
         let base = NaiveDate::from_ymd_opt(2025, 1, 1)
             .unwrap()
@@ -455,11 +513,11 @@ mod tests {
 
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000).unwrap();
+            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000, &test_archive_root()).unwrap();
         }
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip], 2_000).unwrap();
+            persist_and_gc(&mut conn, &[trip], 2_000, &test_archive_root()).unwrap();
         }
 
         let conn = db.lock().unwrap();
@@ -482,7 +540,7 @@ mod tests {
 
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000).unwrap();
+            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000, &test_archive_root()).unwrap();
         }
 
         // Verify the size persisted.
@@ -504,7 +562,7 @@ mod tests {
         let trip_unstat = sample_trip(vec![seg_unstat]);
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip_unstat], 2_000).unwrap();
+            persist_and_gc(&mut conn, &[trip_unstat], 2_000, &test_archive_root()).unwrap();
         }
         {
             let conn = db.lock().unwrap();
@@ -532,14 +590,14 @@ mod tests {
 
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000).unwrap();
+            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000, &test_archive_root()).unwrap();
         }
 
         // Second scan sees only seg_a. seg_b should be gc'd.
         let trip2 = sample_trip(vec![seg_a]);
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip2], 2_000).unwrap();
+            persist_and_gc(&mut conn, &[trip2], 2_000, &test_archive_root()).unwrap();
         }
 
         let conn = db.lock().unwrap();
@@ -557,7 +615,7 @@ mod tests {
         // First scan persists the trip + segment.
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip], 1_000).unwrap();
+            persist_and_gc(&mut conn, &[trip], 1_000, &test_archive_root()).unwrap();
         }
 
         // Simulate a completed timelapse encode: insert a row in
@@ -579,7 +637,7 @@ mod tests {
         // timelapse-jobs guard, the trip and its segment would be GC'd.
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[], 2_000).unwrap();
+            persist_and_gc(&mut conn, &[], 2_000, &test_archive_root()).unwrap();
         }
 
         let conn = db.lock().unwrap();
@@ -614,7 +672,7 @@ mod tests {
         // First scan persists both.
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip], 1_000).unwrap();
+            persist_and_gc(&mut conn, &[trip], 1_000, &test_archive_root()).unwrap();
             // Mark seg_tomb as a tombstone (in real life delete_segments_to_trash
             // does this; here we simulate it directly).
             conn.execute(
@@ -640,7 +698,7 @@ mod tests {
         let trip2 = sample_trip(vec![seg_real]);
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip2], 2_000).unwrap();
+            persist_and_gc(&mut conn, &[trip2], 2_000, &test_archive_root()).unwrap();
         }
 
         let conn = db.lock().unwrap();
@@ -671,7 +729,7 @@ mod tests {
 
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000).unwrap();
+            persist_and_gc(&mut conn, std::slice::from_ref(&trip), 1_000, &test_archive_root()).unwrap();
             conn.execute(
                 "UPDATE segments SET is_tombstone = 1, master_path = '' WHERE id = ?1",
                 params![seg.id.to_string()],
@@ -682,7 +740,7 @@ mod tests {
         // Re-scan with the file present again.
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip], 2_000).unwrap();
+            persist_and_gc(&mut conn, &[trip], 2_000, &test_archive_root()).unwrap();
         }
 
         let conn = db.lock().unwrap();
@@ -707,7 +765,7 @@ mod tests {
 
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip], 1_000).unwrap();
+            persist_and_gc(&mut conn, &[trip], 1_000, &test_archive_root()).unwrap();
             conn.execute(
                 "UPDATE segments SET is_tombstone = 1, master_path = '' WHERE id = ?1",
                 params![seg_tomb.id.to_string()],
@@ -732,13 +790,13 @@ mod tests {
 
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip], 1_000).unwrap();
+            persist_and_gc(&mut conn, &[trip], 1_000, &test_archive_root()).unwrap();
         }
         // Second scan sees no trips, no archive — trip should be GC'd
         // exactly as before.
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[], 2_000).unwrap();
+            persist_and_gc(&mut conn, &[], 2_000, &test_archive_root()).unwrap();
         }
 
         let conn = db.lock().unwrap();
@@ -844,7 +902,7 @@ mod tests {
         }
         {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip_a, trip_b], 1_000).unwrap();
+            persist_and_gc(&mut conn, &[trip_a, trip_b], 1_000, &test_archive_root()).unwrap();
         }
         let conn = db.lock().unwrap();
         let n_trips: i64 = conn
@@ -888,7 +946,7 @@ mod tests {
         }
         let returned = {
             let mut conn = db.lock().unwrap();
-            persist_and_gc(&mut conn, &[trip_a, trip_b], 1_000).unwrap()
+            persist_and_gc(&mut conn, &[trip_a, trip_b], 1_000, &test_archive_root()).unwrap()
         };
 
         assert_eq!(returned.len(), 1, "two natural trips should fold into one");

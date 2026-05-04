@@ -45,7 +45,8 @@ pub async fn scan_folder(
     path: String,
     db: tauri::State<'_, crate::db::DbHandle>,
 ) -> Result<ScanResult, AppError> {
-    let mut result = scan_folder_sync(Path::new(&path))?;
+    let archive_root = db.archive_root().to_path_buf();
+    let mut result = scan_folder_sync(Path::new(&path), &archive_root)?;
     let scan_started_ms = chrono::Utc::now().timestamp_millis();
     // Persistence is best-effort; a DB failure must not block the user
     // from seeing their scan results, they just won't have tags yet.
@@ -53,7 +54,12 @@ pub async fn scan_folder(
     // the same view the DB now has: natural trips that match a
     // `manual_trip_merges` directive get folded into their primary.
     if let Ok(mut conn) = db.lock() {
-        match crate::db::segments::persist_and_gc(&mut conn, &result.trips, scan_started_ms) {
+        match crate::db::segments::persist_and_gc(
+            &mut conn,
+            &result.trips,
+            scan_started_ms,
+            &archive_root,
+        ) {
             Ok(merged) => result.trips = merged,
             Err(e) => eprintln!("[db] persist_and_gc failed: {e}"),
         }
@@ -82,7 +88,7 @@ pub async fn scan_folder(
     Ok(result)
 }
 
-pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
+pub fn scan_folder_sync(root: &Path, archive_root: &Path) -> Result<ScanResult, AppError> {
     if !root.is_dir() {
         return Err(AppError::Internal(format!(
             "not a directory: {}",
@@ -115,8 +121,10 @@ pub fn scan_folder_sync(root: &Path) -> Result<ScanResult, AppError> {
     }
 
     // Stage 2: group parsed files into segments and trips. Any channel
-    // count (1–N) is accepted.
-    let group_out = grouping::group(parsed_inputs, DEFAULT_TRIP_GAP_SECONDS);
+    // count (1–N) is accepted. archive_root threads through so segment
+    // UUIDs can be derived from archive-relative paths — same UUID on
+    // every OS for the same file inside the same archive.
+    let group_out = grouping::group(parsed_inputs, DEFAULT_TRIP_GAP_SECONDS, archive_root);
     let mut trips = group_out.trips;
 
     // Stage 3: parallel probe every channel file → fill metadata + real

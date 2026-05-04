@@ -207,6 +207,21 @@ pub fn run() {
                 eprintln!("[timelapse] cleanup failed at startup: {e}");
             }
 
+            // Per-archive cross-OS rewrite: rebuild segment / trip
+            // UUIDs from archive-relative paths. Idempotent (gated by
+            // settings.cross_os_migrated_archives) so it runs at most
+            // once per archive root.
+            match migration_v2::rebuild_for_cross_os(&handle, &settings) {
+                Ok(migration_v2::RebuildOutcome::AlreadyDone) => {}
+                Ok(migration_v2::RebuildOutcome::Migrated { segments_remapped }) => {
+                    eprintln!(
+                        "[migration_v2] cross-OS rewrite: {segments_remapped} segments remapped at {}",
+                        archive_root.display()
+                    );
+                }
+                Err(e) => eprintln!("[migration_v2] cross-OS rewrite failed: {e}"),
+            }
+
             app.manage(settings);
             app.manage(handle);
             if let Some(window) = app.get_webview_window("main") {
