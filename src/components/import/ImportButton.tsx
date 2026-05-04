@@ -1,8 +1,7 @@
 import { useStore } from "../../state/store";
 import { discoverSources, startFolderImport } from "../../ipc/importer";
 import { pickFolder } from "../../ipc/dialog";
-
-const LAST_FOLDER_KEY = "tripviewer:lastFolder";
+import { openArchive } from "../../ipc/archive";
 
 export function ImportButton() {
   const importStatus = useStore((s) => s.importStatus);
@@ -10,25 +9,36 @@ export function ImportButton() {
   const setImportSources = useStore((s) => s.setImportSources);
   const setImportError = useStore((s) => s.setImportError);
   const setImportRootPath = useStore((s) => s.setImportRootPath);
+  const currentArchive = useStore((s) => s.currentArchive);
+  const setCurrentArchive = useStore((s) => s.setCurrentArchive);
 
   const busy = importStatus !== "idle" && importStatus !== "complete" && importStatus !== "error";
 
-  async function handleSdImport() {
-    // Establish destination before touching any SD. If localStorage
-    // already has one (returning user), this is a no-op. Asking up
-    // front means the confirm dialog appears with both endpoints
-    // (source SD + destination library) already known, instead of
-    // surprising the user with a folder picker on Start Import.
-    // ImportConfirmDialog.handleStart still has a defensive
-    // pickFolder fallback for the rare stale-localStorage edge case.
-    let rootPath = localStorage.getItem(LAST_FOLDER_KEY);
-    if (!rootPath) {
-      const chosen = await pickFolder("Select your dashcam library folder");
-      if (!chosen) return; // user cancelled — stay idle, no error
-      rootPath = chosen;
-      localStorage.setItem(LAST_FOLDER_KEY, rootPath);
-      setImportRootPath(rootPath);
+  /** Resolve the destination archive, opening it via the backend if
+   *  no archive is currently active. Returns null if the user cancels
+   *  the picker. */
+  async function ensureArchiveRoot(prompt: string): Promise<string | null> {
+    if (currentArchive) return currentArchive.root;
+    const chosen = await pickFolder(prompt);
+    if (!chosen) return null;
+    try {
+      const info = await openArchive(chosen);
+      setCurrentArchive(info);
+      return info.root;
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : String(e));
+      return null;
     }
+  }
+
+  async function handleSdImport() {
+    // Establish destination before touching any SD. Asking up front
+    // means the confirm dialog appears with both endpoints (source SD
+    // + destination library) already known, instead of surprising the
+    // user with a folder picker on Start Import.
+    const rootPath = await ensureArchiveRoot("Select your dashcam archive folder");
+    if (!rootPath) return; // user cancelled — stay idle, no error
+    setImportRootPath(rootPath);
 
     setImportStatus("discovering");
     try {
@@ -48,15 +58,8 @@ export function ImportButton() {
     const sourcePath = await pickFolder("Select the folder of files to import");
     if (!sourcePath) return;
 
-    // Reuse the same library-root cache key the SD-card flow uses so
-    // first-time users only pick a destination once across both flows.
-    let rootPath = localStorage.getItem(LAST_FOLDER_KEY);
-    if (!rootPath) {
-      const chosen = await pickFolder("Select your dashcam library folder");
-      if (!chosen) return;
-      rootPath = chosen;
-      localStorage.setItem(LAST_FOLDER_KEY, rootPath);
-    }
+    const rootPath = await ensureArchiveRoot("Select your dashcam archive folder");
+    if (!rootPath) return;
 
     setImportRootPath(rootPath);
     // Folder import has no confirm step — the user already picked the

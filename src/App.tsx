@@ -54,6 +54,13 @@ function App() {
     invoke<number>("get_video_port")
       .then((port) => setVideoPort(port))
       .catch((e) => console.error("get_video_port failed", e));
+    // Hydrate the active archive from the backend so the rest of the
+    // app knows whether to render the empty state vs the trip list.
+    // Backend opened the last archive in setup() if reachable.
+    void import("./ipc/archive")
+      .then(({ currentArchive }) => currentArchive())
+      .then((info) => useStore.getState().setCurrentArchive(info))
+      .catch((e) => console.error("currentArchive hydration failed", e));
     void useStore.getState().loadUserApplicableTags();
     void useStore.getState().refreshPlaces();
     // Load ffmpeg path + capabilities eagerly so that by the time the

@@ -3,7 +3,8 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::app_settings::AppSettingsHandle;
-use crate::db::{self, DbHandle};
+use crate::archive::{require_db, ArchiveSlot};
+use crate::db;
 use crate::error::AppError;
 use crate::model::Trip;
 use crate::tags::commands::DeleteFailure;
@@ -18,8 +19,9 @@ use crate::trips::merge::{
 /// allowed to free disk without making the trip vanish from the UI.
 #[tauri::command]
 pub async fn list_archive_only_trips(
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<Vec<Trip>, AppError> {
+    let db = require_db(&slot)?;
     let conn = db
         .lock()
         .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
@@ -55,8 +57,9 @@ pub struct DeleteTripReport {
 pub async fn delete_trip(
     trip_id: String,
     in_memory_paths: HashMap<String, Vec<String>>,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<DeleteTripReport, AppError> {
+    let db = require_db(&slot)?;
     let mut report = DeleteTripReport::default();
 
     // Phase 1: gather every file path we need to trash. Done under a
@@ -322,8 +325,9 @@ mod tests {
 pub async fn assess_trip_merge(
     primary_trip_id: String,
     absorbed_trip_ids: Vec<String>,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<TimelapseMergeAssessment, AppError> {
+    let db = require_db(&slot)?;
     let primary = parse_trip_uuid(&primary_trip_id)?;
     let absorbed = parse_trip_uuids(&absorbed_trip_ids)?;
     merge::assess_timelapse_merge(&db, primary, &absorbed)
@@ -339,9 +343,10 @@ pub async fn merge_trips(
     primary_trip_id: String,
     absorbed_trip_ids: Vec<String>,
     strategy: TimelapseMergeStrategy,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
     settings: State<'_, AppSettingsHandle>,
 ) -> Result<MergeReport, AppError> {
+    let db = require_db(&slot)?;
     let primary = parse_trip_uuid(&primary_trip_id)?;
     let absorbed = parse_trip_uuids(&absorbed_trip_ids)?;
     let ffmpeg_path = settings.read().ffmpeg_path;

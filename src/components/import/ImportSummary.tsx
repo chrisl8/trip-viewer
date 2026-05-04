@@ -2,12 +2,10 @@ import { useStore } from "../../state/store";
 import { scanFolder } from "../../ipc/scanner";
 import { formatBytes } from "../../utils/format";
 
-const LAST_FOLDER_KEY = "tripviewer:lastFolder";
-
 export function ImportSummary() {
   const importStatus = useStore((s) => s.importStatus);
   const result = useStore((s) => s.importResult);
-  const importRootPath = useStore((s) => s.importRootPath);
+  const currentArchive = useStore((s) => s.currentArchive);
   const resetImport = useStore((s) => s.resetImport);
   const setScanResult = useStore((s) => s.setScanResult);
   const setStatus = useStore((s) => s.setStatus);
@@ -15,30 +13,19 @@ export function ImportSummary() {
   if (importStatus !== "complete" || !result) return null;
 
   function handleClose() {
-    let videosPath = localStorage.getItem(LAST_FOLDER_KEY);
-
-    // First-time import: no folder was previously open.
-    // Point the app at the Videos subfolder the import created.
-    if (!videosPath && importRootPath) {
-      // The import root might already end in "Videos" (if user picked that),
-      // or the Rust backend goes up one level if it does. Either way, the
-      // actual Videos folder is <importRoot>/Videos or importRoot itself.
-      const root = importRootPath.replace(/[\\/]$/, "");
-      const endsWithVideos = /[\\/]videos$/i.test(root);
-      // Preserve whatever separator style the OS gave us (backslash on
-      // Windows, forward slash on Linux/macOS).
-      const sep = root.includes("\\") ? "\\" : "/";
-      videosPath = endsWithVideos ? root : root + sep + "Videos";
-      localStorage.setItem(LAST_FOLDER_KEY, videosPath);
-    }
+    // The active archive's root is the canonical scan path. Import
+    // routes everything into <archive>/Videos and <archive>/Photos,
+    // and scan_folder walks recursively, so we hand it the archive
+    // root directly.
+    const root = currentArchive?.root ?? null;
 
     // Dismiss the modal first so the click feels responsive. The rescan runs
     // in the background; the sidebar's "Scanning…" indicator (status="loading")
     // shows progress, and the trip list updates when the scan resolves.
     resetImport();
-    if (videosPath) {
+    if (root) {
       setStatus("loading");
-      scanFolder(videosPath)
+      scanFolder(root)
         .then(setScanResult)
         .catch(() => {
           // Ignore scan errors on close

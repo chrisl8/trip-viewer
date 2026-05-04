@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use tauri::State;
 
-use crate::db::{self, DbHandle};
+use crate::archive::{require_db, ArchiveSlot};
+use crate::db;
 use crate::error::AppError;
 use crate::tags::vocabulary::{UserApplicableTag, USER_APPLICABLE_TAGS};
 use crate::tags::Tag;
@@ -19,8 +20,9 @@ pub async fn list_user_applicable_tags() -> Vec<UserApplicableTag> {
 #[tauri::command]
 pub async fn get_tags_for_trip(
     trip_id: String,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<Vec<Tag>, AppError> {
+    let db = require_db(&slot)?;
     let conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     db::tags::tags_for_trip(&conn, &trip_id)
 }
@@ -30,8 +32,9 @@ pub async fn get_tags_for_trip(
 /// render per-trip badges without client-side grouping.
 #[tauri::command]
 pub async fn get_tag_counts_by_trip(
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<HashMap<String, HashMap<String, i64>>, AppError> {
+    let db = require_db(&slot)?;
     let conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     db::tags::all_trip_tag_counts(&conn)
 }
@@ -41,8 +44,9 @@ pub async fn get_tag_counts_by_trip(
 /// we expect (tens of thousands of tags, not millions).
 #[tauri::command]
 pub async fn get_all_tags(
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<Vec<Tag>, AppError> {
+    let db = require_db(&slot)?;
     let conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     db::tags::all_tags(&conn)
 }
@@ -55,8 +59,9 @@ pub async fn add_user_tag(
     segment_ids: Vec<String>,
     name: String,
     note: Option<String>,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<usize, AppError> {
+    let db = require_db(&slot)?;
     let mut conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     db::tags::insert_user_tag_for_segments(&mut conn, &segment_ids, &name, note.as_deref())
 }
@@ -67,8 +72,9 @@ pub async fn add_user_tag(
 pub async fn remove_user_tag(
     segment_ids: Vec<String>,
     name: String,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<usize, AppError> {
+    let db = require_db(&slot)?;
     let mut conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     db::tags::remove_user_tag_for_segments(&mut conn, &segment_ids, &name)
 }
@@ -101,8 +107,9 @@ pub struct DeleteFailure {
 pub async fn delete_segments_to_trash(
     segment_ids: Vec<String>,
     in_memory_paths: HashMap<String, Vec<String>>,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<DeleteReport, AppError> {
+    let db = require_db(&slot)?;
     let mut report = DeleteReport::default();
 
     // Resolve each segment's set of file paths. We accept an

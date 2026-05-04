@@ -135,6 +135,15 @@ export interface ImportSlice {
   resetImport: () => void;
 }
 
+/** Active archive snapshot. `null` means no archive is currently open
+ *  and the frontend should show the empty state. The store mirrors what
+ *  the backend's `current_archive` command would return — refreshed
+ *  after `openArchive` / `closeArchive` and on app mount. */
+export interface CurrentArchive {
+  root: string;
+  label: string;
+}
+
 export interface AppState
   extends LibrarySlice,
     PlaybackSlice,
@@ -149,11 +158,13 @@ export interface AppState
    *  every new scan — loading a new folder should never strand the user
    *  on a stale issues list. */
   mainView: MainView;
+  currentArchive: CurrentArchive | null;
 
   setStatus: (s: AppStatus) => void;
   setError: (e: string | null) => void;
   setVideoPort: (p: number | null) => void;
   setMainView: (v: MainView) => void;
+  setCurrentArchive: (a: CurrentArchive | null) => void;
   setScanResult: (args: {
     trips: Trip[];
     errors: ScanError[];
@@ -319,6 +330,7 @@ export const useStore = create<AppState>((set) => ({
   error: null,
   videoPort: null,
   mainView: "player",
+  currentArchive: null,
 
   setImportStatus: (importStatus) => set({ importStatus }),
   setImportSources: (importSources) => set({ importSources }),
@@ -350,6 +362,7 @@ export const useStore = create<AppState>((set) => ({
   setError: (error) => set({ error, status: error ? "error" : "idle" }),
   setVideoPort: (videoPort) => set({ videoPort }),
   setMainView: (mainView) => set({ mainView }),
+  setCurrentArchive: (currentArchive) => set({ currentArchive }),
   setScanResult: ({ trips, errors }) => {
     set({
       trips,

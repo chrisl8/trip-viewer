@@ -11,7 +11,8 @@ use rusqlite::params;
 use serde::Serialize;
 use tauri::State;
 
-use crate::db::{self, DbHandle};
+use crate::archive::{require_db, ArchiveSlot};
+use crate::db;
 use crate::error::AppError;
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -35,8 +36,9 @@ pub struct LibraryStorageSummary {
 
 #[tauri::command]
 pub async fn get_library_storage_summary(
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<LibraryStorageSummary, AppError> {
+    let db = require_db(&slot)?;
     let conn = db
         .lock()
         .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;

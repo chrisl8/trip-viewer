@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useStore } from "../../state/store";
 import { pickFolder } from "../../ipc/dialog";
+import { openArchive } from "../../ipc/archive";
 import {
   startImport,
   onImportPhase,
@@ -11,8 +12,6 @@ import {
 } from "../../ipc/importer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatBytes } from "../../utils/format";
-
-const LAST_FOLDER_KEY = "tripviewer:lastFolder";
 
 export function ImportConfirmDialog() {
   const importStatus = useStore((s) => s.importStatus);
@@ -63,13 +62,22 @@ export function ImportConfirmDialog() {
   if (importStatus !== "confirming") return null;
 
   async function handleStart() {
-    let rootPath = localStorage.getItem(LAST_FOLDER_KEY);
+    let rootPath = useStore.getState().currentArchive?.root ?? null;
 
-    // First-time user: no folder open yet — ask where to store files
+    // First-time user: no archive open yet — ask where to store files
+    // and open it through the backend so subsequent operations route
+    // to the right per-archive DB.
     if (!rootPath) {
       const chosen = await pickFolder();
       if (!chosen) return; // User cancelled the picker
-      rootPath = chosen;
+      try {
+        const info = await openArchive(chosen);
+        useStore.getState().setCurrentArchive(info);
+        rootPath = info.root;
+      } catch (e) {
+        setImportError(e instanceof Error ? e.message : String(e));
+        return;
+      }
     }
 
     useStore.getState().setImportRootPath(rootPath);

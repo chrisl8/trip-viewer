@@ -1,4 +1,5 @@
 mod app_settings;
+mod archive;
 mod db;
 mod error;
 pub mod gps;
@@ -168,62 +169,50 @@ pub fn run() {
                 Err(e) => eprintln!("[migration_v2] {e}"),
             }
 
-            // Determine the archive root for this session. With the
-            // single-archive-at-a-time model, this comes from
-            // last_archive in settings.json. If unset (fresh install
-            // or skipped migration), fall back to app_data_dir so the
-            // app still starts cleanly — the multi-archive switcher
-            // in a follow-up change replaces this fallback with a
-            // proper "no archive open" UI state.
-            let archive_root = settings
-                .read()
-                .last_archive
-                .as_ref()
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| app_data_dir.clone());
-
-            let handle = match db::open(&archive_root) {
-                Ok(h) => h,
-                Err(e) => {
+            // Multi-archive runtime state. Starts empty; if `last_archive`
+            // points at something reachable we open it now so a relaunch
+            // resumes where the user left off. Otherwise the frontend
+            // shows the no-archive empty state and the user picks via
+            // the archive switcher.
+            let slot = archive::new_slot();
+            if let Some(last) = settings.read().last_archive.clone() {
+                let archive_root = std::path::PathBuf::from(&last);
+                if archive_root.is_dir() {
+                    match db::open(&archive_root) {
+                        Ok(h) => {
+                            if let Err(e) = timelapse::cleanup::cleanup_stale_jobs(&h) {
+                                eprintln!("[timelapse] cleanup failed at startup: {e}");
+                            }
+                            if let Err(e) = migration_v2::rebuild_for_cross_os(&h, &settings) {
+                                eprintln!(
+                                    "[migration_v2] cross-OS rewrite failed: {e}"
+                                );
+                            }
+                            if let Ok(mut g) = slot.write() {
+                                *g = Some(h);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[db] could not auto-reopen last archive at {}: {e}",
+                                archive_root.display()
+                            );
+                            // Fall through to no-archive state. Don't
+                            // clear last_archive in settings.json —
+                            // the drive may just be unplugged, and
+                            // we want to retry next launch.
+                        }
+                    }
+                } else {
                     eprintln!(
-                        "[db] failed to open archive at {}: {e}",
-                        archive_root.display()
-                    );
-                    app.dialog()
-                        .message(format!(
-                            "Trip Viewer can't open the archive database:\n\n{e}\n\n\
-                             Archive folder:\n{}\n\n\
-                             If this archive was written by a newer version of Trip Viewer, \
-                             upgrade. If the drive isn't mounted, plug it in and relaunch.",
-                            archive_root.display()
-                        ))
-                        .kind(MessageDialogKind::Error)
-                        .title("Trip Viewer — Database error")
-                        .blocking_show();
-                    return Err(Box::new(e));
-                }
-            };
-            if let Err(e) = timelapse::cleanup::cleanup_stale_jobs(&handle) {
-                eprintln!("[timelapse] cleanup failed at startup: {e}");
-            }
-
-            // Per-archive cross-OS rewrite: rebuild segment / trip
-            // UUIDs from archive-relative paths. Idempotent (gated by
-            // settings.cross_os_migrated_archives) so it runs at most
-            // once per archive root.
-            match migration_v2::rebuild_for_cross_os(&handle, &settings) {
-                Ok(migration_v2::RebuildOutcome::AlreadyDone) => {}
-                Ok(migration_v2::RebuildOutcome::Migrated { segments_remapped }) => {
-                    eprintln!(
-                        "[migration_v2] cross-OS rewrite: {segments_remapped} segments remapped at {}",
+                        "[archive] last_archive is offline at startup: {}",
                         archive_root.display()
                     );
                 }
-                Err(e) => eprintln!("[migration_v2] cross-OS rewrite failed: {e}"),
             }
 
             app.manage(settings);
-            app.manage(handle);
+            app.manage(slot);
             if let Some(window) = app.get_webview_window("main") {
                 // 1. Restore saved position/size/maximized first so the fit
                 //    clamp runs against the real geometry the user expects.
@@ -243,6 +232,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            archive::open_archive,
+            archive::close_archive,
+            archive::current_archive,
+            archive::list_recent_archives,
+            archive::forget_archive,
             scan::scan_folder,
             metadata::probe_file,
             gps::extract_gps,

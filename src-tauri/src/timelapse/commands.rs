@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use crate::app_settings::AppSettingsHandle;
-use crate::db::{self, DbHandle};
+use crate::archive::{require_db, ArchiveSlot};
+use crate::db;
 use crate::error::AppError;
 use crate::timelapse::concurrency::{detect_recommended_concurrency, MAX_CONCURRENCY};
 use crate::timelapse::ffmpeg::{self, Encoder};
@@ -134,10 +135,11 @@ pub struct StartTimelapseArgs {
 pub async fn start_timelapse(
     args: StartTimelapseArgs,
     app: AppHandle,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
     settings: State<'_, AppSettingsHandle>,
     worker_state: State<'_, SharedWorkerState>,
 ) -> Result<(), AppError> {
+    let db = require_db(&slot)?;
     let s = settings.read();
     let ffmpeg_path = s.ffmpeg_path.ok_or_else(|| {
         AppError::Internal("ffmpeg not configured — set path in settings first".into())
@@ -183,7 +185,7 @@ pub async fn start_timelapse(
     };
 
     let app_clone = app.clone();
-    let db_clone: DbHandle = (*db).clone();
+    let db_clone = db.clone();
     let state_clone: SharedWorkerState = (*worker_state).clone();
     tauri::async_runtime::spawn_blocking(move || {
         run_timelapse_loop(
@@ -219,8 +221,9 @@ pub async fn cancel_timelapse(
 
 #[tauri::command]
 pub async fn list_timelapse_jobs(
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<Vec<db::timelapse_jobs::TimelapseJobRow>, AppError> {
+    let db = require_db(&slot)?;
     let conn = db
         .lock()
         .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;

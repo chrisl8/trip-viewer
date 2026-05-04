@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::db::DbHandle;
+use crate::archive::{require_db, ArchiveSlot};
 use crate::error::AppError;
 use crate::scans::coverage::TripScanCoverage;
 use crate::scans::worker::{
@@ -55,9 +55,10 @@ pub async fn start_scan(
     scope: ScanScope,
     trip_ids: Option<Vec<String>>,
     app: AppHandle,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
     worker_state: State<'_, SharedWorkerState>,
 ) -> Result<(), AppError> {
+    let db = require_db(&slot)?;
     let cancel = {
         let mut state = worker_state
             .lock()
@@ -72,7 +73,7 @@ pub async fn start_scan(
     };
 
     let app_clone = app.clone();
-    let db_clone: DbHandle = (*db).clone();
+    let db_clone = db.clone();
     let state_clone: SharedWorkerState = (*worker_state).clone();
     tauri::async_runtime::spawn_blocking(move || {
         run_scan_loop(
@@ -95,8 +96,9 @@ pub async fn start_scan(
 /// — two GROUP BY queries plus a HashMap merge.
 #[tauri::command]
 pub async fn list_scan_coverage(
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<Vec<TripScanCoverage>, AppError> {
+    let db = require_db(&slot)?;
     coverage::list_scan_coverage(&db)
 }
 

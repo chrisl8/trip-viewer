@@ -7,12 +7,13 @@
 
 use tauri::State;
 
+use crate::archive::{require_db, ArchiveSlot};
 use crate::db::places::{self, Place};
-use crate::db::DbHandle;
 use crate::error::AppError;
 
 #[tauri::command]
-pub async fn list_places(db: State<'_, DbHandle>) -> Result<Vec<Place>, AppError> {
+pub async fn list_places(slot: State<'_, ArchiveSlot>) -> Result<Vec<Place>, AppError> {
+    let db = require_db(&slot)?;
     let conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     places::list_places(&conn)
 }
@@ -23,7 +24,7 @@ pub async fn add_place(
     lat: f64,
     lon: f64,
     radius_m: f64,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<i64, AppError> {
     if name.trim().is_empty() {
         return Err(AppError::Internal("place name is empty".into()));
@@ -31,6 +32,7 @@ pub async fn add_place(
     if radius_m <= 0.0 {
         return Err(AppError::Internal("radius must be positive".into()));
     }
+    let db = require_db(&slot)?;
     let conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     places::insert_place(&conn, name.trim(), lat, lon, radius_m)
 }
@@ -42,7 +44,7 @@ pub async fn update_place(
     lat: f64,
     lon: f64,
     radius_m: f64,
-    db: State<'_, DbHandle>,
+    slot: State<'_, ArchiveSlot>,
 ) -> Result<(), AppError> {
     if name.trim().is_empty() {
         return Err(AppError::Internal("place name is empty".into()));
@@ -50,12 +52,14 @@ pub async fn update_place(
     if radius_m <= 0.0 {
         return Err(AppError::Internal("radius must be positive".into()));
     }
+    let db = require_db(&slot)?;
     let conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     places::update_place(&conn, id, name.trim(), lat, lon, radius_m)
 }
 
 #[tauri::command]
-pub async fn delete_place(id: i64, db: State<'_, DbHandle>) -> Result<(), AppError> {
+pub async fn delete_place(id: i64, slot: State<'_, ArchiveSlot>) -> Result<(), AppError> {
+    let db = require_db(&slot)?;
     let mut conn = db.lock().map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
     places::delete_place(&mut conn, id)
 }

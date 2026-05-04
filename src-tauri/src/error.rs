@@ -39,6 +39,12 @@ pub enum AppError {
     /// one. Refuse rather than silently risk corruption.
     #[error("archive schema is newer than this app supports (found {found}, this build expects ≤ {expected})")]
     ArchiveSchemaTooNew { found: i32, expected: i32 },
+
+    /// A command that operates on the active archive was invoked while
+    /// no archive is open. The frontend's empty state catches this and
+    /// prompts the user to open an archive.
+    #[error("no archive is currently open")]
+    NoArchiveOpen,
 }
 
 impl From<rusqlite::Error> for AppError {

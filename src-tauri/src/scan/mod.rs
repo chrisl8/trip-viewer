@@ -43,8 +43,9 @@ fn make_scan_error(path: &Path, err: &AppError) -> ScanError {
 #[tauri::command]
 pub async fn scan_folder(
     path: String,
-    db: tauri::State<'_, crate::db::DbHandle>,
+    slot: tauri::State<'_, crate::archive::ArchiveSlot>,
 ) -> Result<ScanResult, AppError> {
+    let db = crate::archive::require_db(&slot)?;
     let archive_root = db.archive_root().to_path_buf();
     let mut result = scan_folder_sync(Path::new(&path), &archive_root)?;
     let scan_started_ms = chrono::Utc::now().timestamp_millis();

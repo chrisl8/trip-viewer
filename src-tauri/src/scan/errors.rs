@@ -48,7 +48,8 @@ pub fn classify(err: &AppError) -> Classification {
         | AppError::NoImportRunning
         | AppError::Db(_)
         | AppError::PathOutsideArchive { .. }
-        | AppError::ArchiveSchemaTooNew { .. } => Classification {
+        | AppError::ArchiveSchemaTooNew { .. }
+        | AppError::NoArchiveOpen => Classification {
             kind: ScanErrorKind::Mp4Other,
             message: "Unexpected error during scan.".to_string(),
             detail: Some(err.to_string()),

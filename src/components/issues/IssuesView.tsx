@@ -110,11 +110,11 @@ export function IssuesView() {
   };
 
   const onRescan = async () => {
-    const lastPath = localStorage.getItem("tripviewer:lastFolder");
-    if (!lastPath) return;
+    const archive = useStore.getState().currentArchive;
+    if (!archive) return;
     try {
       setStatus("loading");
-      const result = await scanFolder(lastPath);
+      const result = await scanFolder(archive.root);
       setScanResult(result);
       // setScanResult flips mainView back to "player" — reopen the issues
       // view so the rescan stays in context.
