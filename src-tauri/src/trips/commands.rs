@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use tauri::State;
 use uuid::Uuid;
 
+use crate::app_settings::AppSettingsHandle;
 use crate::db::{self, DbHandle};
 use crate::error::AppError;
 use crate::model::Trip;
@@ -339,10 +340,12 @@ pub async fn merge_trips(
     absorbed_trip_ids: Vec<String>,
     strategy: TimelapseMergeStrategy,
     db: State<'_, DbHandle>,
+    settings: State<'_, AppSettingsHandle>,
 ) -> Result<MergeReport, AppError> {
     let primary = parse_trip_uuid(&primary_trip_id)?;
     let absorbed = parse_trip_uuids(&absorbed_trip_ids)?;
-    merge::merge_trips(&db, primary, &absorbed, strategy)
+    let ffmpeg_path = settings.read().ffmpeg_path;
+    merge::merge_trips(&db, primary, &absorbed, strategy, ffmpeg_path)
 }
 
 fn parse_trip_uuid(s: &str) -> Result<Uuid, AppError> {

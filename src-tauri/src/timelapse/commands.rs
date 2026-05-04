@@ -7,22 +7,13 @@ use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
+use crate::app_settings::AppSettingsHandle;
 use crate::db::{self, DbHandle};
 use crate::error::AppError;
 use crate::timelapse::concurrency::{detect_recommended_concurrency, MAX_CONCURRENCY};
 use crate::timelapse::ffmpeg::{self, Encoder};
 use crate::timelapse::types::{Channel, FfmpegCapabilities, JobScope, Tier};
 use crate::timelapse::worker::{new_cancel_flag, run_timelapse_loop, SharedWorkerState};
-
-const SETTING_FFMPEG_PATH: &str = "ffmpeg_path";
-const SETTING_FFMPEG_VERSION: &str = "ffmpeg_version";
-const SETTING_NVENC_HEVC: &str = "nvenc_hevc";
-/// Override key for the worker pool size. When absent, the worker
-/// auto-detects via `detect_recommended_concurrency`. Power users can
-/// `UPDATE settings SET value=... WHERE key='timelapse_max_concurrent_jobs'`
-/// to pin a specific value (e.g. 1 for sequential, 4 for max). Bounded
-/// to `1..=MAX_CONCURRENCY` regardless of override.
-const SETTING_TIMELAPSE_CONCURRENCY: &str = "timelapse_max_concurrent_jobs";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,40 +24,35 @@ pub struct TimelapseSettings {
 
 #[tauri::command]
 pub async fn get_timelapse_settings(
-    db: State<'_, DbHandle>,
+    settings: State<'_, AppSettingsHandle>,
 ) -> Result<TimelapseSettings, AppError> {
-    let conn = db
-        .lock()
-        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-    let ffmpeg_path = db::settings::get(&conn, SETTING_FFMPEG_PATH)?;
-    let version = db::settings::get(&conn, SETTING_FFMPEG_VERSION)?;
-    let nvenc = db::settings::get(&conn, SETTING_NVENC_HEVC)?;
-    let capabilities = match (version, nvenc) {
+    let s = settings.read();
+    let capabilities = match (s.ffmpeg_version, s.nvenc_hevc) {
         (Some(v), Some(n)) => Some(FfmpegCapabilities {
             version: v,
-            nvenc_hevc: n == "1" || n == "true",
+            nvenc_hevc: n,
         }),
         _ => None,
     };
     Ok(TimelapseSettings {
-        ffmpeg_path,
+        ffmpeg_path: s.ffmpeg_path,
         capabilities,
     })
 }
 
-/// Erase the cached ffmpeg path and capability flags from the settings
-/// table. Used by the FfmpegConfig modal's Clear button — lets the user
-/// disable timelapse encoding (e.g. switching to a machine without
-/// ffmpeg) and exposes the "not configured" UI path for testing.
+/// Erase the cached ffmpeg path and capability flags. Used by the
+/// FfmpegConfig modal's Clear button — lets the user disable timelapse
+/// encoding (e.g. switching to a machine without ffmpeg) and exposes the
+/// "not configured" UI path for testing.
 #[tauri::command]
-pub async fn clear_timelapse_settings(db: State<'_, DbHandle>) -> Result<(), AppError> {
-    let conn = db
-        .lock()
-        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-    db::settings::delete(&conn, SETTING_FFMPEG_PATH)?;
-    db::settings::delete(&conn, SETTING_FFMPEG_VERSION)?;
-    db::settings::delete(&conn, SETTING_NVENC_HEVC)?;
-    Ok(())
+pub async fn clear_timelapse_settings(
+    settings: State<'_, AppSettingsHandle>,
+) -> Result<(), AppError> {
+    settings.update(|s| {
+        s.ffmpeg_path = None;
+        s.ffmpeg_version = None;
+        s.nvenc_hevc = None;
+    })
 }
 
 /// macOS only: returns true if the file at `path` carries the
@@ -114,26 +100,20 @@ pub async fn clear_ffmpeg_quarantine(path: String) -> Result<(), AppError> {
 }
 
 /// Run `ffmpeg -version` and `-encoders` on the given path, cache the
-/// result to the `settings` table, and return it. The frontend's
+/// result to per-machine settings, and return it. The frontend's
 /// "Test" button calls this.
 #[tauri::command]
 pub async fn test_ffmpeg(
     path: String,
-    db: State<'_, DbHandle>,
+    settings: State<'_, AppSettingsHandle>,
 ) -> Result<FfmpegCapabilities, AppError> {
     let caps = ffmpeg::probe_ffmpeg(&path)?;
-    {
-        let conn = db
-            .lock()
-            .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-        db::settings::set(&conn, SETTING_FFMPEG_PATH, &path)?;
-        db::settings::set(&conn, SETTING_FFMPEG_VERSION, &caps.version)?;
-        db::settings::set(
-            &conn,
-            SETTING_NVENC_HEVC,
-            if caps.nvenc_hevc { "1" } else { "0" },
-        )?;
-    }
+    let caps_for_save = caps.clone();
+    settings.update(move |s| {
+        s.ffmpeg_path = Some(path);
+        s.ffmpeg_version = Some(caps_for_save.version);
+        s.nvenc_hevc = Some(caps_for_save.nvenc_hevc);
+    })?;
     Ok(caps)
 }
 
@@ -155,32 +135,25 @@ pub async fn start_timelapse(
     args: StartTimelapseArgs,
     app: AppHandle,
     db: State<'_, DbHandle>,
+    settings: State<'_, AppSettingsHandle>,
     worker_state: State<'_, SharedWorkerState>,
 ) -> Result<(), AppError> {
-    let (ffmpeg_path, caps, concurrency_override) = {
-        let conn = db
-            .lock()
-            .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-        let path = db::settings::get(&conn, SETTING_FFMPEG_PATH)?.ok_or_else(|| {
-            AppError::Internal("ffmpeg not configured — set path in settings first".into())
-        })?;
-        let version = db::settings::get(&conn, SETTING_FFMPEG_VERSION)?;
-        let nvenc = db::settings::get(&conn, SETTING_NVENC_HEVC)?;
-        let caps = match (version, nvenc) {
-            (Some(v), Some(n)) => FfmpegCapabilities {
-                version: v,
-                nvenc_hevc: n == "1" || n == "true",
-            },
-            _ => {
-                return Err(AppError::Internal(
-                    "ffmpeg capabilities not cached — run the Test button first".into(),
-                ))
-            }
-        };
-        let override_str = db::settings::get(&conn, SETTING_TIMELAPSE_CONCURRENCY)?;
-        let concurrency_override = override_str.and_then(|s| s.parse::<usize>().ok());
-        (path, caps, concurrency_override)
+    let s = settings.read();
+    let ffmpeg_path = s.ffmpeg_path.ok_or_else(|| {
+        AppError::Internal("ffmpeg not configured — set path in settings first".into())
+    })?;
+    let caps = match (s.ffmpeg_version, s.nvenc_hevc) {
+        (Some(v), Some(n)) => FfmpegCapabilities {
+            version: v,
+            nvenc_hevc: n,
+        },
+        _ => {
+            return Err(AppError::Internal(
+                "ffmpeg capabilities not cached — run the Test button first".into(),
+            ))
+        }
     };
+    let concurrency_override = s.timelapse_max_concurrent_jobs.map(|n| n as usize);
 
     // Concurrency: explicit override wins, otherwise auto-detect from
     // hardware. Both paths get clamped to `1..=MAX_CONCURRENCY` so a

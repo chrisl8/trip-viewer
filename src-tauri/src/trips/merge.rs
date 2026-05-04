@@ -32,7 +32,6 @@ use crate::db::DbHandle;
 use crate::error::AppError;
 use crate::timelapse::speed_curve::CurveSegment;
 
-const SETTING_FFMPEG_PATH: &str = "ffmpeg_path";
 const SETTING_LIBRARY_ROOT: &str = "library_root";
 
 // ── Public types (also serialized for IPC) ──────────────────────────
@@ -263,6 +262,7 @@ pub fn merge_trips(
     primary: Uuid,
     absorbed: &[Uuid],
     strategy: TimelapseMergeStrategy,
+    ffmpeg_path: Option<String>,
 ) -> Result<MergeReport, AppError> {
     if absorbed.is_empty() {
         return Err(AppError::Internal(
@@ -301,8 +301,15 @@ pub fn merge_trips(
         load_job_rows(&conn, &all_ids)?
     };
 
-    let removed_during_timelapse =
-        apply_timelapse_strategy(db, &primary_str, &absorbed_strs, &job_rows, strategy, &mut report)?;
+    let removed_during_timelapse = apply_timelapse_strategy(
+        db,
+        &primary_str,
+        &absorbed_strs,
+        &job_rows,
+        strategy,
+        ffmpeg_path.as_deref(),
+        &mut report,
+    )?;
     report.timelapse_jobs_removed = removed_during_timelapse;
 
     // Phase 2: rewrite segments + tags + trips, and record the merge
@@ -336,6 +343,7 @@ fn apply_timelapse_strategy(
     absorbed: &[String],
     job_rows: &[JobRow],
     strategy: TimelapseMergeStrategy,
+    ffmpeg_path: Option<&str>,
     report: &mut MergeReport,
 ) -> Result<usize, AppError> {
     if job_rows.is_empty() {
@@ -365,7 +373,12 @@ fn apply_timelapse_strategy(
             Ok(n)
         }
         TimelapseMergeStrategy::ConcatWherePossible => {
-            apply_concat_where_possible(db, primary, absorbed, job_rows, report)
+            let ffmpeg = ffmpeg_path.ok_or_else(|| {
+                AppError::Internal(
+                    "ffmpeg not configured — set the path in Timelapse settings first".into(),
+                )
+            })?;
+            apply_concat_where_possible(db, primary, absorbed, job_rows, ffmpeg, report)
         }
     }
 }
@@ -375,6 +388,7 @@ fn apply_concat_where_possible(
     primary: &str,
     absorbed: &[String],
     job_rows: &[JobRow],
+    ffmpeg_path: &str,
     report: &mut MergeReport,
 ) -> Result<usize, AppError> {
     // Group done rows by (tier, channel). Non-done rows are dropped
@@ -392,24 +406,19 @@ fn apply_concat_where_possible(
         }
     }
 
-    // ffmpeg path + library root for the concat output filename.
-    let (ffmpeg_path, library_root) = {
+    // ffmpeg path is supplied by the caller (per-machine setting).
+    // library_root remains in the SQLite settings table — PR 2 retires it
+    // along with the path-rewrite migration.
+    let library_root = {
         let conn = db
             .lock()
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-        let path = crate::db::settings::get(&conn, SETTING_FFMPEG_PATH)?
-            .ok_or_else(|| {
-                AppError::Internal(
-                    "ffmpeg not configured — set the path in Timelapse settings first".into(),
-                )
-            })?;
-        let lib = crate::db::settings::get(&conn, SETTING_LIBRARY_ROOT)?
+        crate::db::settings::get(&conn, SETTING_LIBRARY_ROOT)?
             .ok_or_else(|| {
                 AppError::Internal(
                     "library root not yet known — open a folder once before merging".into(),
                 )
-            })?;
-        (path, lib)
+            })?
     };
 
     let timelapses_dir = PathBuf::from(&library_root).join("Timelapses");
@@ -441,7 +450,7 @@ fn apply_concat_where_possible(
                 .join(format!("{primary}_{tier}_{channel}.mp4"));
             let merged_path_str = merged_output.to_string_lossy().to_string();
 
-            match concat_outputs(&ffmpeg_path, &ordered, &merged_output) {
+            match concat_outputs(ffmpeg_path, &ordered, &merged_output) {
                 Ok(()) => {
                     let curve_json = merge_speed_curves(&ordered);
                     let padded_count: i64 =

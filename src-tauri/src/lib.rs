@@ -1,3 +1,4 @@
+mod app_settings;
 mod db;
 mod error;
 pub mod gps;
@@ -155,6 +156,24 @@ pub fn run() {
             if let Err(e) = timelapse::cleanup::cleanup_stale_jobs(&handle) {
                 eprintln!("[timelapse] cleanup failed at startup: {e}");
             }
+
+            // Per-machine settings live in app_data_dir/settings.json
+            // (see src/app_settings.rs). Load them here so the migration
+            // from the legacy SQLite settings table runs while we still
+            // hold the DB handle, before any command handler can read
+            // a stale value.
+            let settings = app_settings::AppSettingsHandle::load(&app_data_dir);
+            match handle.lock() {
+                Ok(conn) => {
+                    if let Err(e) = app_settings::migrate_from_sqlite(&settings, &conn) {
+                        eprintln!("[app_settings] migration from SQLite failed: {e}");
+                    }
+                }
+                Err(_) => {
+                    eprintln!("[app_settings] db mutex poisoned, skipping migration");
+                }
+            }
+            app.manage(settings);
             app.manage(handle);
             if let Some(window) = app.get_webview_window("main") {
                 // 1. Restore saved position/size/maximized first so the fit
