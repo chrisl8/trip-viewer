@@ -96,11 +96,6 @@ export interface PlaybackSlice {
   /** Label of the currently-primary channel, or null if no segment is
    *  loaded yet. Any string label is valid ("Front", "Interior", "Channel A", etc.). */
   primaryChannel: string | null;
-  // Linux-only opt-in for rendering interior/rear channels. Off by default
-  // on Linux because three concurrent HEVC pipelines can exhaust VRAM on
-  // low-memory iGPUs (Vega 11 observed) and hang the GPU. Windows and macOS
-  // ignore this and always render all three channels — see VideoGrid.tsx.
-  multiChannelEnabled: boolean;
 }
 
 export type ImportStatus =
@@ -252,8 +247,6 @@ export interface AppState
   setDrift: (d: { label: string; driftMs: number }[]) => void;
   toggleDriftHud: () => void;
   setPrimaryChannel: (label: string | null) => void;
-  setMultiChannelEnabled: (v: boolean) => void;
-  toggleMultiChannelEnabled: () => void;
   /** Switch the playback source. Pass `mode="original"` with a null
    *  curve to go back to the segment-walking stack. Passing a tier
    *  (`"8x"/"16x"/"60x"`) requires the caller to have already loaded
@@ -285,7 +278,6 @@ export const useStore = create<AppState>((set) => ({
   // Primary channel is null until a segment is loaded; VideoGrid initializes
   // it to channels[0].label (the canonical master) on first render.
   primaryChannel: null,
-  multiChannelEnabled: false,
   sourceMode: "original",
   activeSpeedCurve: null,
 
@@ -775,9 +767,6 @@ export const useStore = create<AppState>((set) => ({
   setDrift: (drift) => set({ drift }),
   toggleDriftHud: () => set((s) => ({ showDriftHud: !s.showDriftHud })),
   setPrimaryChannel: (primaryChannel) => set({ primaryChannel }),
-  setMultiChannelEnabled: (multiChannelEnabled) => set({ multiChannelEnabled }),
-  toggleMultiChannelEnabled: () =>
-    set((s) => ({ multiChannelEnabled: !s.multiChannelEnabled })),
   /** Switch between Original and a pre-rendered tier. The caller is
    *  responsible for converting the current playback position into
    *  the new mode's time axis *before* calling this — that extra

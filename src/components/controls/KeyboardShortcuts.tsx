@@ -22,11 +22,6 @@ export function KeyboardShortcuts({ engine }: { engine: SyncEngine | null }) {
         return;
       }
 
-      if (e.code === "KeyM") {
-        store.toggleMultiChannelEnabled();
-        return;
-      }
-
       if (!engine) return;
 
       // In tiered mode, arrows step in CONCAT-TIME (trip seconds),

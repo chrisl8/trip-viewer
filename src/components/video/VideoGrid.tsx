@@ -73,8 +73,6 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
   const primaryChannel = useStore((s) => s.primaryChannel);
   const setPrimaryChannel = useStore((s) => s.setPrimaryChannel);
   const videoPort = useStore((s) => s.videoPort);
-  const multiChannelEnabled = useStore((s) => s.multiChannelEnabled);
-  const setMultiChannelEnabled = useStore((s) => s.setMultiChannelEnabled);
 
   // On first render of a segment (or when primaryChannel is null from a
   // trip/segment change), initialize primary to the first channel in
@@ -89,11 +87,6 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
     const valid = activeSegment.channels.some((c) => c.label === primaryChannel);
     if (!valid) setPrimaryChannel(master);
   }, [activeSegment, primaryChannel, setPrimaryChannel]);
-
-  // On Linux, additional channels are opt-in: three or more concurrent
-  // HEVC pipelines can saturate memory bandwidth on low-VRAM iGPUs.
-  // Windows/macOS are unaffected and always render everything.
-  const showSecondaries = !IS_LINUX || multiChannelEnabled;
 
   if ((IS_LINUX || IS_MAC) && !videoPort) {
     return (
@@ -119,13 +112,7 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
     channels.find((c) => c.label === primaryChannel)?.label ??
     channels[0]?.label;
 
-  // On Linux in single-channel mode, we render ONLY the primary.
-  // Otherwise we render all channels.
-  const toRender = showSecondaries
-    ? channels
-    : channels.filter((c) => c.label === effectivePrimary);
-
-  const secondaries = toRender.filter((c) => c.label !== effectivePrimary);
+  const secondaries = channels.filter((c) => c.label !== effectivePrimary);
 
   function setRef(label: string) {
     return (node: HTMLVideoElement | null) => {
@@ -157,7 +144,7 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
       className="col-span-2 grid grid-cols-[2fr_1fr] gap-2"
       style={{ gridTemplateRows }}
     >
-      {toRender.map((channel) => {
+      {channels.map((channel) => {
         const isPrimary = channel.label === effectivePrimary;
         const idx = isPrimary
           ? 0
@@ -179,24 +166,6 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
           </div>
         );
       })}
-
-      {!showSecondaries && channels.length > 1 && (
-        <button
-          type="button"
-          onClick={() => setMultiChannelEnabled(true)}
-          style={{ gridColumn: 2, gridRow: `1 / ${rowCount + 1}` }}
-          className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-md border border-dashed border-neutral-700 bg-neutral-900/50 p-4 text-center text-xs text-neutral-400 hover:border-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
-        >
-          <div className="font-semibold uppercase tracking-wide text-neutral-300">
-            Other channels
-          </div>
-          <div>Click to enable multi-channel view</div>
-          <div className="text-[10px] leading-snug text-neutral-500">
-            Disabled by default on Linux. May cause stutter or, on low-VRAM
-            iGPUs, hang the GPU. Press <kbd className="rounded bg-neutral-800 px-1">M</kbd> to toggle.
-          </div>
-        </button>
-      )}
     </div>
   );
 }

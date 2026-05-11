@@ -1,20 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { SyncEngine } from "./SyncEngine";
 
-// Windows/macOS always render all channels of a segment; Linux has an
-// opt-in single-channel mode where non-master refs may be null or not-ready.
-// This IS_LINUX is scoped to that partial-slave tolerance only — it is
-// intentionally separate from SyncEngine.ts's SKIP_DRIFT_CORRECTION
-// (which also covers macOS) because the two concerns are orthogonal:
-// macOS wants full three-channel playback like Windows, but needs the
-// drift-correction skip because WKWebView shares WebKit's pipeline-flush
-// semantics. VideoGrid.tsx's IS_LINUX is Linux-only for a third reason
-// (the asset-protocol workaround / single-channel layout).
-const IS_LINUX =
-  typeof navigator !== "undefined" &&
-  navigator.userAgent.includes("Linux") &&
-  !navigator.userAgent.includes("Android");
-
 /**
  * Wire up a `SyncEngine` instance for the current segment.
  *
@@ -55,25 +41,17 @@ export function useSyncEngine(
       if (!master || master.readyState < 2) return;
       if (engineRef.current) return;
 
-      // On Windows/macOS, wait for every slave to be ready — if we init
-      // with a partial set, the engineRef guard prevents re-initialization
-      // and the missing slaves are permanently excluded from control
-      // (observable as those channels freezing after scrubbing).
-      //
-      // On Linux, multi-channel is opt-in and slaves may legitimately be
-      // null in single-channel mode. SyncEngine's tick loop and play/
-      // pause/seek/setSpeed iterate `this.slaves` — an empty subset is
-      // a safe no-op.
+      // Wait for every slave to be ready — if we init with a partial set,
+      // the engineRef guard prevents re-initialization and the missing
+      // slaves are permanently excluded from control (observable as those
+      // channels freezing after scrubbing).
       const slaves: HTMLVideoElement[] = [];
       const includedLabels: string[] = [];
       for (const label of slaveLabels) {
         const el = getEl(label);
-        if (el && el.readyState >= 2) {
-          slaves.push(el);
-          includedLabels.push(label);
-        } else if (!IS_LINUX) {
-          return; // Windows/macOS: all slaves must be ready.
-        }
+        if (!el || el.readyState < 2) return;
+        slaves.push(el);
+        includedLabels.push(label);
       }
 
       const e = new SyncEngine(master, slaves, includedLabels);
@@ -85,9 +63,8 @@ export function useSyncEngine(
     tryInit();
 
     // Re-try every time any channel fires `loadeddata`. We listen on all
-    // channels (master + slaves) because any of them flipping to
-    // readyState >= 2 might make the engine viable on Linux, and on
-    // Windows the engine won't init until the last slow channel is ready.
+    // channels because the engine won't init until the last slow channel
+    // is ready.
     const allLabels = [masterLabel, ...slaveLabels];
     const listeners: Array<[HTMLVideoElement, () => void]> = [];
     for (const label of allLabels) {
