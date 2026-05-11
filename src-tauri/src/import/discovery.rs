@@ -83,9 +83,97 @@ pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
     Ok(sources)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
+    Ok(scan_linux_mount_roots(&linux_mount_roots()))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
 pub fn find_sd_cards() -> Result<Vec<ImportSource>, AppError> {
     Ok(Vec::new())
+}
+
+/// Build the list of directories under which a removable drive's mount
+/// point is likely to appear on Linux. Order matters for the first-write
+/// dedup pass: `/run/media/<user>` comes first because udisks2 (the
+/// modern default on Fedora, Arch, openSUSE, etc.) mounts there.
+#[cfg(target_os = "linux")]
+fn linux_mount_roots() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut roots: Vec<PathBuf> = Vec::new();
+
+    if let Ok(user) = std::env::var("USER") {
+        if !user.is_empty() {
+            roots.push(PathBuf::from(format!("/run/media/{user}")));
+            roots.push(PathBuf::from(format!("/media/{user}")));
+        }
+    }
+
+    // `/media` catches direct-mounted drives (some setups) and `/mnt`
+    // catches manual mounts. Both are scanned shallowly — `detect_dashcam_kind`
+    // rejects anything that doesn't have the brand folder signature.
+    roots.push(PathBuf::from("/media"));
+    roots.push(PathBuf::from("/mnt"));
+
+    // Also scan sibling user dirs under `/run/media`, in case the process
+    // is running under a different uname (e.g. flatpak portal) than the
+    // user who owns the GUI session.
+    roots.push(PathBuf::from("/run/media"));
+
+    roots
+}
+
+#[cfg(target_os = "linux")]
+fn scan_linux_mount_roots(roots: &[std::path::PathBuf]) -> Vec<ImportSource> {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut sources: Vec<ImportSource> = Vec::new();
+
+    for parent in roots {
+        let entries = match fs::read_dir(parent) {
+            Ok(e) => e,
+            Err(_) => continue, // missing root is normal; skip silently
+        };
+
+        for entry in entries.filter_map(|e| e.ok()) {
+            let child = entry.path();
+            if !entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
+                continue;
+            }
+
+            // Canonicalize to dedup. If the path can't be canonicalized
+            // (e.g. permission denied), fall back to the raw path so the
+            // card isn't silently dropped.
+            let key = fs::canonicalize(&child).unwrap_or_else(|_| child.clone());
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+
+            let kind = match detect_dashcam_kind(&child) {
+                Some(k) => k,
+                None => continue,
+            };
+
+            let label = child
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "sd".to_string());
+            let (file_count, total_bytes) = count_files_and_size(&child);
+
+            sources.push(ImportSource {
+                path: key.to_string_lossy().to_string(),
+                label,
+                read_only: !is_writable(&child),
+                file_count,
+                total_bytes,
+                detected_kind: Some(kind),
+            });
+        }
+    }
+
+    sources
 }
 
 /// Return the dashcam brand whose folder signature matches this directory,
@@ -248,6 +336,57 @@ mod tests {
         assert!(is_skipped_dir("$Recycle.Bin"));
         assert!(is_skipped_dir("$RECYCLE.BIN"));
         assert!(!is_skipped_dir("front_norm"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_scan_linux_mount_roots_finds_wolfbox() {
+        // Simulate /run/media/<user>/ with one Wolf Box card and one
+        // unrelated drive (e.g. an NTFS data disk).
+        let parent = tempfile::tempdir().unwrap();
+        let card = parent.path().join("disk");
+        fs::create_dir(&card).unwrap();
+        for f in &["front_norm", "rear_norm", "extra_norm"] {
+            fs::create_dir(card.join(f)).unwrap();
+        }
+        let data = parent.path().join("Matrix");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(data.join("Documents")).unwrap();
+
+        let sources = scan_linux_mount_roots(&[parent.path().to_path_buf()]);
+        assert_eq!(sources.len(), 1, "only the Wolf Box card should be returned");
+        assert_eq!(sources[0].label, "disk");
+        assert_eq!(sources[0].detected_kind, Some(CameraKind::WolfBox));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_scan_linux_mount_roots_dedups_across_parents() {
+        // Same card visible via two parent dirs (e.g. /run/media/user AND
+        // /media/user, which some hybrid setups create) should only be
+        // returned once.
+        let p1 = tempfile::tempdir().unwrap();
+        let card = p1.path().join("disk");
+        fs::create_dir(&card).unwrap();
+        for f in &["front_norm", "rear_norm", "extra_norm"] {
+            fs::create_dir(card.join(f)).unwrap();
+        }
+        // p2 is a symlink to p1, simulating the same physical mount
+        // appearing under two parents.
+        let p2_dir = tempfile::tempdir().unwrap();
+        let p2_link = p2_dir.path().join("link");
+        std::os::unix::fs::symlink(p1.path(), &p2_link).unwrap();
+
+        let sources = scan_linux_mount_roots(&[p1.path().to_path_buf(), p2_link]);
+        assert_eq!(sources.len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_scan_linux_mount_roots_missing_parent_is_ok() {
+        let sources =
+            scan_linux_mount_roots(&[std::path::PathBuf::from("/definitely/does/not/exist")]);
+        assert!(sources.is_empty());
     }
 
     #[test]
