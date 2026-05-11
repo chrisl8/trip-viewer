@@ -146,10 +146,21 @@ export function activeSegmentAtConcatTime(
 /**
  * Trip-total duration in trip-time seconds, mode-agnostic.
  * Matches the existing inline reduce in Timeline.tsx:46.
+ *
+ * Archive-only trips have `segments: []` (originals deleted; only the
+ * timelapse remains), so the segment-sum is 0. Callers that have an
+ * active speed curve should pass it as the fallback — its concat total
+ * is the authoritative trip duration in that case.
  */
-export function tripTotalDuration(trip: Trip | undefined): number {
+export function tripTotalDuration(
+  trip: Trip | undefined,
+  curve?: CurveSegment[] | null,
+): number {
   if (!trip) return 0;
-  return trip.segments.reduce((sum, s) => sum + s.durationS, 0);
+  const fromSegments = trip.segments.reduce((sum, s) => sum + s.durationS, 0);
+  if (fromSegments > 0) return fromSegments;
+  if (curve && curve.length > 0) return totalConcatDuration(curve);
+  return 0;
 }
 
 /**

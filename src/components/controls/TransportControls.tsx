@@ -85,7 +85,7 @@ export function TransportControls({ engine, onSourceChange }: Props) {
     sourceMode,
     activeSpeedCurve,
   );
-  const totalDuration = tripTotalDuration(trip);
+  const totalDuration = tripTotalDuration(trip, activeSpeedCurve);
 
   const sourceOptions: SourceOption[] = useMemo(
     () => {

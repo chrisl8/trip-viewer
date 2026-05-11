@@ -45,7 +45,10 @@ export function Timeline({ onSeekTripTime }: Props) {
     [trips, loadedTripId],
   );
 
-  const totalDuration = useMemo(() => tripTotalDuration(trip), [trip]);
+  const totalDuration = useMemo(
+    () => tripTotalDuration(trip, activeSpeedCurve),
+    [trip, activeSpeedCurve],
+  );
 
   const tripTime = useMemo(
     () =>
@@ -133,11 +136,29 @@ export function Timeline({ onSeekTripTime }: Props) {
   if (!trip || totalDuration <= 0) return null;
 
   const playheadX = (tripTime / totalDuration) * 100;
+  // Archive-only trips have empty segments — render a single full-width
+  // tombstone-hatched bar so the playhead has visual context.
+  const archiveOnly = trip.segments.length === 0;
 
   let segCumulative = 0;
   const segRects: React.ReactNode[] = [];
   const selectionMarks: React.ReactNode[] = [];
   const tagBands: React.ReactNode[] = [];
+  if (archiveOnly) {
+    segRects.push(
+      <rect
+        key="__archive__"
+        x={0}
+        y={SPEED_AREA_H + 2}
+        width="100%"
+        height={SEG_BAR_H}
+        rx={2}
+        fill="url(#tombstone-hatch)"
+      >
+        <title>Originals deleted — covered by timelapse</title>
+      </rect>,
+    );
+  }
   for (const seg of trip.segments as Segment[]) {
     const x = (segCumulative / totalDuration) * 100;
     const w = (seg.durationS / totalDuration) * 100;
