@@ -35,7 +35,7 @@ export class SyncEngine {
   private slaveLabels: string[];
   private disposed = false;
   private pauseIntentional = false;
-  private cleanup: (() => void) | null = null;
+  private cleanups: Array<() => void> = [];
 
   constructor(
     master: HTMLVideoElement,
@@ -47,6 +47,7 @@ export class SyncEngine {
     // Pad/truncate labels to match slaves length so lookups are safe.
     this.slaveLabels = slaves.map((_, i) => slaveLabels[i] ?? `Slave ${i + 1}`);
     this.attachPauseGuard();
+    this.attachTimeUpdate();
   }
 
   start(): void {
@@ -101,7 +102,8 @@ export class SyncEngine {
 
   dispose(): void {
     this.disposed = true;
-    this.cleanup?.();
+    for (const fn of this.cleanups) fn();
+    this.cleanups = [];
   }
 
   private attachPauseGuard(): void {
@@ -118,7 +120,29 @@ export class SyncEngine {
       }
     };
     m.addEventListener("pause", onPause);
-    this.cleanup = () => m.removeEventListener("pause", onPause);
+    this.cleanups.push(() => m.removeEventListener("pause", onPause));
+  }
+
+  // Authoritative writer of store.currentTime. The rVFC tick in start()
+  // ALSO writes the store, but on WebKitGTK (Linux) the rVFC callback
+  // does not fire under the GStreamer playback pipeline — observed as a
+  // permanently-zero timeline playhead and time counter during playback.
+  // `timeupdate` is part of the HTML5 video spec and fires at ~4Hz on
+  // every UA, which is plenty for the timeline indicator. On Chromium
+  // (Windows) both fire; same-value writes don't churn React because
+  // Zustand short-circuits identical state.
+  private attachTimeUpdate(): void {
+    const m = this.master;
+    const onTimeUpdate = () => {
+      if (this.disposed) return;
+      useStore.getState().setCurrentTime(m.currentTime);
+    };
+    m.addEventListener("timeupdate", onTimeUpdate);
+    m.addEventListener("seeked", onTimeUpdate);
+    this.cleanups.push(() => {
+      m.removeEventListener("timeupdate", onTimeUpdate);
+      m.removeEventListener("seeked", onTimeUpdate);
+    });
   }
 
   async play(): Promise<void> {
