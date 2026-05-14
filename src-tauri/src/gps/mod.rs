@@ -4,12 +4,21 @@
 pub mod miltona;
 pub mod shenshu;
 
+use crate::archive::{require_db, ArchiveSlot};
 use crate::error::AppError;
 use crate::model::{GpsBatchItem, GpsPoint};
 use crate::scan::naming::CameraKind;
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::path::Path;
+use tauri::State;
+
+/// Bump when shenshu/miltona decoders change semantics so previously
+/// archived GPS becomes stale. The encoder's `has_current` probe and the
+/// startup backfill both compare against this; rows below the current
+/// version are re-extracted on the next encode (or backfill pass) when
+/// the original MP4 is still on disk.
+pub const GPS_PARSER_VERSION: i32 = 1;
 
 /// A single path plus the camera brand the scanner identified for it. The
 /// frontend builds one of these per segment (by pairing each master channel's
@@ -42,6 +51,22 @@ pub async fn extract_gps_batch(
         })
         .collect();
     Ok(results)
+}
+
+/// Load archived trip-stitched GPS from the DB. Returns an empty vec
+/// when no row exists for the trip — the frontend treats that as the
+/// signal to fall back to the per-segment `extract_gps_batch` path
+/// (which only succeeds when originals are still on disk).
+#[tauri::command]
+pub async fn load_trip_gps(
+    trip_id: String,
+    slot: State<'_, ArchiveSlot>,
+) -> Result<Vec<GpsPoint>, AppError> {
+    let db = require_db(&slot)?;
+    let conn = db
+        .lock()
+        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+    Ok(crate::db::trip_gps::load(&conn, &trip_id)?.unwrap_or_default())
 }
 
 /// Write a diagnostic dump of a Miltona file's `gps0` atom. Used by the

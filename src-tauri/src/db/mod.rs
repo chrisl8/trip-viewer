@@ -12,6 +12,7 @@ pub mod segments;
 pub mod settings;
 pub mod tags;
 pub mod timelapse_jobs;
+pub mod trip_gps;
 
 /// Bundles a per-archive SQLite connection with the archive root path it
 /// applies to. Path columns in the DB are stored *relative* to this
@@ -108,6 +109,9 @@ pub fn open_in_memory() -> Result<DbHandle, AppError> {
 #[allow(dead_code)]
 pub fn open_in_memory_with_root(archive_root: &Path) -> Result<DbHandle, AppError> {
     let mut conn = Connection::open_in_memory()?;
+    // Mirror open_at_path so FK cascades (e.g. trip_gps → trips) behave
+    // identically in tests and production.
+    conn.pragma_update(None, "foreign_keys", "ON")?;
     migrations::apply(&mut conn)?;
     Ok(Arc::new(DbHandleInner {
         conn: Mutex::new(conn),

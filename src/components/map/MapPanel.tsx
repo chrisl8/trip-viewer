@@ -117,6 +117,7 @@ function GpsMissingRibbon({
 
 export function MapPanel({ activeSegment }: Props) {
   const gpsByFile = useStore((s) => s.gpsByFile);
+  const tripGpsByTrip = useStore((s) => s.tripGpsByTrip);
   const loadedTripId = useStore((s) => s.loadedTripId);
   const trips = useStore((s) => s.trips);
   const currentTime = useStore((s) => s.currentTime);
@@ -139,6 +140,12 @@ export function MapPanel({ activeSegment }: Props) {
   const tripGpsPoints: GpsPoint[] = useMemo(() => {
     const trip = trips.find((t) => t.id === loadedTripId);
     if (!trip) return [];
+    // Archived: trip-stitched GPS from migration 0012's trip_gps table.
+    // Already cumulative; works for archive-only trips and is cheaper
+    // than per-file extraction even when originals exist.
+    const archived = loadedTripId ? tripGpsByTrip[loadedTripId] : undefined;
+    if (archived && archived.length > 0) return archived;
+    // Fallback: stitch on the fly from per-file GPS (untimelapsed trips).
     const all: GpsPoint[] = [];
     let cumulativeOffset = 0;
     for (const seg of trip.segments) {
@@ -154,7 +161,7 @@ export function MapPanel({ activeSegment }: Props) {
       cumulativeOffset += seg.durationS;
     }
     return all;
-  }, [trips, loadedTripId, gpsByFile]);
+  }, [trips, loadedTripId, gpsByFile, tripGpsByTrip]);
 
   const segmentGpsPoints: GpsPoint[] = useMemo(() => {
     if (!activeSegment) return [];

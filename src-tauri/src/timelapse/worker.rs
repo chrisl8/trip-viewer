@@ -765,6 +765,33 @@ fn build_trip_context(
         segments.iter().map(|s| s.master_path.clone()).collect();
     let front_durations: Vec<f64> = segments.iter().map(|s| s.duration_s).collect();
     let stitched = stitch_trip_gps(&segments);
+
+    // Persist trip-stitched GPS so map + speed graph survive a future
+    // "Delete originals". Idempotent — has_current() skips re-writes
+    // when an existing row is already at/above the current parser
+    // version. Persistence failures don't fail the encode; we just
+    // leave the row stale and pick it up on the next pass.
+    if !segments.is_empty() {
+        if let Ok(conn) = db.lock() {
+            let needs_write = !crate::db::trip_gps::has_current(
+                &conn,
+                trip_id,
+                crate::gps::GPS_PARSER_VERSION,
+            )
+            .unwrap_or(false);
+            if needs_write {
+                if let Err(e) = crate::db::trip_gps::upsert(
+                    &conn,
+                    trip_id,
+                    &stitched,
+                    crate::gps::GPS_PARSER_VERSION,
+                ) {
+                    eprintln!("[timelapse] trip_gps upsert failed for {trip_id}: {e}");
+                }
+            }
+        }
+    }
+
     let windows = events::detect_events(&stitched);
     Ok(TripEncodeContext {
         front_sources,
@@ -777,10 +804,10 @@ fn build_trip_context(
 /// One segment's worth of info needed to build the concat list and
 /// stitch GPS across the trip.
 #[derive(Debug, Clone)]
-struct SegmentInfo {
-    master_path: String,
-    duration_s: f64,
-    camera_kind: CameraKind,
+pub(crate) struct SegmentInfo {
+    pub(crate) master_path: String,
+    pub(crate) duration_s: f64,
+    pub(crate) camera_kind: CameraKind,
 }
 
 fn camera_kind_from_str(s: &str) -> CameraKind {
@@ -801,7 +828,7 @@ fn camera_kind_from_str(s: &str) -> CameraKind {
 /// so each row is rejoined to `db.archive_root()` here.
 /// `from_archive_relative` returns the stored value unchanged when it's
 /// already absolute, so pre-migration rows still resolve correctly.
-fn trip_segment_info(db: &DbHandle, trip_id: &str) -> Result<Vec<SegmentInfo>, AppError> {
+pub(crate) fn trip_segment_info(db: &DbHandle, trip_id: &str) -> Result<Vec<SegmentInfo>, AppError> {
     let archive_root = db.archive_root().to_path_buf();
     let conn = db
         .lock()
@@ -839,7 +866,7 @@ fn trip_segment_info(db: &DbHandle, trip_id: &str) -> Result<Vec<SegmentInfo>, A
 /// segments). Segments with no GPS contribute no points but still
 /// advance the time cursor. Failed extractions are treated as empty
 /// — a missing GPS trace shouldn't fail the whole encode.
-fn stitch_trip_gps(segments: &[SegmentInfo]) -> Vec<GpsPoint> {
+pub(crate) fn stitch_trip_gps(segments: &[SegmentInfo]) -> Vec<GpsPoint> {
     let mut out = Vec::new();
     let mut cursor = 0.0;
     for seg in segments {

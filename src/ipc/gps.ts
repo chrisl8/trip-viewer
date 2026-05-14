@@ -27,6 +27,17 @@ export function extractGpsBatch(
 }
 
 /**
+ * Fetch trip-stitched GPS archived in the DB (migration 0012). Returns
+ * an empty array when no row exists — caller falls back to
+ * `extractGpsBatch` over the segment files. Populated as a side effect
+ * of timelapse encoding so the map and speed graph keep working after
+ * "Delete originals".
+ */
+export function loadTripGps(tripId: string): Promise<GpsPoint[]> {
+  return invoke<GpsPoint[]>("load_trip_gps", { tripId });
+}
+
+/**
  * Write a diagnostic dump of a Miltona `.MOV` file's `gps0` atom. Used by
  * the "Export GPS debug" UI button to collect ground-truth samples while
  * the lat/lon encoding is still being finalized. Returns the path of the

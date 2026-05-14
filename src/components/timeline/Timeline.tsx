@@ -35,6 +35,7 @@ export function Timeline({ onSeekTripTime }: Props) {
   const sourceMode = useStore((s) => s.sourceMode);
   const activeSpeedCurve = useStore((s) => s.activeSpeedCurve);
   const gpsByFile = useStore((s) => s.gpsByFile);
+  const tripGpsByTrip = useStore((s) => s.tripGpsByTrip);
   const tagsBySegmentId = useStore((s) => s.tagsBySegmentId);
   const selectionMode = useStore((s) => s.selectionMode);
   const selectedSegmentIds = useStore((s) => s.selectedSegmentIds);
@@ -64,6 +65,18 @@ export function Timeline({ onSeekTripTime }: Props) {
 
   const speedPoints: { x: number; speed: number }[] = useMemo(() => {
     if (!trip || totalDuration <= 0) return [];
+    // Archived path: trip_gps rows store trip-stitched t_offset_s, so
+    // no per-segment cumulative math is needed and the curve renders
+    // even when segments are tombstoned/absent (archive-only).
+    const archived = tripGpsByTrip[trip.id];
+    if (archived && archived.length > 0) {
+      return archived.map((p) => ({
+        x: p.tOffsetS / totalDuration,
+        speed: p.speedMps,
+      }));
+    }
+    // Fallback: per-file GPS, stitched on the fly. Used for trips that
+    // have originals but no timelapse encode yet.
     const pts: { x: number; speed: number }[] = [];
     let cumulative = 0;
     for (const seg of trip.segments) {
@@ -81,7 +94,7 @@ export function Timeline({ onSeekTripTime }: Props) {
       cumulative += seg.durationS;
     }
     return pts;
-  }, [trip, totalDuration, gpsByFile]);
+  }, [trip, totalDuration, gpsByFile, tripGpsByTrip]);
 
   const maxSpeed = useMemo(
     () => Math.max(1, ...speedPoints.map((p) => p.speed)),

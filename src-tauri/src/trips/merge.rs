@@ -322,6 +322,12 @@ pub fn merge_trips(
 
         rewrite_trip_id_columns(&tx, &primary_str, &absorbed_strs)?;
         rebuild_primary_trip_row(&tx, &primary_str)?;
+        // The merged span now covers absorbed segments too — primary's
+        // existing trip_gps row (if any) is stale. Drop it so the next
+        // timelapse encode rebuilds with the union; the frontend falls
+        // back to per-file extraction in the meantime. Absorbed rows
+        // cascade-delete with their trips below.
+        crate::db::trip_gps::delete(&tx, &primary_str)?;
         delete_absorbed_trip_rows(&tx, &absorbed_strs)?;
 
         let now_ms = chrono::Utc::now().timestamp_millis();
