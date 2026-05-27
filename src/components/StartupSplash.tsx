@@ -1,5 +1,15 @@
 import type { StartupSnapshot, StartupTask } from "../ipc/startup";
 
+const LIBRARY_TASK: StartupTask = {
+  id: "library_scan",
+  label: "Loading library",
+  description:
+    "Scanning your archive for trips and segments. This can take a while on a large library — please wait before importing or switching archives.",
+  current: 0,
+  total: null,
+  status: "running",
+};
+
 function pickActive(tasks: StartupTask[]): StartupTask | null {
   if (tasks.length === 0) return null;
   return (
@@ -7,6 +17,10 @@ function pickActive(tasks: StartupTask[]): StartupTask | null {
     tasks.find((t) => t.status === "pending") ??
     tasks[tasks.length - 1]
   );
+}
+
+function hasPendingWork(tasks: StartupTask[]): boolean {
+  return tasks.some((t) => t.status === "running" || t.status === "pending");
 }
 
 function statusGlyph(status: StartupTask["status"]): string {
@@ -35,8 +49,25 @@ function statusColor(status: StartupTask["status"]): string {
   }
 }
 
-export function StartupSplash({ snapshot }: { snapshot: StartupSnapshot }) {
-  const active = pickActive(snapshot.tasks);
+export function StartupSplash({
+  snapshot,
+  libraryLoading = false,
+}: {
+  snapshot: StartupSnapshot;
+  /** True while the initial library scan is in-flight. Keeps the splash
+   *  up after backend startup tasks finish, so the user can't click
+   *  Import or switch archives until trips are loaded. */
+  libraryLoading?: boolean;
+}) {
+  const realActive = pickActive(snapshot.tasks);
+  // Once all backend startup tasks are done (or there were none) and
+  // the library is still loading, switch to a synthetic task so the
+  // splash explains what's still blocking. With backend tasks still
+  // running, show those first.
+  const active =
+    libraryLoading && !hasPendingWork(snapshot.tasks)
+      ? LIBRARY_TASK
+      : realActive;
   const determinate =
     active && active.total != null && active.total > 0
       ? Math.min(100, Math.round((active.current / active.total) * 100))

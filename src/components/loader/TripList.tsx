@@ -71,30 +71,33 @@ export function TripList() {
     const trip = useStore.getState().trips.find((t) => t.id === tripId);
     if (!trip) return;
 
-    // Fast path: the timelapse encoder archives trip-stitched GPS in
-    // the DB (migration 0012's trip_gps table). Use it when present so
-    // the map + speed graph render even when originals are gone. An
-    // empty result means "no row archived yet" — fall through to the
-    // per-segment path which only succeeds when originals exist.
+    // Trip-stitched GPS from the timelapse encoder (migration 0012's
+    // trip_gps table). Used by tiered playback (8x/16x/60x) and by
+    // the map's trip-wide track. Populating this is required for
+    // archive-only trips where the source segments are gone.
     try {
       const archived = await loadTripGps(tripId);
       if (archived.length > 0) {
         useStore.setState((s) => ({
           tripGpsByTrip: { ...s.tripGpsByTrip, [tripId]: archived },
         }));
-        return;
       }
     } catch (e) {
       console.error("loadTripGps failed:", e);
     }
 
-    // Archive-only trips have no segment files to extract from. Without
-    // an archived GPS row they show an empty map — there's nothing to
-    // fall back to since the originals are already trashed.
+    // Archive-only trips have no segment files to extract from.
     if (trip.archiveOnly) return;
 
-    // Fallback: extract from each segment's master channel file. The
-    // backend dispatches to the right decoder per cameraKind.
+    // Per-segment GPS for Original playback mode. MapPanel uses this
+    // pool (gpsByFile, indexed by file path) to drive the vehicle
+    // marker when playing source segments — the archived trip-wide
+    // pool is indexed by trip-time and only fits tiered modes. We
+    // populate BOTH so the player works in every mode regardless of
+    // whether a trip_gps row exists for this trip. Earlier code
+    // returned here when archived was available, which made every
+    // trip with an archived GPS row show "No GPS data for this
+    // segment" during Original playback.
     const requests = trip.segments
       .map((s) => {
         const path = s.channels[0]?.filePath;

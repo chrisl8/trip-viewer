@@ -241,7 +241,54 @@ pub fn find_sibling_file(
     front_path: &Path,
     target_channel_label: &str,
 ) -> Result<Option<PathBuf>, AppError> {
-    // Parse the front file to get the anchor.
+    let Some(parent) = front_path.parent() else {
+        return Ok(None);
+    };
+    let listing = read_and_parse_listing(parent)?;
+    find_sibling_in_listing(front_path, target_channel_label, &listing)
+}
+
+/// One pre-parsed entry from a directory listing. `parsed` is the
+/// successful output of `naming::parse(filename)`; filenames the
+/// parser rejects are dropped at listing-build time so consumers
+/// don't re-evaluate them. Cheap to clone for cross-call caches.
+#[derive(Debug, Clone)]
+pub struct ListingEntry {
+    pub path: PathBuf,
+    pub parsed: naming::ParsedName,
+}
+
+/// Read a single directory, parsing each filename and discarding
+/// the entries the naming parser rejects. Used by the timelapse
+/// pre-flight probe to amortize one `read_dir` + N `parse` calls
+/// across many sibling lookups. Errors propagate (unreadable
+/// directory should fail the operation, not silently no-match).
+pub fn read_and_parse_listing(parent: &Path) -> Result<Vec<ListingEntry>, AppError> {
+    let entries = std::fs::read_dir(parent).map_err(AppError::Io)?;
+    let mut out: Vec<ListingEntry> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(parsed) = naming::parse(name) else {
+            continue;
+        };
+        out.push(ListingEntry { path, parsed });
+    }
+    Ok(out)
+}
+
+/// Match the same fuzzy-window sibling rules as `find_sibling_file`
+/// but against a pre-built listing instead of re-reading the dir.
+/// Caller is responsible for ensuring the listing covers the same
+/// directory that `front_path` lives in — `find_sibling_file` is
+/// the convenience wrapper that ties the two together.
+pub fn find_sibling_in_listing(
+    front_path: &Path,
+    target_channel_label: &str,
+    listing: &[ListingEntry],
+) -> Result<Option<PathBuf>, AppError> {
     let front_name = match front_path.file_name().and_then(|s| s.to_str()) {
         Some(s) => s,
         None => return Ok(None),
@@ -250,55 +297,32 @@ pub fn find_sibling_file(
         return Ok(None);
     };
 
-    let Some(parent) = front_path.parent() else {
-        return Ok(None);
-    };
-
-    // Single directory listing; we match by filename without touching
-    // file contents. Cheap — O(files in this folder).
-    let entries = match std::fs::read_dir(parent) {
-        Ok(it) => it,
-        Err(e) => {
-            // Surface unreadable directories as errors so the caller
-            // can mark the job failed rather than silently "not found".
-            return Err(AppError::Io(e));
-        }
-    };
-
     let mut best: Option<(i64, PathBuf)> = None;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        // Note: don't skip `path == front_path`. When the caller is
-        // asking for a channel that *equals* the anchor's channel
-        // (e.g. the timelapse worker's Front job probing a Front
-        // master for its own F sibling), the master itself IS the
-        // sibling — returning None there would force a false-negative
-        // placeholder. For different-channel lookups the channel-label
-        // filter below excludes the anchor anyway, so allowing self
-        // through has no effect on cross-channel callers.
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let Ok(candidate) = naming::parse(name) else {
-            continue;
-        };
-        if candidate.camera_kind != anchor.camera_kind {
+    // Note: don't skip when `entry.path == front_path`. When the
+    // caller is asking for a channel that *equals* the anchor's
+    // channel (e.g. the timelapse worker's Front job probing a
+    // Front master for its own F sibling), the master itself IS
+    // the sibling — returning None there would force a
+    // false-negative placeholder. For different-channel lookups
+    // the channel-label filter below excludes the anchor anyway.
+    for entry in listing {
+        if entry.parsed.camera_kind != anchor.camera_kind {
             continue;
         }
-        if candidate.channel_label != target_channel_label {
+        if entry.parsed.channel_label != target_channel_label {
             continue;
         }
-        if candidate.event_mode != anchor.event_mode {
+        if entry.parsed.event_mode != anchor.event_mode {
             continue;
         }
-        let delta = (candidate.start_time - anchor.start_time)
+        let delta = (entry.parsed.start_time - anchor.start_time)
             .num_seconds()
             .abs();
         if delta > SEGMENT_FUZZY_WINDOW_S {
             continue;
         }
         if best.as_ref().map(|(d, _)| delta < *d).unwrap_or(true) {
-            best = Some((delta, path));
+            best = Some((delta, entry.path.clone()));
         }
     }
     Ok(best.map(|(_, p)| p))

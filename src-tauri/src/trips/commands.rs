@@ -60,6 +60,7 @@ pub async fn delete_trip(
     slot: State<'_, ArchiveSlot>,
 ) -> Result<DeleteTripReport, AppError> {
     let db = require_db(&slot)?;
+    let archive_root = db.archive_root().to_path_buf();
     let mut report = DeleteTripReport::default();
 
     // Phase 1: gather every file path we need to trash. Done under a
@@ -91,14 +92,21 @@ pub async fn delete_trip(
 
         // Timelapse outputs. NULL output_path means the encode never
         // produced a file (pending/failed) — nothing to trash, but the
-        // row still gets deleted in Phase 3.
+        // row still gets deleted in Phase 3. Stored values are
+        // archive-relative; rejoin with the active archive root so the
+        // trash helper sees a real filesystem path.
         let mut stmt = conn.prepare(
             "SELECT output_path FROM timelapse_jobs
              WHERE trip_id = ?1 AND output_path IS NOT NULL",
         )?;
         let rows = stmt.query_map([&trip_id], |r| r.get::<_, String>(0))?;
         for row in rows {
-            timelapse_paths.push(row?);
+            let rel = row?;
+            timelapse_paths.push(
+                crate::paths::from_archive_relative(&rel, &archive_root)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
     }
 

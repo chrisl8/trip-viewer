@@ -10,7 +10,9 @@ fn main() {
 
     println!("scanning: {}", path.display());
     let start = Instant::now();
-    let result = match scan_folder_sync(path) {
+    // archive_root only affects internal path relativization; for this
+    // diagnostic the scanned folder doubles as the archive root.
+    let result = match scan_folder_sync(path, path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("scan failed: {e}");

@@ -185,6 +185,43 @@ pub fn run(app: AppHandle, db: DbHandle) {
     let settings: &AppSettingsHandle = &settings_state;
 
     let tasks = plan_tasks(&db, settings);
+
+    // Unconditional fast pass: wipe any leftover scratch dirs under
+    // <archive>/Timelapses/.tmp/. A previous session's hard exit or
+    // a cancelled encode that couldn't sweep its own dir leaves
+    // gigabytes of partial __multi_window_*.mp4 files behind; this
+    // is safe to do at startup because no encode is running yet.
+    cleanup::wipe_scratch_tree(&db);
+
+    // Unconditional fast pass: stat every done row's output file and
+    // flip missing ones to 'failed'. Cheap (one stat per row), so we
+    // skip the splash-UI task plumbing — runs even when no other
+    // task is planned. Catches "lying done" rows left behind by the
+    // 0013 path migration when some output files didn't survive a
+    // drive remount.
+    if let Err(e) = cleanup::flag_missing_outputs(&db) {
+        eprintln!("[startup] flag_missing_outputs failed: {e}");
+    }
+
+    // Second unconditional pass: try to recover any rows the previous
+    // step just flagged by renaming on-disk files that still use the
+    // pre-rewrite trip_id naming. This is the inverse of what
+    // rebuild_for_cross_os does to DB rows — without it, the user
+    // would have to re-encode files that already exist under a stale
+    // name.
+    if let Err(e) = cleanup::recover_orphan_outputs(&db, settings) {
+        eprintln!("[startup] recover_orphan_outputs failed: {e}");
+    }
+
+    // Third unconditional pass: relink failed rows with NULL output_path
+    // back to their on-disk file when one exists at the canonical
+    // location. Recovers from the "Rebuild all over an archive-only
+    // trip" bug that nulled output_path before the encode discovered
+    // there were no source segments.
+    if let Err(e) = cleanup::relink_present_outputs(&db) {
+        eprintln!("[startup] relink_present_outputs failed: {e}");
+    }
+
     if tasks.is_empty() {
         mark_no_work(&state, &app);
         return;

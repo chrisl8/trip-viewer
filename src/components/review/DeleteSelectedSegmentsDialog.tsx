@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { useStore } from "../../state/store";
 import { CATEGORY_COLORS } from "../../utils/tagColors";
 import { formatBytes } from "../../utils/format";
+import { computeTripArchiveStatus } from "./tripArchiveStatus";
 
 interface Props {
   busy: boolean;
@@ -55,13 +56,11 @@ export function DeleteSelectedSegmentsDialog({
     return { count, totalDuration, fileCount, keptCount };
   }, [trips, loadedTripId, selectedSegmentIds, tagsBySegmentId]);
 
-  const archiveBytes = useStore((s) => {
-    const tripJobs = s.timelapseJobs.filter(
-      (j) => j.tripId === loadedTripId && j.outputSizeBytes != null,
-    );
-    if (tripJobs.length === 0) return null;
-    return tripJobs.reduce((sum, j) => sum + (j.outputSizeBytes ?? 0), 0);
-  });
+  const jobs = useStore((s) => s.timelapseJobs);
+  const { archiveExists, archiveBytes } = useMemo(
+    () => computeTripArchiveStatus(jobs, loadedTripId),
+    [jobs, loadedTripId],
+  );
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -90,9 +89,10 @@ export function DeleteSelectedSegmentsDialog({
           {summary.fileCount === 1 ? "channel file" : "channel files"} will
           move to the OS trash. Recoverable from there.
         </p>
-        {archiveBytes != null ? (
+        {archiveExists ? (
           <p className="mt-2 rounded-md bg-emerald-950 px-2 py-1 text-xs text-emerald-300">
-            This trip's timelapse archive ({formatBytes(archiveBytes)}) is
+            This trip's timelapse archive
+            {archiveBytes != null && ` (${formatBytes(archiveBytes)})`} is
             kept and stays playable.
           </p>
         ) : (

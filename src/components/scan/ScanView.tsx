@@ -42,6 +42,14 @@ const PILL_GLYPH: Record<PillState, string> = {
   notRun: "○",
 };
 
+const STATE_LABEL: Record<PillState, string> = {
+  done: "done",
+  stale: "stale",
+  partial: "partial",
+  failed: "failed",
+  notRun: "not run",
+};
+
 function pillTooltip(displayName: string, c: ScanCoverage): string {
   const state = pillState(c);
   const stateLabel: Record<PillState, string> = {
@@ -164,6 +172,27 @@ export function ScanView() {
     for (const s of scans) m[s.id] = s;
     return m;
   }, [scans]);
+
+  // Library-wide aggregate: for each registered scan, how many trips
+  // sit in each pill state. Lets the user check coverage at a glance
+  // without scrolling the per-trip table. Driven off the same
+  // ScanCoverage rows the per-trip pills use, so the two stay in sync
+  // automatically during a live run.
+  const overallByScan = useMemo(() => {
+    const tally: Record<string, Record<PillState, number>> = {};
+    for (const s of scans) {
+      tally[s.id] = { done: 0, stale: 0, partial: 0, failed: 0, notRun: 0 };
+    }
+    for (const t of coverage) {
+      for (const c of t.perScan) {
+        const bucket = tally[c.scanId];
+        if (!bucket) continue;
+        bucket[pillState(c)] += 1;
+      }
+    }
+    return tally;
+  }, [coverage, scans]);
+  const totalTrips = coverage.length;
 
   // Map segmentId → tripId so the live progress event's
   // currentSegmentId can be resolved to the trip whose row should
@@ -398,6 +427,70 @@ export function ScanView() {
             <div className="mt-1 text-xs text-neutral-400">
               {lastResult.done} scanned · {lastResult.tagsEmitted} tags
               emitted · {lastResult.failed} failed
+            </div>
+          </section>
+        )}
+
+        {totalTrips > 0 && scans.length > 0 && (
+          <section className="mb-6">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-400">
+              Overall coverage
+            </h2>
+            <div className="overflow-hidden rounded-md border border-neutral-800">
+              <table className="w-full text-sm">
+                <tbody>
+                  {scans.map((scan) => {
+                    const t = overallByScan[scan.id];
+                    if (!t) return null;
+                    // Buckets the user cares about most appear first;
+                    // states with zero trips are skipped so the row
+                    // stays scannable. "done" is shown even at zero so
+                    // a never-run scan reads "0 done" instead of being
+                    // visually identical to a missing row.
+                    const allCells: { state: PillState; count: number }[] = [
+                      { state: "done", count: t.done },
+                      { state: "stale", count: t.stale },
+                      { state: "partial", count: t.partial },
+                      { state: "failed", count: t.failed },
+                      { state: "notRun", count: t.notRun },
+                    ];
+                    const cells = allCells.filter(
+                      (c, i) => i === 0 || c.count > 0,
+                    );
+                    return (
+                      <tr
+                        key={scan.id}
+                        className="border-t border-neutral-800 first:border-t-0"
+                      >
+                        <td className="px-3 py-2 text-neutral-200">
+                          {scan.displayName}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {cells.map(({ state, count }) => (
+                              <span
+                                key={state}
+                                className={clsx(
+                                  "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium",
+                                  PILL_CLASSES[state],
+                                )}
+                              >
+                                <span aria-hidden="true">
+                                  {PILL_GLYPH[state]}
+                                </span>
+                                {count} {STATE_LABEL[state]}
+                              </span>
+                            ))}
+                            <span className="ml-1 text-xs text-neutral-500">
+                              of {totalTrips} trips
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </section>
         )}

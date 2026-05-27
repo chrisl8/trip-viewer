@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { useStore } from "../../state/store";
 import type { Trip } from "../../types/model";
 import { formatBytes } from "../../utils/format";
+import { computeTripArchiveStatus } from "./tripArchiveStatus";
 
 interface Props {
   trip: Trip;
@@ -60,13 +61,11 @@ export function DeleteOriginalsDialog({
     [trip.segments],
   );
   const originalsBytes = useMemo(() => trashedBytes(trip), [trip]);
-  const archiveBytes = useStore((s) => {
-    const tripJobs = s.timelapseJobs.filter(
-      (j) => j.tripId === trip.id && j.outputSizeBytes != null,
-    );
-    if (tripJobs.length === 0) return null;
-    return tripJobs.reduce((sum, j) => sum + (j.outputSizeBytes ?? 0), 0);
-  });
+  const jobs = useStore((s) => s.timelapseJobs);
+  const { archiveExists, archiveBytes } = useMemo(
+    () => computeTripArchiveStatus(jobs, trip.id),
+    [jobs, trip.id],
+  );
 
   return (
     <div
@@ -86,10 +85,11 @@ export function DeleteOriginalsDialog({
           {originalsBytes != null && ` (${formatBytes(originalsBytes)})`} will
           be moved to the OS trash. Recoverable from there.
         </p>
-        {archiveBytes != null ? (
+        {archiveExists ? (
           <p className="mt-2 rounded-md bg-emerald-950 px-2 py-1 text-xs text-emerald-300">
-            The timelapse archive ({formatBytes(archiveBytes)}) will be
-            kept and stays playable in this trip.
+            The timelapse archive
+            {archiveBytes != null && ` (${formatBytes(archiveBytes)})`} will
+            be kept and stays playable in this trip.
           </p>
         ) : (
           <p className="mt-2 rounded-md bg-amber-950 px-2 py-1 text-xs text-amber-300">

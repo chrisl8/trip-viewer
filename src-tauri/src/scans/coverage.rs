@@ -11,12 +11,12 @@
 //! round-trip.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use serde::Serialize;
 
 use crate::db::DbHandle;
 use crate::error::AppError;
+use crate::paths::from_archive_relative;
 use crate::scans::registry;
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +50,7 @@ pub fn list_scan_coverage(db: &DbHandle) -> Result<Vec<TripScanCoverage>, AppErr
         .collect();
     let scan_order: Vec<String> = registry.iter().map(|s| s.id().to_string()).collect();
 
+    let archive_root = db.archive_root().to_path_buf();
     let conn = db
         .lock()
         .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
@@ -81,7 +82,12 @@ pub fn list_scan_coverage(db: &DbHandle) -> Result<Vec<TripScanCoverage>, AppErr
         })?;
         for r in rows {
             let (seg_id, trip_id, master_path) = r?;
-            if Path::new(&master_path).exists() {
+            // master_path is stored archive-relative (forward-slash
+            // separators) — rejoin with the archive root before the
+            // existence check. Without this, every check returned false
+            // and every trip's coverage row was dropped from the result.
+            let abs_path = from_archive_relative(&master_path, &archive_root);
+            if abs_path.exists() {
                 *totals.entry(trip_id).or_insert(0) += 1;
             } else {
                 missing_segments.insert(seg_id);
@@ -169,4 +175,79 @@ pub fn list_scan_coverage(db: &DbHandle) -> Result<Vec<TripScanCoverage>, AppErr
         out.push(TripScanCoverage { trip_id, per_scan });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_archive_root() -> std::path::PathBuf {
+        // Per-test directory so the existence check sees a real file
+        // we just dropped, and parallel tests don't collide on the
+        // same archive path.
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "tripviewer-coverage-test-{}-{}",
+            std::process::id(),
+            n
+        ))
+    }
+
+    /// Regression: master_path is stored archive-relative, so the
+    /// per-segment existence check has to rejoin with the archive
+    /// root before calling `.exists()`. Without the rejoin every
+    /// segment looked missing and the API returned an empty vec,
+    /// which surfaced as "—" in every Coverage cell on the Scan tab.
+    #[test]
+    fn coverage_returns_rows_for_trips_with_files_on_disk() {
+        let archive_root = unique_archive_root();
+        let _ = fs::remove_dir_all(&archive_root);
+        let videos_dir = archive_root.join("Videos");
+        fs::create_dir_all(&videos_dir).unwrap();
+        let video_path = videos_dir.join("2026_01_01_120000_00_F.MP4");
+        fs::write(&video_path, b"").unwrap();
+
+        let db = crate::db::open_in_memory_with_root(&archive_root).unwrap();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO trips (id, start_time_ms, end_time_ms, camera_kind,
+                    gps_supported, last_seen_ms)
+                 VALUES ('trip1', 0, 60000, 'wolfBox', 1, 0)",
+                [],
+            )
+            .unwrap();
+            // Store master_path archive-relative (matches what
+            // relativize_for_storage produces on a real scan).
+            conn.execute(
+                "INSERT INTO segments (id, trip_id, start_time_ms, duration_s,
+                    master_path, is_event, camera_kind, gps_supported, last_seen_ms)
+                 VALUES ('seg1', 'trip1', 0, 60.0, ?1, 0, 'wolfbox', 1, 0)",
+                params!["Videos/2026_01_01_120000_00_F.MP4"],
+            )
+            .unwrap();
+        }
+
+        let rows = list_scan_coverage(&db).expect("coverage query should succeed");
+        assert_eq!(rows.len(), 1, "trip1 should appear in coverage output");
+        assert_eq!(rows[0].trip_id, "trip1");
+        // Every registered scan should appear with total_segments=1
+        // and not_run=1 — the segment exists on disk and has no
+        // scan_runs rows yet.
+        assert!(
+            !rows[0].per_scan.is_empty(),
+            "per_scan should list one entry per registered scan"
+        );
+        for c in &rows[0].per_scan {
+            assert_eq!(c.total_segments, 1);
+            assert_eq!(c.not_run_count, 1);
+            assert_eq!(c.done_count, 0);
+        }
+
+        let _ = fs::remove_dir_all(&archive_root);
+    }
 }

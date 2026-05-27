@@ -116,6 +116,7 @@ struct JobRow {
 fn load_job_rows(
     conn: &Connection,
     trip_ids: &[String],
+    archive_root: &std::path::Path,
 ) -> Result<Vec<JobRow>, AppError> {
     if trip_ids.is_empty() {
         return Ok(Vec::new());
@@ -135,7 +136,16 @@ fn load_job_rows(
             tier: r.get(1)?,
             channel: r.get(2)?,
             status: r.get(3)?,
-            output_path: r.get(4)?,
+            // Absolutize at the boundary so downstream merge code can
+            // pass the value straight to ffmpeg / filesystem ops without
+            // each callsite needing to know the storage convention.
+            output_path: r
+                .get::<_, Option<String>>(4)?
+                .map(|p| {
+                    crate::paths::from_archive_relative(&p, archive_root)
+                        .to_string_lossy()
+                        .into_owned()
+                }),
             speed_curve_json: r.get(5)?,
             padded_count: r.get(6)?,
             encoder_used: r.get(7)?,
@@ -157,13 +167,17 @@ pub fn assess_timelapse_merge(
     let mut all_ids: Vec<String> = absorbed.iter().map(|u| u.to_string()).collect();
     all_ids.push(primary.to_string());
 
-    let (rows, camera_kinds) = {
+    let archive_root = db.archive_root().to_path_buf();
+    let absorbed_strs: Vec<String> = absorbed.iter().map(|u| u.to_string()).collect();
+    let (rows, camera_kinds, is_chronological) = {
         let conn = db
             .lock()
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-        let rows = load_job_rows(&conn, &all_ids)?;
+        let rows = load_job_rows(&conn, &all_ids, &archive_root)?;
         let kinds = load_camera_kinds(&conn, &all_ids)?;
-        (rows, kinds)
+        let chrono =
+            chronologically_sequential(&conn, &primary.to_string(), &absorbed_strs)?;
+        (rows, kinds, chrono)
     };
 
     if rows.is_empty() {
@@ -200,7 +214,12 @@ pub fn assess_timelapse_merge(
             .filter(|s| trip_set.contains(s.as_str()))
             .collect();
         let coverage = trip_set.len();
-        let status = if coverage == total_sources {
+        // Concat is feasible only when every source has the tuple AND
+        // the inputs' time ranges chain cleanly. Interleaving forces
+        // the same "drop everything, force rebuild" outcome as partial
+        // coverage — different cause, same fix (re-encode from sources
+        // in chronological segment order).
+        let status = if coverage == total_sources && is_chronological {
             TupleStatus::Concatenable
         } else {
             TupleStatus::PartialOutputs
@@ -224,6 +243,55 @@ pub fn assess_timelapse_merge(
         tuples: out,
         camera_kinds,
     })
+}
+
+/// Verify the merge inputs' on-disk time ranges form a clean
+/// chronological chain — sorted by `start_time_ms`, each trip's
+/// `start_time_ms` is greater than or equal to the previous trip's
+/// `end_time_ms`. Returns `true` for a clean chain (concat would
+/// produce a chronologically-ordered video) and `false` for any
+/// interleaving (concat would jump backwards in time at the seam).
+///
+/// Triggered by transitively-merged primaries: after several merges
+/// the primary's `end_time_ms` extends past its original window,
+/// and a later absorbed trip whose own start falls inside that
+/// extended span produces an out-of-order concat. The merged
+/// timelapse plays the primary's content, then jumps backward to
+/// the absorbed trip's earlier timestamp — visible as a
+/// "teleporting car" seam in playback.
+///
+/// When this returns false the caller drops the concat path (no
+/// rows produced, all sources marked for deletion) so the user
+/// rebuilds and the new encode reads segments in time order.
+fn chronologically_sequential(
+    conn: &Connection,
+    primary: &str,
+    absorbed: &[String],
+) -> Result<bool, AppError> {
+    let mut all_ids = absorbed.to_vec();
+    all_ids.push(primary.to_string());
+    let placeholders = std::iter::repeat_n("?", all_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT start_time_ms, end_time_ms FROM trips
+         WHERE id IN ({placeholders}) ORDER BY start_time_ms ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(all_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    let mut prev_end: Option<i64> = None;
+    for row in rows {
+        let (start, end) = row?;
+        if let Some(pe) = prev_end {
+            if start < pe {
+                return Ok(false);
+            }
+        }
+        prev_end = Some(end);
+    }
+    Ok(true)
 }
 
 fn load_camera_kinds(
@@ -291,14 +359,19 @@ pub fn merge_trips(
 
     // Snapshot job rows under a short-lived lock so we can release it
     // before invoking ffmpeg.
+    let archive_root = db.archive_root().to_path_buf();
     let job_rows = {
         let conn = db
             .lock()
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-        load_job_rows(&conn, &all_ids)?
+        load_job_rows(&conn, &all_ids, &archive_root)?
     };
 
-    let removed_during_timelapse = apply_timelapse_strategy(
+    // Phase 1: plan only. Runs ffmpeg concat to produce merged MP4
+    // files on disk (or stages deletes for DiscardAll) but does NOT
+    // touch the DB. Files that get produced here become orphans if
+    // phase 2 aborts — recoverable via the prune step, not data loss.
+    let plan = plan_timelapse_strategy(
         db,
         &primary_str,
         &absorbed_strs,
@@ -307,15 +380,24 @@ pub fn merge_trips(
         ffmpeg_path.as_deref(),
         &mut report,
     )?;
-    report.timelapse_jobs_removed = removed_during_timelapse;
 
-    // Phase 2: rewrite segments + tags + trips, and record the merge
-    // directive, all in one transaction.
+    // Phase 2: ALL DB mutations in a single transaction so a failure
+    // in any step rolls back the whole merge, including the
+    // timelapse_jobs deletes/upserts from phase 1's plan. Before this
+    // refactor, phase 1 committed its row deletions in its own
+    // transaction; a phase 2 error then left the trip with its
+    // timelapses wiped from the DB but kept on disk, with no merge
+    // directive recorded — exactly the lossy state that bit us.
     {
         let mut conn = db
             .lock()
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
         let tx = conn.transaction()?;
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let removed_during_timelapse =
+            apply_timelapse_plan_in_tx(&tx, &archive_root, &plan, now_ms)?;
+        report.timelapse_jobs_removed = removed_during_timelapse;
 
         rewrite_trip_id_columns(&tx, &primary_str, &absorbed_strs)?;
         rebuild_primary_trip_row(&tx, &primary_str)?;
@@ -327,7 +409,6 @@ pub fn merge_trips(
         crate::db::trip_gps::delete(&tx, &primary_str)?;
         delete_absorbed_trip_rows(&tx, &absorbed_strs)?;
 
-        let now_ms = chrono::Utc::now().timestamp_millis();
         for absorbed_id in absorbed {
             crate::db::manual_trip_merges::insert_merge(
                 &tx, primary, *absorbed_id, now_ms,
@@ -340,7 +421,29 @@ pub fn merge_trips(
     Ok(report)
 }
 
-fn apply_timelapse_strategy(
+/// Atomicity-critical: planning runs file-production side effects
+/// (ffmpeg concat invocations land MP4s under `<archive>/Timelapses/`)
+/// but does NOT touch the DB. Caller applies the plan inside phase
+/// 2's transaction so a phase 2 abort rolls back the row mutations
+/// even though the on-disk files persist (those become prunable
+/// orphans, not data loss).
+///
+/// The earlier design committed timelapse_jobs deletions in its own
+/// transaction before phase 2 started; a phase 2 failure then left
+/// the trip with its rows wiped, no merge directive recorded, and
+/// orphan files on disk — the exact shape that lost the user 5
+/// trips' worth of rows in a chain-merge attempt today.
+pub(crate) struct TimelapseMergePlan {
+    /// (trip_id, tier, channel) tuples whose timelapse_jobs row
+    /// should be deleted when the plan is applied.
+    rows_to_delete: Vec<(String, String, String)>,
+    /// Rows that should be inserted/upserted for the merged primary.
+    /// Each corresponds to a successful concat that produced an MP4
+    /// at `<archive>/Timelapses/{primary}_{tier}_{channel}.mp4`.
+    rows_to_upsert: Vec<UpsertJob>,
+}
+
+fn plan_timelapse_strategy(
     db: &DbHandle,
     primary: &str,
     absorbed: &[String],
@@ -348,32 +451,32 @@ fn apply_timelapse_strategy(
     strategy: TimelapseMergeStrategy,
     ffmpeg_path: Option<&str>,
     report: &mut MergeReport,
-) -> Result<usize, AppError> {
+) -> Result<TimelapseMergePlan, AppError> {
     if job_rows.is_empty() {
-        return Ok(0);
+        return Ok(TimelapseMergePlan {
+            rows_to_delete: Vec::new(),
+            rows_to_upsert: Vec::new(),
+        });
     }
 
     match strategy {
         TimelapseMergeStrategy::DiscardAll => {
-            // Delete every timelapse_jobs row across primary + absorbed
-            // in one shot. Don't touch the MP4 files on disk — they
-            // become orphans but disk-space cost is bounded and a
-            // future cleanup can sweep them.
-            let mut all_ids = absorbed.to_vec();
-            all_ids.push(primary.to_string());
-            let mut conn = db
-                .lock()
-                .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-            let tx = conn.transaction()?;
-            let placeholders = std::iter::repeat_n("?", all_ids.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "DELETE FROM timelapse_jobs WHERE trip_id IN ({placeholders})"
-            );
-            let n = tx.execute(&sql, rusqlite::params_from_iter(all_ids.iter()))?;
-            tx.commit()?;
-            Ok(n)
+            // Plan a delete for every row across primary + absorbed.
+            // On-disk files become orphans; the existing prune step
+            // can sweep them later.
+            let mut rows_to_delete: Vec<(String, String, String)> =
+                Vec::with_capacity(job_rows.len());
+            for row in job_rows {
+                rows_to_delete.push((
+                    row.trip_id.clone(),
+                    row.tier.clone(),
+                    row.channel.clone(),
+                ));
+            }
+            Ok(TimelapseMergePlan {
+                rows_to_delete,
+                rows_to_upsert: Vec::new(),
+            })
         }
         TimelapseMergeStrategy::ConcatWherePossible => {
             let ffmpeg = ffmpeg_path.ok_or_else(|| {
@@ -381,19 +484,80 @@ fn apply_timelapse_strategy(
                     "ffmpeg not configured — set the path in Timelapse settings first".into(),
                 )
             })?;
-            apply_concat_where_possible(db, primary, absorbed, job_rows, ffmpeg, report)
+            plan_concat_where_possible(db, primary, absorbed, job_rows, ffmpeg, report)
         }
     }
 }
 
-fn apply_concat_where_possible(
+/// Apply a `TimelapseMergePlan` inside the caller's transaction.
+/// Returns the number of rows deleted (the upsert count is in the
+/// plan itself). Keep this in lock-step with phase 1's planner so a
+/// new column added to UpsertJob always flows through.
+fn apply_timelapse_plan_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    archive_root: &std::path::Path,
+    plan: &TimelapseMergePlan,
+    now_ms: i64,
+) -> Result<usize, AppError> {
+    let mut deleted = 0usize;
+    for (trip_id, tier, channel) in &plan.rows_to_delete {
+        let n = tx.execute(
+            "DELETE FROM timelapse_jobs
+             WHERE trip_id = ?1 AND tier = ?2 AND channel = ?3",
+            params![trip_id, tier, channel],
+        )?;
+        deleted += n;
+    }
+    for j in &plan.rows_to_upsert {
+        // Relativize before storing so the row survives drive
+        // remounts. `concat_outputs` always lands the file under
+        // `<archive_root>/Timelapses/`, so the path is in-tree.
+        let stored_path = crate::paths::to_archive_relative(
+            std::path::Path::new(&j.output_path),
+            archive_root,
+        )
+        .unwrap_or_else(|_| j.output_path.clone());
+        tx.execute(
+            "INSERT INTO timelapse_jobs
+                (trip_id, tier, channel, status, output_path,
+                 ffmpeg_version, encoder_used, padded_count,
+                 speed_curve_json, created_at_ms, completed_at_ms,
+                 output_size_bytes)
+             VALUES (?1, ?2, ?3, 'done', ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)
+             ON CONFLICT(trip_id, tier, channel) DO UPDATE SET
+                status = excluded.status,
+                output_path = excluded.output_path,
+                ffmpeg_version = excluded.ffmpeg_version,
+                encoder_used = excluded.encoder_used,
+                padded_count = excluded.padded_count,
+                speed_curve_json = excluded.speed_curve_json,
+                completed_at_ms = excluded.completed_at_ms,
+                output_size_bytes = excluded.output_size_bytes",
+            params![
+                j.trip_id,
+                j.tier,
+                j.channel,
+                stored_path,
+                j.ffmpeg_version,
+                j.encoder_used,
+                j.padded_count,
+                j.speed_curve_json,
+                now_ms,
+                j.output_size_bytes,
+            ],
+        )?;
+    }
+    Ok(deleted)
+}
+
+fn plan_concat_where_possible(
     db: &DbHandle,
     primary: &str,
     absorbed: &[String],
     job_rows: &[JobRow],
     ffmpeg_path: &str,
     report: &mut MergeReport,
-) -> Result<usize, AppError> {
+) -> Result<TimelapseMergePlan, AppError> {
     // Group done rows by (tier, channel). Non-done rows are dropped
     // entirely (no useful output to carry forward).
     let mut by_tuple: HashMap<(String, String), Vec<&JobRow>> = HashMap::new();
@@ -418,6 +582,44 @@ fn apply_concat_where_possible(
     let mut concatenated_paths_to_keep: HashSet<String> = HashSet::new();
     let mut rows_to_delete: Vec<(String, String, String)> = Vec::new();
     let mut rows_to_upsert: Vec<UpsertJob> = Vec::new();
+
+    // Short-circuit when the merge inputs interleave in time. Concat
+    // would produce a file that jumps backwards at the seam between
+    // primary and any absorbed trip whose own start falls inside
+    // primary's already-extended range (common after several
+    // sequential merges). Drop every (tier, channel) tuple — the
+    // merged trip will have no encoded timelapses until the user
+    // clicks Rebuild, which re-encodes from the source segments in
+    // chronological order.
+    let chronological = {
+        let conn = db
+            .lock()
+            .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+        chronologically_sequential(&conn, primary, absorbed)?
+    };
+    if !chronological {
+        eprintln!(
+            "[merge] inputs interleave in time — dropping all tuples to force rebuild \
+             (concat would produce out-of-order playback at the seam)"
+        );
+        for ((tier, channel), trip_rows) in &by_tuple {
+            for trip_row in trip_rows {
+                rows_to_delete.push((
+                    trip_row.trip_id.clone(),
+                    tier.clone(),
+                    channel.clone(),
+                ));
+            }
+        }
+        let _ = total_sources;
+        let _ = non_done_count;
+        let _ = concatenated_paths_to_keep;
+        let _ = timelapses_dir;
+        return Ok(TimelapseMergePlan {
+            rows_to_delete,
+            rows_to_upsert,
+        });
+    }
 
     for ((tier, channel), trip_rows) in &by_tuple {
         let trip_set: HashSet<&str> =
@@ -453,6 +655,9 @@ fn apply_concat_where_possible(
                     let ffmpeg_version = ordered
                         .iter()
                         .find_map(|r| r.ffmpeg_version.clone());
+                    let output_size_bytes = std::fs::metadata(&merged_output)
+                        .ok()
+                        .map(|m| m.len() as i64);
                     rows_to_upsert.push(UpsertJob {
                         trip_id: primary.to_string(),
                         tier: tier.clone(),
@@ -462,6 +667,7 @@ fn apply_concat_where_possible(
                         padded_count,
                         encoder_used,
                         ffmpeg_version,
+                        output_size_bytes,
                     });
                     concatenated_paths_to_keep.insert(merged_path_str);
                     report.concatenated.push((tier.clone(), channel.clone()));
@@ -507,56 +713,12 @@ fn apply_concat_where_possible(
         let _ = total_sources; // for IDE clarity; loop scope only.
     }
 
-    // Apply DB changes in a single transaction.
-    let mut deleted_count = 0;
-    {
-        let mut conn = db
-            .lock()
-            .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
-        let tx = conn.transaction()?;
-        for (trip_id, tier, channel) in &rows_to_delete {
-            let n = tx.execute(
-                "DELETE FROM timelapse_jobs
-                 WHERE trip_id = ?1 AND tier = ?2 AND channel = ?3",
-                params![trip_id, tier, channel],
-            )?;
-            deleted_count += n;
-        }
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        for j in &rows_to_upsert {
-            tx.execute(
-                "INSERT INTO timelapse_jobs
-                    (trip_id, tier, channel, status, output_path,
-                     ffmpeg_version, encoder_used, padded_count,
-                     speed_curve_json, created_at_ms, completed_at_ms)
-                 VALUES (?1, ?2, ?3, 'done', ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-                 ON CONFLICT(trip_id, tier, channel) DO UPDATE SET
-                    status = excluded.status,
-                    output_path = excluded.output_path,
-                    ffmpeg_version = excluded.ffmpeg_version,
-                    encoder_used = excluded.encoder_used,
-                    padded_count = excluded.padded_count,
-                    speed_curve_json = excluded.speed_curve_json,
-                    completed_at_ms = excluded.completed_at_ms",
-                params![
-                    j.trip_id,
-                    j.tier,
-                    j.channel,
-                    j.output_path,
-                    j.ffmpeg_version,
-                    j.encoder_used,
-                    j.padded_count,
-                    j.speed_curve_json,
-                    now_ms,
-                ],
-            )?;
-        }
-        tx.commit()?;
-    }
-
     let _ = non_done_count;
     let _ = concatenated_paths_to_keep;
-    Ok(deleted_count)
+    Ok(TimelapseMergePlan {
+        rows_to_delete,
+        rows_to_upsert,
+    })
 }
 
 struct UpsertJob {
@@ -568,6 +730,14 @@ struct UpsertJob {
     padded_count: i64,
     encoder_used: Option<String>,
     ffmpeg_version: Option<String>,
+    /// Stat'd from the concat output right after ffmpeg succeeded so
+    /// the row carries a real byte count. `None` only if the stat
+    /// itself fails — in which case `cleanup::backfill_output_sizes`
+    /// fills it in on the next launch. Without this, the merged row
+    /// had `output_size_bytes = NULL` forever and the Delete-Originals
+    /// dialog would (wrongly) tell the user the trip has no timelapse
+    /// archive.
+    output_size_bytes: Option<i64>,
 }
 
 /// Run ffmpeg's concat demuxer to splice the given input MP4s into
@@ -800,4 +970,233 @@ fn delete_absorbed_trip_rows(tx: &Connection, absorbed: &[String]) -> Result<(),
         format!("DELETE FROM trips WHERE id IN ({placeholders})");
     tx.execute(&sql, rusqlite::params_from_iter(absorbed.iter()))?;
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::open_in_memory;
+
+    fn parse(s: &str) -> Uuid {
+        Uuid::parse_str(s).unwrap()
+    }
+
+    /// Set up a trip with a single segment + nine done timelapse_jobs
+    /// rows covering all (tier, channel) combos. Used by the
+    /// atomicity test to give us something concrete to assert isn't
+    /// destroyed when phase 2 fails.
+    fn seed_trip_with_timelapses(db: &DbHandle, trip_id: &str, seg_id: &str) {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO trips (id, start_time_ms, end_time_ms, camera_kind,
+                gps_supported, last_seen_ms)
+             VALUES (?1, 0, 60000, 'wolfBox', 1, 0)",
+            params![trip_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO segments (id, trip_id, start_time_ms, duration_s,
+                master_path, is_event, camera_kind, gps_supported, last_seen_ms)
+             VALUES (?1, ?2, 0, 60.0, ?3, 0, 'wolfbox', 1, 0)",
+            params![seg_id, trip_id, format!("Videos/{trip_id}.MP4")],
+        )
+        .unwrap();
+        for tier in ["8x", "16x", "60x"] {
+            for channel in ["F", "I", "R"] {
+                crate::db::timelapse_jobs::upsert_pending(
+                    &conn, trip_id, tier, channel,
+                )
+                .unwrap();
+                crate::db::timelapse_jobs::mark_done(
+                    &conn,
+                    trip_id,
+                    tier,
+                    channel,
+                    &format!("Timelapses/{trip_id}_{tier}_{channel}.mp4"),
+                    "7.0",
+                    "hevc_nvenc",
+                    0,
+                    "[]",
+                    Some(1_000_000),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn count_jobs(db: &DbHandle, trip_id: &str) -> i64 {
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM timelapse_jobs WHERE trip_id = ?1",
+            params![trip_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Regression for the lossy phase 1 / phase 2 split that wiped
+    /// 5 trips' worth of timelapse_jobs rows when an `insert_merge`
+    /// call errored mid-merge. Previously phase 1 committed its row
+    /// deletions in a separate transaction before phase 2 even
+    /// started; a phase 2 abort left the trip with no DB rows but
+    /// orphan files on disk. After the atomicity refactor, phase 1
+    /// is plan-only and phase 2's transaction covers every DB
+    /// mutation — so the same forced-error scenario must leave
+    /// every original row intact.
+    #[test]
+    fn merge_failure_leaves_timelapse_rows_intact() {
+        let db = open_in_memory().unwrap();
+
+        // Trip A absorbs trip B already, recorded directly in the
+        // manual_trip_merges table. After this, requesting
+        // `merge_trips(primary=B, absorbed=[A])` will:
+        //   1. plan_timelapse_strategy succeeds (Discard strategy)
+        //   2. phase 2 opens tx, applies plan (would delete rows)
+        //   3. phase 2 calls insert_merge(B, A) which resolves B
+        //      to its root A → self-merge after resolution → Err
+        //   4. tx rolls back; both A's and B's rows survive.
+        let a = parse("11111111-1111-1111-1111-111111111111");
+        let b = parse("22222222-2222-2222-2222-222222222222");
+        seed_trip_with_timelapses(&db, &a.to_string(), "seg-a");
+        seed_trip_with_timelapses(&db, &b.to_string(), "seg-b");
+        {
+            let conn = db.lock().unwrap();
+            crate::db::manual_trip_merges::insert_merge(&conn, a, b, 1000).unwrap();
+        }
+
+        assert_eq!(count_jobs(&db, &a.to_string()), 9);
+        assert_eq!(count_jobs(&db, &b.to_string()), 9);
+
+        // Attempt the merge — must fail because B resolves to A and
+        // we end up trying to merge A into itself.
+        let result = merge_trips(
+            &db,
+            b,
+            &[a],
+            TimelapseMergeStrategy::DiscardAll,
+            None,
+        );
+        assert!(
+            result.is_err(),
+            "expected merge to fail (self-merge after primary chain resolution)"
+        );
+
+        // The transaction must have rolled back the timelapse_jobs
+        // deletions. Both trips retain their full row count.
+        assert_eq!(
+            count_jobs(&db, &a.to_string()),
+            9,
+            "A's timelapse rows must survive a rolled-back merge"
+        );
+        assert_eq!(
+            count_jobs(&db, &b.to_string()),
+            9,
+            "B's timelapse rows must survive a rolled-back merge"
+        );
+    }
+
+    fn insert_trip(db: &DbHandle, id: &str, start_ms: i64, end_ms: i64) {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO trips (id, start_time_ms, end_time_ms, camera_kind,
+                gps_supported, last_seen_ms)
+             VALUES (?1, ?2, ?3, 'wolfBox', 1, 0)",
+            params![id, start_ms, end_ms],
+        )
+        .unwrap();
+    }
+
+    /// Direct unit test for the chronological-chain predicate. Covers
+    /// the clean-chain case (each trip starts after the previous ends)
+    /// and the interleaving case that bites users after multiple
+    /// sequential merges extend the primary's time span.
+    #[test]
+    fn chronologically_sequential_detects_interleaved_ranges() {
+        let db = open_in_memory().unwrap();
+        // Clean chain: A (0-100), B (100-200), C (200-300).
+        let a = "11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let b = "22222222-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let c = "33333333-cccc-cccc-cccc-cccccccccccc";
+        insert_trip(&db, a, 0, 100);
+        insert_trip(&db, b, 100, 200);
+        insert_trip(&db, c, 200, 300);
+
+        let conn = db.lock().unwrap();
+        assert!(
+            chronologically_sequential(&conn, a, &[b.to_string(), c.to_string()])
+                .unwrap(),
+            "A → B → C is a clean chain"
+        );
+        drop(conn);
+
+        // Interleaved: A (0-300) — covers the same span as B+C. After
+        // a prior merge that extended A's end past B's and C's starts,
+        // adding B/C would produce a backwards-jumping concat.
+        let db2 = open_in_memory().unwrap();
+        insert_trip(&db2, a, 0, 300);
+        insert_trip(&db2, b, 100, 150);
+        insert_trip(&db2, c, 200, 250);
+        let conn = db2.lock().unwrap();
+        assert!(
+            !chronologically_sequential(&conn, a, &[b.to_string(), c.to_string()])
+                .unwrap(),
+            "A (0-300) overlapping B (100-150) and C (200-250) must be detected"
+        );
+    }
+
+    /// End-to-end: a merge whose inputs interleave in time should drop
+    /// all timelapse rows (forcing a Rebuild) instead of producing a
+    /// concat with backwards seams. The merged trip itself succeeds —
+    /// segments are re-linked and the merge directive is recorded —
+    /// but it has no encoded timelapse until the user rebuilds.
+    #[test]
+    fn merge_with_interleaved_ranges_drops_rows_and_forces_rebuild() {
+        let db = open_in_memory().unwrap();
+
+        // A is the (extended) primary spanning 0-300; B (100-150) falls
+        // entirely inside A's range. Concatting A + B would jump
+        // backwards at the seam from A's end to B's start.
+        let a = parse("11111111-1111-1111-1111-111111111111");
+        let b = parse("22222222-2222-2222-2222-222222222222");
+        seed_trip_with_timelapses(&db, &a.to_string(), "seg-a");
+        seed_trip_with_timelapses(&db, &b.to_string(), "seg-b");
+        // Override the trip ranges to set up the interleaving shape.
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "UPDATE trips SET start_time_ms = 0, end_time_ms = 300 WHERE id = ?1",
+                params![a.to_string()],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE trips SET start_time_ms = 100, end_time_ms = 150 WHERE id = ?1",
+                params![b.to_string()],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(count_jobs(&db, &a.to_string()), 9);
+        assert_eq!(count_jobs(&db, &b.to_string()), 9);
+
+        let report = merge_trips(
+            &db,
+            a,
+            &[b],
+            TimelapseMergeStrategy::ConcatWherePossible,
+            Some("/nonexistent-ffmpeg".into()),
+        )
+        .expect("merge itself should succeed; just no concat is performed");
+
+        // Concat path was skipped — no tuples got concatenated, all
+        // rows for both trips were dropped to force a rebuild.
+        assert!(
+            report.concatenated.is_empty(),
+            "no tuples should have been concatenated"
+        );
+        // Both trips' timelapse rows are now gone. Primary will need
+        // a rebuild for the merged trip to have a playable timelapse.
+        assert_eq!(count_jobs(&db, &a.to_string()), 0);
+        assert_eq!(count_jobs(&db, &b.to_string()), 0);
+    }
 }

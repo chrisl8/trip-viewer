@@ -31,6 +31,7 @@ import {
   onTimelapseStart,
   onTimelapseProgress,
   onTimelapseDone,
+  onTimelapseScanning,
 } from "./ipc/timelapse";
 import {
   getStartupStatus,
@@ -53,6 +54,8 @@ function App() {
   const librarySummary = useStore((s) => s.librarySummary);
   const reclaimableFilter = useStore((s) => s.reclaimableFilter);
   const setReclaimableFilter = useStore((s) => s.setReclaimableFilter);
+  const currentArchive = useStore((s) => s.currentArchive);
+  const libraryFirstLoadDone = useStore((s) => s.libraryFirstLoadDone);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [version, setVersion] = useState("");
   const [startup, setStartup] = useState<StartupSnapshot | null>(null);
@@ -118,6 +121,13 @@ function App() {
     unlisteners.push(
       onStartupDone((s) => {
         if (!cancelled) setStartup(s);
+        // Startup runs `flag_missing_outputs`, which flips any
+        // timelapse_jobs row whose output file is missing on disk
+        // from done → failed. Re-pull the jobs list so the Trips
+        // table and Overall coverage reflect those transitions
+        // (otherwise the stale done rows shown at first mount
+        // continue to offer a Play button that 404s).
+        void useStore.getState().refreshTimelapseJobs();
       }),
     );
     getStartupStatus()
@@ -186,6 +196,11 @@ function App() {
   useEffect(() => {
     const unlisteners: Promise<() => void>[] = [];
     unlisteners.push(
+      onTimelapseScanning((active) => {
+        useStore.setState({ timelapseScanning: active });
+      }),
+    );
+    unlisteners.push(
       onTimelapseStart((e) => {
         useStore.setState({
           timelapseRunning: true,
@@ -211,6 +226,7 @@ function App() {
       onTimelapseDone((result) => {
         useStore.setState({
           timelapseRunning: false,
+          timelapseScanning: false,
           timelapseLastResult: result,
         });
         // Jobs list may have new rows — refresh so the trip table
@@ -229,10 +245,27 @@ function App() {
   const issuesOpen = mainView === "issues";
   const issueBreakdown = kindCounts(scanErrors);
 
+  // Keep the splash up until both backend startup work AND the initial
+  // library scan have completed. The scan can run for several seconds
+  // on a big archive, and the sidebar's small "Loading library…" hint
+  // is easy to miss on a large display — meanwhile Import from SD and
+  // Open archive would otherwise be live and could race against the
+  // in-flight scan. `libraryLoading` is gated on `currentArchive` so
+  // we don't flash a splash before hydration tells us there's an
+  // archive to load.
+  const libraryLoading = currentArchive != null && !libraryFirstLoadDone;
+  const startupRunning = !!(startup && !startup.done);
+  const showSplash = startupRunning || libraryLoading;
+
   return (
     <HevcSupportGate>
     <>
-    {startup && !startup.done && <StartupSplash snapshot={startup} />}
+    {showSplash && (
+      <StartupSplash
+        snapshot={startup ?? { tasks: [], done: false }}
+        libraryLoading={libraryLoading}
+      />
+    )}
     <div className="flex h-full">
       <aside className="flex w-72 flex-col border-r border-neutral-800">
         <header className="flex flex-col gap-3 border-b border-neutral-800 p-3">

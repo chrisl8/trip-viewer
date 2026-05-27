@@ -16,6 +16,8 @@ import type { Trip } from "../types/model";
 import {
   concatToFile,
   fileToConcat,
+  linearCurve,
+  tierBaseRate,
   totalConcatDuration,
   type CurveSegment,
 } from "./speedCurve";
@@ -161,6 +163,38 @@ export function tripTotalDuration(
   if (fromSegments > 0) return fromSegments;
   if (curve && curve.length > 0) return totalConcatDuration(curve);
   return 0;
+}
+
+/**
+ * Best-effort curve when a `done` timelapse_jobs row has no
+ * `speed_curve_json` — typically a row resurrected by
+ * `relink_present_outputs` whose curve column was wiped by an earlier
+ * `upsert_pending`. Produces a single-segment curve at the tier's base
+ * rate spanning the trip's full duration (segment-sum when any source
+ * segments survive, wall-clock from `start/end_time` otherwise).
+ *
+ * Exact for fixed-rate tiers (8x); for variable tiers (16x/60x) with
+ * pre-existing event windows, the original variable-rate mapping is
+ * gone — the synthesized curve treats the file as fixed-rate, so
+ * trip-time scrubbing is an approximation. The video itself plays
+ * correctly either way.
+ *
+ * Returns null only when the tier label is unknown or the trip has no
+ * usable duration source.
+ */
+export function fallbackCurveForTier(
+  trip: Trip,
+  tier: string,
+): CurveSegment[] | null {
+  const rate = tierBaseRate(tier);
+  if (rate == null) return null;
+  const segmentTotalS = trip.segments.reduce((sum, s) => sum + s.durationS, 0);
+  const wallClockS =
+    (new Date(trip.endTime).getTime() - new Date(trip.startTime).getTime()) /
+    1000;
+  const durationS = segmentTotalS > 0 ? segmentTotalS : Math.max(0, wallClockS);
+  if (durationS <= 0) return null;
+  return linearCurve(durationS, rate);
 }
 
 /**
