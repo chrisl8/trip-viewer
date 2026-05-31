@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { useStore } from "../../state/store";
 import { CATEGORY_COLORS } from "../../utils/tagColors";
 import { formatBytes } from "../../utils/format";
+import { type ArchiveOnDisk, tripArchiveOnDisk } from "../../ipc/timelapse";
 import { computeTripArchiveStatus } from "./tripArchiveStatus";
 
 interface Props {
@@ -62,6 +63,40 @@ export function DeleteSelectedSegmentsDialog({
     [jobs, loadedTripId],
   );
 
+  // Live on-disk archive verification — block the irreversible delete if
+  // the trip's claimed timelapse files are actually missing/unreachable.
+  // See DeleteOriginalsDialog for the rationale.
+  const [onDisk, setOnDisk] = useState<ArchiveOnDisk | null>(null);
+  const [checking, setChecking] = useState(true);
+  useEffect(() => {
+    if (!loadedTripId) {
+      setChecking(false);
+      return;
+    }
+    let active = true;
+    setChecking(true);
+    tripArchiveOnDisk(loadedTripId)
+      .then((r) => active && setOnDisk(r))
+      .catch(() => active && setOnDisk(null))
+      .finally(() => active && setChecking(false));
+    return () => {
+      active = false;
+    };
+  }, [loadedTripId]);
+
+  const blockReason = !archiveExists
+    ? null // no archive is a deliberate discard choice, not an error
+    : checking
+      ? "Verifying the timelapse archive on disk…"
+      : !onDisk
+        ? "Couldn't verify the timelapse archive — try again."
+        : !onDisk.archiveReachable && onDisk.doneJobs > 0
+          ? "Can't reach the archive drive. Connect it so the timelapse can be verified before deleting."
+          : onDisk.missingFiles.length > 0
+            ? `${onDisk.missingFiles.length} timelapse file(s) for this trip are missing on disk — the archive is incomplete. Rebuild this trip before deleting.`
+            : null;
+  const blocked = blockReason !== null;
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onCancel();
@@ -109,6 +144,11 @@ export function DeleteSelectedSegmentsDialog({
             anyway?
           </p>
         )}
+        {blocked && (
+          <p className="mt-2 rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
+            {blockReason}
+          </p>
+        )}
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onCancel}
@@ -119,15 +159,15 @@ export function DeleteSelectedSegmentsDialog({
           </button>
           <button
             onClick={onConfirm}
-            disabled={busy || summary.count === 0}
+            disabled={busy || summary.count === 0 || blocked}
             className={clsx(
               "rounded-md px-3 py-1 text-sm text-white",
-              busy || summary.count === 0
+              busy || summary.count === 0 || blocked
                 ? "cursor-not-allowed bg-neutral-700"
                 : "bg-red-700 hover:bg-red-600",
             )}
           >
-            Move to trash
+            {checking && archiveExists ? "Verifying…" : "Move to trash"}
           </button>
         </div>
       </div>

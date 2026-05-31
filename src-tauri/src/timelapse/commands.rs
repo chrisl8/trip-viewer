@@ -301,3 +301,75 @@ pub async fn list_timelapse_jobs(
     }
     Ok(rows)
 }
+
+/// On-disk archive completeness for a single trip. Used by the
+/// Delete-Originals / Delete-Selected-Segments confirmations to BLOCK
+/// the irreversible delete unless a usable timelapse genuinely exists on
+/// disk — not just a `done` row in the DB (the file could have been
+/// deleted out from under us, or live on an unplugged drive).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveOnDisk {
+    /// Count of `done` timelapse_jobs rows for the trip.
+    pub done_jobs: usize,
+    /// Of those, how many output files are actually present on disk.
+    pub files_present: usize,
+    /// Archive-relative paths of `done` jobs whose file is missing.
+    pub missing_files: Vec<String>,
+    /// True when the archive root (Timelapses dir) is reachable at all.
+    /// False ⇒ the drive is likely unplugged; callers should treat the
+    /// result as "unknown" rather than "files missing".
+    pub archive_reachable: bool,
+}
+
+/// Verify a trip's timelapse outputs exist on disk right now. Live check
+/// (no cached status) so it catches a file deleted since the last
+/// startup sweep. `archive_reachable=false` distinguishes an unplugged
+/// drive from genuinely-missing files so the UI never falsely blocks.
+#[tauri::command]
+pub async fn trip_archive_on_disk(
+    trip_id: String,
+    slot: State<'_, ArchiveSlot>,
+) -> Result<ArchiveOnDisk, AppError> {
+    let db = require_db(&slot)?;
+    let archive_root = db.archive_root().to_path_buf();
+    let archive_reachable = archive_root.join("Timelapses").exists();
+
+    let conn = db
+        .lock()
+        .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
+    let mut stmt = conn.prepare(
+        "SELECT output_path FROM timelapse_jobs
+         WHERE trip_id = ?1 AND status = ?2 AND output_path IS NOT NULL",
+    )?;
+    let rels: Vec<String> = stmt
+        .query_map(
+            rusqlite::params![trip_id, db::timelapse_jobs::STATUS_DONE],
+            |r| r.get::<_, String>(0),
+        )?
+        .filter_map(Result::ok)
+        .collect();
+
+    let mut files_present = 0usize;
+    let mut missing_files = Vec::new();
+    for rel in &rels {
+        let abs = crate::paths::from_archive_relative(rel, &archive_root);
+        if abs.exists() {
+            files_present += 1;
+        } else {
+            missing_files.push(rel.clone());
+        }
+    }
+    Ok(ArchiveOnDisk {
+        done_jobs: rels.len(),
+        files_present,
+        // If the drive is unplugged everything "looks" missing; don't
+        // report that as a real gap.
+        missing_files: if archive_reachable {
+            missing_files
+        } else {
+            Vec::new()
+        },
+        archive_reachable,
+    })
+}

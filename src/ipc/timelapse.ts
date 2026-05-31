@@ -114,6 +114,21 @@ export function listTimelapseJobs(): Promise<TimelapseJobRow[]> {
   return invoke<TimelapseJobRow[]>("list_timelapse_jobs");
 }
 
+/** Live on-disk archive check for one trip. Used to hard-block
+ *  delete-originals when a usable timelapse doesn't actually exist on
+ *  disk (file deleted, or — `archiveReachable=false` — the drive is
+ *  unplugged, in which case the result is "unknown", not "missing"). */
+export interface ArchiveOnDisk {
+  doneJobs: number;
+  filesPresent: number;
+  missingFiles: string[];
+  archiveReachable: boolean;
+}
+
+export function tripArchiveOnDisk(tripId: string): Promise<ArchiveOnDisk> {
+  return invoke<ArchiveOnDisk>("trip_archive_on_disk", { tripId });
+}
+
 export interface PruneSummary {
   trashed: number;
   bytesReclaimed: number;

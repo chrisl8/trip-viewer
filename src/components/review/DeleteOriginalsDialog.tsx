@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { useStore } from "../../state/store";
 import type { Trip } from "../../types/model";
 import { formatBytes } from "../../utils/format";
+import { type ArchiveOnDisk, tripArchiveOnDisk } from "../../ipc/timelapse";
 import { computeTripArchiveStatus } from "./tripArchiveStatus";
 
 interface Props {
@@ -67,6 +68,36 @@ export function DeleteOriginalsDialog({
     [jobs, trip.id],
   );
 
+  // Live on-disk verification. The DB `status='done'` can lie: the file
+  // may have been deleted out from under us, or sit on an unplugged
+  // drive. Block the irreversible delete on the insidious case — an
+  // archive that *claims* to exist but whose files are gone — without
+  // touching the legitimate "no archive, discard this footage" choice.
+  const [onDisk, setOnDisk] = useState<ArchiveOnDisk | null>(null);
+  const [checking, setChecking] = useState(true);
+  useEffect(() => {
+    let active = true;
+    setChecking(true);
+    tripArchiveOnDisk(trip.id)
+      .then((r) => active && setOnDisk(r))
+      .catch(() => active && setOnDisk(null))
+      .finally(() => active && setChecking(false));
+    return () => {
+      active = false;
+    };
+  }, [trip.id]);
+
+  const blockReason = checking
+    ? "Verifying the timelapse archive on disk…"
+    : !onDisk
+      ? "Couldn't verify the timelapse archive — try again."
+      : !onDisk.archiveReachable && onDisk.doneJobs > 0
+        ? "Can't reach the archive drive. Connect it so the timelapse can be verified before deleting originals."
+        : onDisk.missingFiles.length > 0
+          ? `${onDisk.missingFiles.length} timelapse file(s) for this trip are missing on disk — the archive is incomplete. Rebuild this trip before deleting its originals.`
+          : null;
+  const blocked = blockReason !== null;
+
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/60"
@@ -97,6 +128,14 @@ export function DeleteOriginalsDialog({
             this footage won't be recoverable.
           </p>
         )}
+        {/* Hard block — only for an archive that should exist but whose
+            files are missing/unverifiable. Distinct (red) from the soft
+            amber "no archive" choice above. */}
+        {blocked && archiveExists && (
+          <p className="mt-2 rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
+            {blockReason}
+          </p>
+        )}
         {errorMessage && (
           <p className="mt-2 rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
             {errorMessage}
@@ -112,15 +151,19 @@ export function DeleteOriginalsDialog({
           </button>
           <button
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || (blocked && archiveExists)}
             className={clsx(
               "rounded-md px-3 py-1 text-sm text-white",
-              busy
+              busy || (blocked && archiveExists)
                 ? "cursor-not-allowed bg-neutral-700"
                 : "bg-red-700 hover:bg-red-600",
             )}
           >
-            {busy ? "Deleting…" : "Move originals to trash"}
+            {busy
+              ? "Deleting…"
+              : checking && archiveExists
+                ? "Verifying…"
+                : "Move originals to trash"}
           </button>
         </div>
       </div>
