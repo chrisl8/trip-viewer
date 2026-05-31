@@ -216,6 +216,24 @@ pub fn flag_missing_outputs(db: &DbHandle) -> Result<(), AppError> {
     if candidates.is_empty() {
         return Ok(());
     }
+    // Safety guard for archives on removable/network mounts (this app's
+    // common case). The DB lives inside the archive, so opening it proves
+    // the root is mounted — but a transient or partial mount could leave
+    // the Timelapses dir unreachable while done rows still reference it.
+    // Without this, every `abs.exists()` would return false and we'd flip
+    // the entire library to `failed`. If there are done outputs on record
+    // but the Timelapses dir isn't there, treat the archive as not fully
+    // reachable and skip — better to do nothing than to mass-fail.
+    let timelapses_dir = archive_root.join("Timelapses");
+    if !timelapses_dir.exists() {
+        eprintln!(
+            "[timelapse] cleanup: {} done row(s) on record but {} is unreachable — \
+             skipping missing-output sweep (drive not fully mounted?)",
+            candidates.len(),
+            timelapses_dir.display()
+        );
+        return Ok(());
+    }
     let mut flagged = 0u64;
     for (trip_id, tier, channel, output_path) in candidates {
         let abs = crate::paths::from_archive_relative(&output_path, &archive_root);
@@ -1220,6 +1238,46 @@ mod tests {
             .unwrap_or("")
             .contains("missing on disk"));
 
+        drop(conn);
+        let _ = fs::remove_dir_all(&archive_root);
+    }
+
+    /// Unplugged/partial-mount guard: if done rows reference outputs but
+    /// the Timelapses dir isn't present (drive not fully mounted), the
+    /// sweep must NOT flip the whole library to failed — it does nothing.
+    #[test]
+    fn does_not_flag_when_timelapses_dir_is_unreachable() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let archive_root = temp_dir().join(format!(
+            "tripviewer-cleanup-unmount-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = fs::remove_dir_all(&archive_root);
+        // Archive root exists (DB opened) but NO Timelapses dir — mimics
+        // a partial mount where outputs are unreachable.
+        fs::create_dir_all(&archive_root).unwrap();
+        let db = crate::db::open_in_memory_with_root(&archive_root).unwrap();
+        {
+            let conn = db.lock().unwrap();
+            db::timelapse_jobs::upsert_pending(&conn, "t", "8x", "F").unwrap();
+            db::timelapse_jobs::mark_done(
+                &conn, "t", "8x", "F", "Timelapses/t_8x_F.mp4", "7.0", "hevc_nvenc", 0, "[]", None,
+            )
+            .unwrap();
+        }
+
+        flag_missing_outputs(&db).unwrap();
+
+        let conn = db.lock().unwrap();
+        let row = db::timelapse_jobs::get(&conn, "t", "8x", "F").unwrap().unwrap();
+        assert_eq!(
+            row.status,
+            db::timelapse_jobs::STATUS_DONE,
+            "must not flip done→failed when the Timelapses dir is unreachable"
+        );
         drop(conn);
         let _ = fs::remove_dir_all(&archive_root);
     }
