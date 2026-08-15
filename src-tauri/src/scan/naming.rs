@@ -9,6 +9,7 @@ use crate::error::AppError;
 use crate::model::{LABEL_FRONT, LABEL_INTERIOR, LABEL_REAR};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
+use regex::Regex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventMode {
@@ -308,10 +309,12 @@ impl FilenameParser for MiltonaParser {
 // ── Generic 4-channel fallback ──────────────────────────────────────────────
 //
 // Best-effort catch-all for 4-channel dashcams. Looks for a timestamp anywhere
-// in the filename followed by a single channel letter (A/B/C/D) or digit (1-4)
-// as the last underscore-separated component before the extension.
+// in the filename followed by a single channel letter (A/B/C/D), (F=Front,
+// I=Interior, R=Rear) or digit (1-4) as the last underscore-separated component
+// before the extension.
 //
 // Example formats that should match:
+//   `2026_0306_072552_F.MP4`
 //   `2026_03_06_072552_A.MP4`
 //   `2026_03_06_072552_1.MP4`
 //   `CAM_2026_03_06_072552_B.MP4`
@@ -328,13 +331,18 @@ impl FilenameParser for Generic4ChannelParser {
             return None;
         }
 
-        // Channel suffix: last part must be a single char A-D or 1-4.
-        let chan = parts.last()?;
-        let channel_label = match *chan {
+        // Channel suffix: last part must be an optional decimal number followed by an optional P followed by a single char A-D, F, I, R or 1-4.
+        let last = parts.last()?;
+        let re = Regex::new(r"^\d*[pP]?").unwrap();
+        let chan = re.replace(last, "").to_string();
+        let channel_label = match &*chan {
             "A" | "a" => "Channel A".to_string(),
             "B" | "b" => "Channel B".to_string(),
             "C" | "c" => "Channel C".to_string(),
             "D" | "d" => "Channel D".to_string(),
+            "F" | "f" => LABEL_FRONT.to_string(),
+            "I" | "i" => LABEL_INTERIOR.to_string(),
+            "R" | "r" => LABEL_REAR.to_string(),
             "1" => "Channel 1".to_string(),
             "2" => "Channel 2".to_string(),
             "3" => "Channel 3".to_string(),
@@ -343,6 +351,7 @@ impl FilenameParser for Generic4ChannelParser {
         };
 
         // Look for a date + time in the earlier parts. Accept two shapes:
+        //   YYYY MMDD HHMMSS (3 consecutive parts)
         //   YYYY MM DD HHMMSS (4 consecutive parts)
         //   YYYY MM DD HH MM SS (6 consecutive parts)
         let earlier = &parts[..parts.len() - 1];
@@ -364,6 +373,16 @@ impl FilenameParser for Generic4ChannelParser {
 /// a stable key derived from the matched slice (so all channels from the
 /// same recording produce the same key).
 fn find_timestamp(parts: &[&str]) -> Option<(NaiveDateTime, String)> {
+    // Try YYYY_MMDD_HHMMSS (3 parts in a row).
+    for i in 0..parts.len().saturating_sub(2) {
+        let window = &parts[i..i + 3];
+        let dt_str = format!("{}_{}_{}", window[0], window[1], window[2]);
+        if let Ok(dt) =
+            NaiveDateTime::parse_from_str(&dt_str, "%Y_%m%d_%H%M%S")
+        {
+            return Some((dt, dt_str));
+        }
+    }
     // Try YYYY_MM_DD_HHMMSS (4 parts in a row).
     for i in 0..parts.len().saturating_sub(3) {
         let window = &parts[i..i + 4];
