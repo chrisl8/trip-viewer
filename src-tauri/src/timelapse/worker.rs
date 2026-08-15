@@ -776,6 +776,7 @@ fn camera_kind_from_str(s: &str) -> CameraKind {
         "thinkware" => CameraKind::Thinkware,
         "miltona" => CameraKind::Miltona,
         "mai70" => CameraKind::Mai70,
+        "viofo" => CameraKind::Viofo,
         _ => CameraKind::Generic,
     }
 }

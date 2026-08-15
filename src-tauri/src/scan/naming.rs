@@ -1,6 +1,7 @@
 //! Filename parsing with auto-detection across multiple dashcam formats.
 //!
-//! We try each parser in order (Wolf Box → Thinkware → Miltona → 70mai → Generic4Channel)
+//! We try each parser in order (Wolf Box → Thinkware → Miltona → 70mai
+//! → Viofo → Generic4Channel)
 //! and use the first one that recognizes the filename. This lets the app
 //! accept footage from any supported dashcam without the user having to
 //! configure anything or rename files.
@@ -30,6 +31,7 @@ pub enum CameraKind {
     /// 70mai (4K T800 and likely other models using the same `NO…`/`EV…`
     /// naming). Serialized as `"mai70"`.
     Mai70,
+    Viofo,
     Generic,
 }
 
@@ -44,6 +46,7 @@ impl CameraKind {
         match self {
             CameraKind::WolfBox => true,
             CameraKind::Miltona => true,
+            CameraKind::Viofo => true,
             CameraKind::Thinkware => false,
             // 70mai: GPS decoded from the per-frame telemetry track
             // (see `gps/mai70.rs`).
@@ -96,6 +99,7 @@ fn parsers() -> Vec<Box<dyn FilenameParser>> {
         Box::new(ThinkwareParser),
         Box::new(MiltonaParser),
         Box::new(Mai70Parser),
+        Box::new(ViofoParser),
         Box::new(Generic4ChannelParser),
     ]
 }
@@ -388,6 +392,99 @@ impl FilenameParser for Mai70Parser {
         })
     }
 }
+
+// ── Viofo ─────────────────────────────────────────────────────────────────
+//
+// Format: `{YYYY}_{MMDD}_{HHMMSS}_{nnnnn}{P}{C}.MP4`
+// Example: `2026_1127_151504_00406F.MP4`
+//   YYYY = four-digit year
+//   nnnnn = 5-digit monotonic serial (disambiguates same-second clips)
+//   P = optional letter P for parking mode; if missing, the clip is normal
+//   C = channel letter F/I/R
+
+struct ViofoParser;
+
+impl FilenameParser for ViofoParser {
+    fn parse(&self, filename: &str) -> Option<ParsedName> {
+        let stem = strip_video_ext(filename)?;
+        let parts: Vec<&str> = stem.split('_').collect();
+        if parts.len() != 4 {
+            return None;
+        }
+
+        let year = parts[0];
+        let date = parts[1];
+        let time = parts[2];
+        let tail = parts[3];
+
+        // Date: 4 digits YYYY
+        if year.len() != 4 || !date.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        // Date: 4 digits MMDD.
+        if date.len() != 4 || !date.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        // Time: 6 digits HHMMSS.
+        if time.len() != 6 || !time.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let hourmin = &time[0..4];
+        // Tail: one or more digits + one channel letter.
+        if tail.len() < 2 {
+            return None;
+        }
+        let (serial_parking, chan) = tail.split_at(tail.len() - 1);
+        let sp_len = serial_parking.len();
+        let (serial, parking) = if serial_parking[sp_len - 1..sp_len] == *"P" {
+            (&serial_parking[..sp_len - 1], "P")
+        } else {
+            (serial_parking, "N")
+        };
+        if !serial.is_empty() && !serial.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+
+        // YY → 20YY. The brand's first firmware-dated recordings are from
+        // ~2021; two-digit years won't wrap until 2100.
+        let yy: u32 = year.parse().ok()?;
+        let mo: u32 = date[0..2].parse().ok()?;
+        let da: u32 = date[2..4].parse().ok()?;
+        let hh: u32 = time[0..2].parse().ok()?;
+        let mi: u32 = time[2..4].parse().ok()?;
+        let se: u32 = time[4..6].parse().ok()?;
+
+        let dt_str = format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            yy,
+            mo,
+            da,
+            hh,
+            mi,
+            se
+        );
+        let start_time =
+            NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%dT%H:%M:%S").ok()?;
+
+        let channel_label = match chan {
+            "F" => LABEL_FRONT.to_string(),
+            "R" => LABEL_REAR.to_string(),
+            "I" => LABEL_INTERIOR.to_string(),
+            _ => return None,
+        };
+
+        let group_key = format!("vf:{year}_{date}_{hourmin}_{parking}");
+
+        Some(ParsedName {
+            start_time,
+            event_mode: EventMode::Normal,
+            channel_label,
+            group_key,
+            camera_kind: CameraKind::Viofo,
+        })
+    }
+}
+
 
 // ── Generic 4-channel fallback ──────────────────────────────────────────────
 //
