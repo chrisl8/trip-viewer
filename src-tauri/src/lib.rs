@@ -5,6 +5,8 @@ mod error;
 pub mod gps;
 mod import;
 mod issues;
+#[cfg(target_os = "linux")]
+pub mod linux_media_env;
 mod metadata;
 mod migration_v2;
 mod model;
