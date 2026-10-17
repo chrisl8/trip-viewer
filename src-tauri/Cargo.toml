@@ -37,6 +37,8 @@ thiserror = "1"
 trash = "5"
 uuid = {version = "1", features = ["v4", "v5", "serde"] }
 walkdir = "2.5.0"
+regex = "1.13.1"
+num-traits = "0.2.19"
 
 [dev-dependencies]
 tempfile = "3"
