@@ -2,6 +2,7 @@ mod app_settings;
 mod archive;
 mod db;
 mod error;
+mod export;
 pub mod gps;
 mod import;
 mod issues;
@@ -115,6 +116,7 @@ pub fn run() {
         .manage(VideoPort(video_port))
         .manage(scans::worker::new_shared_state())
         .manage(timelapse::worker::new_shared_state())
+        .manage(export::commands::new_shared_state())
         .setup(move |app| {
             use tauri::Manager;
             use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
@@ -283,6 +285,8 @@ pub fn run() {
             scans::commands::list_scan_coverage,
             scans::commands::start_scan,
             scans::commands::cancel_scan,
+            export::commands::start_export,
+            export::commands::cancel_export,
             timelapse::commands::get_timelapse_settings,
             timelapse::commands::clear_timelapse_settings,
             timelapse::commands::test_ffmpeg,
