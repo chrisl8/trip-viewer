@@ -1,3 +1,5 @@
+import { normalizeOverlayPanels, type CameraLayout, type OverlayPanels } from "./overlayLayout";
+
 export interface LayoutPreferences {
   hiddenChannels: string[];
   sidebarCollapsed: boolean;
@@ -6,6 +8,8 @@ export interface LayoutPreferences {
   secondarySplit: number;
   mapShare: number;
   timelineHeightPx: number | null;
+  cameraLayout: CameraLayout;
+  overlayPanels: OverlayPanels;
 }
 
 const STORAGE_KEY = "tripviewer.layout.v1";
@@ -24,6 +28,8 @@ export const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
   secondarySplit: 0.5,
   mapShare: 0.25,
   timelineHeightPx: null,
+  cameraLayout: "grid",
+  overlayPanels: {},
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -39,6 +45,8 @@ function normalize(
 ): LayoutPreferences {
   const timeline = value?.timelineHeightPx;
   return {
+    cameraLayout: value?.cameraLayout === "overlay" ? "overlay" : "grid",
+    overlayPanels: normalizeOverlayPanels(value?.overlayPanels),
     hiddenChannels: Array.isArray(value?.hiddenChannels) ? [...new Set(value.hiddenChannels.filter((v): v is string => typeof v === "string"))] : [],
     sidebarCollapsed: value?.sidebarCollapsed === true,
     dashboardTimelineCollapsed: value?.dashboardTimelineCollapsed === true,

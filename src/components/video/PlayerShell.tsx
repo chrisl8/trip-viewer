@@ -29,6 +29,8 @@ import { getLayoutPreferences, saveLayoutPreferences, subscribeLayoutPreferences
 import { WelcomePanel } from "../welcome/WelcomePanel";
 import { decideShowMap } from "./decideShowMap";
 import { VideoGrid } from "./VideoGrid";
+import { VideoLayoutControls } from "./VideoLayoutControls";
+import { useCameraLayout } from "./useCameraLayout";
 import { healthyLineup } from "./channelHealth";
 
 /** Map the backend's F/I/R channel code to the frontend's canonical
@@ -48,6 +50,7 @@ function channelLabelFromCode(code: string): string {
 }
 
 export function PlayerShell() {
+  const cameraLayout = useCameraLayout();
   // Single map of label → <video> element, populated by callback refs in
   // VideoGrid. Stable across renders so useSyncEngine's deps array doesn't
   // churn. Keyed by channel label so it works for any channel count.
@@ -738,8 +741,11 @@ export function PlayerShell() {
 
   return (
     <div data-tripviewer-player className="flex h-full w-full flex-col bg-neutral-950">
+      <VideoLayoutControls layout={cameraLayout} hidden={fullscreenKind === "video"}
+        labels={activeSegmentForVideo?.channels.filter(channel => !hiddenChannels.includes(channel.label)).map(channel => channel.label) ?? []} />
       <div className={`relative grid min-h-0 flex-1 ${gridCols} gap-2 p-2`}>
         <VideoGrid
+          cameraLayout={cameraLayout}
           hiddenChannels={hiddenChannels}
           onFullscreenKindChange={setFullscreenKind}
           channelRefs={channelRefs}

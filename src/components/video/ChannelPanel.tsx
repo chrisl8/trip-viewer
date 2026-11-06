@@ -15,6 +15,8 @@ import {
 } from "../../ipc/mediaHealth";
 import { useStore } from "../../state/store";
 import { usePausedZoom } from "./usePausedZoom";
+import { useOverlayCrop } from "./useOverlayCrop";
+import type { OverlayCrop, OverlayFrame } from "../../settings/overlayLayout";
 import { shouldMuteChannelAudio } from "./audioPolicy";
 
 // Diagnostic toggles. Both default off so production builds stay silent.
@@ -72,6 +74,9 @@ function delay(ms: number): Promise<void> {
 }
 
 interface Props {
+  overlayCrop?: OverlayCrop;
+  overlayFrame?: OverlayFrame;
+  disablePausedZoom?: boolean;
   label: string;
   src: string;
   filePath: string;
@@ -102,6 +107,9 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
     onContextMenu,
     onMediaError,
     onMediaRecovered,
+    overlayCrop,
+    overlayFrame,
+    disablePausedZoom = false,
   }, ref) {
     const [error, setError] = useState<string | null>(null);
     const [ready, setReady] = useState(false);
@@ -134,8 +142,9 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
     // Merge the forwarded ref with our local ref so we can attach debug
     // listeners without disturbing whatever the parent is doing with the ref.
     const isPlaying = useStore(s => s.isPlaying);
-    const canZoom = !isPlaying && ready && !error && !gapped;
+    const canZoom = !overlayCrop && !disablePausedZoom && !isPlaying && ready && !error && !gapped;
     const zoom = usePausedZoom(localRef, canZoom, src);
+    const cropStyle = useOverlayCrop(localRef, overlayCrop);
 
     const setRefs = useCallback(
       (node: HTMLVideoElement | null) => {
@@ -497,6 +506,11 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
 
     return (
       <div
+        style={overlayFrame ? {
+          borderRadius: overlayFrame === "mirror" ? "18% 18% 24% 24% / 35% 35% 45% 45%" : "10px",
+          border: overlayFrame === "mirror" ? "3px solid #71717a" : "2px solid #52525b",
+          isolation: "isolate", transform: "translateZ(0)",
+        } : undefined}
         title={canZoom ? "Paused: scroll to zoom, drag the enlarged image to pan" : undefined}
         onClickCapture={zoom.onClickCapture}
         onClick={onClick}
@@ -513,7 +527,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           onPointerUp={zoom.onPointerUp}
           onPointerCancel={zoom.onPointerCancel}
           onLostPointerCapture={zoom.onLostPointerCapture}
-          style={{ transform: zoom.view.scale > 1 ? `translate(${zoom.view.x}px, ${zoom.view.y}px) scale(${zoom.view.scale})` : undefined,
+          style={cropStyle ?? { transform: zoom.view.scale > 1 ? `translate(${zoom.view.x}px, ${zoom.view.y}px) scale(${zoom.view.scale})` : undefined,
             touchAction: canZoom && zoom.view.scale > 1 ? "none" : "auto",
             cursor: canZoom && zoom.view.scale > 1 ? "grab" : undefined }}
           className="h-full w-full object-contain"
@@ -571,7 +585,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           </div>
         )}
 
-        <div className="absolute left-2 top-2 flex flex-col items-start gap-1">
+        <div hidden={overlayFrame === "mirror"} className="absolute left-2 top-2 flex flex-col items-start gap-1">
           <div
             className={clsx(
               "rounded px-2 py-1 text-xs font-medium uppercase tracking-wide backdrop-blur",

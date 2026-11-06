@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getLayoutPreferences, saveLayoutPreferences } from "../../settings/layout";
 import { useStore } from "../../state/store";
 import { LABEL_FRONT, LABEL_INTERIOR, LABEL_REAR } from "../../types/model";
+import type { CameraLayout } from "../../settings/overlayLayout";
 import {
   savePreferences,
   usePreferences,
@@ -17,6 +18,7 @@ export function SettingsDialog({ open, onClose }: Props) {
   const preferences = usePreferences();
   const [draft, setDraft] = useState<UserPreferences>(preferences);
   const [hiddenChannels, setHiddenChannels] = useState(() => getLayoutPreferences().hiddenChannels);
+  const [cameraLayout, setCameraLayout] = useState<CameraLayout>(() => getLayoutPreferences().cameraLayout);
   const trips = useStore((s) => s.trips);
   const channelLabels = useMemo(() => [...new Set([
     LABEL_FRONT, LABEL_INTERIOR, LABEL_REAR,
@@ -28,6 +30,7 @@ export function SettingsDialog({ open, onClose }: Props) {
     if (open) {
       setDraft(preferences);
       setHiddenChannels(getLayoutPreferences().hiddenChannels);
+      setCameraLayout(getLayoutPreferences().cameraLayout);
     }
   }, [open, preferences]);
 
@@ -43,7 +46,7 @@ export function SettingsDialog({ open, onClose }: Props) {
   if (!open) return null;
 
   function save() {
-    saveLayoutPreferences({ hiddenChannels });
+    saveLayoutPreferences({ hiddenChannels, cameraLayout });
     savePreferences(draft);
     onClose();
   }
@@ -123,6 +126,15 @@ export function SettingsDialog({ open, onClose }: Props) {
 
           <fieldset className="space-y-2 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 pb-3">
             <legend className="px-1 text-xs font-medium text-neutral-300">Display layout</legend>
+            <label className="flex items-center justify-between gap-4 py-1 text-xs text-neutral-300">
+              <span>Camera layout</span>
+              <select aria-label="Default camera layout" value={cameraLayout}
+                onKeyDown={event => event.stopPropagation()}
+                onChange={event => setCameraLayout(event.target.value === "overlay" ? "overlay" : "grid")}
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1">
+                <option value="grid">Classic</option><option value="overlay">Overlay</option>
+              </select>
+            </label>
             <p className="text-[11px] text-neutral-500">
               Choose the cameras and map to display. Hidden views free up space.
             </p>

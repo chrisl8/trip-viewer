@@ -9,6 +9,9 @@ import {
 import type { Segment } from "../../types/model";
 import { channelGridStyle as gridStyle } from "./channelLayout";
 import { ChannelPanel } from "./ChannelPanel";
+import { OverlayHandles } from "./OverlayHandles";
+import type { CameraLayoutController } from "./useCameraLayout";
+import { overlayBackground, overlayPanelFor } from "../../settings/overlayLayout";
 import { useStore } from "../../state/store";
 import { videoSrcFor } from "../../utils/videoSrc";
 import {
@@ -52,6 +55,7 @@ const IS_MAC =
   navigator.userAgent.includes("Mac OS X");
 
 interface Props {
+  cameraLayout: CameraLayoutController;
   hiddenChannels: string[];
   onFullscreenKindChange: (kind: "dashboard" | "video" | null) => void;
   /** Shared map of label → <video> element, populated by callback refs.
@@ -74,6 +78,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function VideoGrid({
+  cameraLayout,
   hiddenChannels,
   onFullscreenKindChange,
   channelRefs,
@@ -301,6 +306,10 @@ export function VideoGrid({
     visibleChannels[0]?.label ?? null;
 
   const secondaries = visibleChannels.filter((c) => c.label !== effectivePrimary);
+  const overlayMode = cameraLayout.mode === "overlay" && singleFullscreenLabel === null;
+  const backgroundLabel = overlayBackground(visibleChannels.map(channel => channel.label));
+  const overlayLabels = visibleChannels.filter(channel => channel.label !== backgroundLabel).map(channel => channel.label);
+  const selectedOverlay = overlayLabels.find(label => label === cameraLayout.selected) ?? overlayLabels[0];
 
   function setRef(label: string) {
     return (node: HTMLVideoElement | null) => {
@@ -491,7 +500,7 @@ export function VideoGrid({
   return (
     <div
       ref={gridRef}
-      className="relative col-span-2 grid gap-2"
+      className={`relative col-span-2 min-h-0 min-w-0 bg-black ${overlayMode ? "isolate" : "grid gap-2"}`}
       style={{
         gridTemplateColumns: singleFullscreenLabel
           ? "minmax(0, 1fr)"
@@ -499,7 +508,7 @@ export function VideoGrid({
         gridTemplateRows: singleFullscreenLabel ? "minmax(0, 1fr)" : gridTemplateRows,
       }}
     >
-      <div className="absolute right-2 top-2 z-20 flex items-center gap-2">
+      <div className="absolute right-2 top-2 z-[60] flex items-center gap-2">
         {singleFullscreenLabel !== null && (
           <button
             type="button"
@@ -524,7 +533,7 @@ export function VideoGrid({
         </button>
       </div>
 
-      {!singleFullscreenLabel && secondaries.length > 0 && (
+      {!overlayMode && !singleFullscreenLabel && secondaries.length > 0 && (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -537,7 +546,7 @@ export function VideoGrid({
         </div>
       )}
 
-      {!singleFullscreenLabel && secondaries.length === 2 && (
+      {!overlayMode && !singleFullscreenLabel && secondaries.length === 2 && (
         <div
           role="separator"
           aria-orientation="horizontal"
@@ -580,7 +589,7 @@ export function VideoGrid({
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-50 min-w-[13rem] overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
+          className="fixed z-[70] min-w-[13rem] overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           role="menu"
         >
@@ -636,7 +645,7 @@ export function VideoGrid({
         </div>
       )}
 
-      {allChannelsHidden && !hasMapPanel && <div className="col-span-full row-span-full flex items-center justify-center text-sm text-neutral-400">All cameras hidden. Select a camera above to show video.</div>}
+      {allChannelsHidden && !hasMapPanel && <div className={`${overlayMode ? "absolute inset-0" : "col-span-full row-span-full"} flex items-center justify-center text-sm text-neutral-400`}>All cameras hidden. Select a camera in Settings to show video.</div>}
       {channels.map((channel) => {
         const isPrimary = channel.label === effectivePrimary;
         const idx = isPrimary
@@ -646,16 +655,25 @@ export function VideoGrid({
         const singleTarget = singleFullscreenLabel === channel.label;
         const singleHidden = hiddenChannels.includes(channel.label) ||
           (singleFullscreenLabel !== null && !singleTarget);
+        const overlayIndex = overlayLabels.indexOf(channel.label);
+        const overlayPanel = overlayMode && channel.label !== backgroundLabel
+          ? overlayPanelFor(cameraLayout.panels, channel.label, Math.max(0, overlayIndex)) : undefined;
         const style: CSSProperties = hiddenChannels.includes(channel.label) ? { display: "none" } : singleFullscreenLabel
           ? singleTarget
             ? { gridColumn: "1 / -1", gridRow: "1 / -1" }
             : { display: "none" }
-          : gridStyle(isPrimary, idx, secondaries.length, rowCount);
+          : overlayMode
+            ? overlayPanel
+              ? { position: "absolute", left: `${overlayPanel.x * 100}%`, top: `${overlayPanel.y * 100}%`,
+                  width: `${overlayPanel.width * 100}%`, height: `${overlayPanel.height * 100}%`, zIndex: overlayPanel.order }
+              : { position: "absolute", inset: 0, zIndex: 0 }
+            : gridStyle(isPrimary, idx, secondaries.length, rowCount);
 
         return (
           <div
             key={channel.label}
             data-tripviewer-channel={channel.label}
+            data-overlay-role={overlayMode ? overlayPanel ? "overlay" : "background" : undefined}
             style={style}
             aria-hidden={singleHidden || undefined}
           >
@@ -668,8 +686,11 @@ export function VideoGrid({
               audioEnabled={channel.label === (syncMasterLabel ?? canonicalMasterLabel)}
               onMediaError={onChannelMediaError}
               onMediaRecovered={onChannelMediaRecovered}
-              onClick={isPrimary ? undefined : () => selectPrimary(channel.label)}
-              onDoubleClick={isPrimary ? handleMainDoubleClick : undefined}
+              overlayCrop={overlayPanel?.crop}
+              overlayFrame={overlayPanel?.frame}
+              disablePausedZoom={overlayMode && cameraLayout.editing}
+              onClick={overlayMode || isPrimary ? undefined : () => selectPrimary(channel.label)}
+              onDoubleClick={overlayMode ? () => { void toggleSingleVideoFullscreen(channel.label); } : isPrimary ? handleMainDoubleClick : undefined}
               onContextMenu={(event) => {
                 // WebKitGTK otherwise shows its own media menu with a static
                 // "Switch to Fullscreen" item even while already fullscreen.
@@ -682,6 +703,12 @@ export function VideoGrid({
                 });
               }}
             />
+            {overlayMode && overlayPanel && cameraLayout.editing && !singleHidden && (
+              <OverlayHandles label={channel.label} panel={overlayPanel} selected={selectedOverlay === channel.label}
+                operation={cameraLayout.operation} stageRef={gridRef} getVideo={() => channelRefs.current.get(channel.label) ?? null}
+                onSelect={() => cameraLayout.setSelected(channel.label)}
+                onChange={panel => cameraLayout.update(channel.label, panel)} />
+            )}
           </div>
         );
       })}
