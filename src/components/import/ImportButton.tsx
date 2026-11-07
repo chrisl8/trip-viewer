@@ -1,7 +1,7 @@
 import { useStore } from "../../state/store";
 import { discoverSources, startFolderImport } from "../../ipc/importer";
 import { pickFolder } from "../../ipc/dialog";
-import { openArchive } from "../../ipc/archive";
+import { selectArchive } from "../../state/archiveNavigation";
 
 export function ImportButton() {
   const importStatus = useStore((s) => s.importStatus);
@@ -10,9 +10,9 @@ export function ImportButton() {
   const setImportError = useStore((s) => s.setImportError);
   const setImportRootPath = useStore((s) => s.setImportRootPath);
   const currentArchive = useStore((s) => s.currentArchive);
-  const setCurrentArchive = useStore((s) => s.setCurrentArchive);
+  const archiveLoading = useStore((s) => s.status === "loading");
 
-  const busy = importStatus !== "idle" && importStatus !== "complete" && importStatus !== "error";
+  const busy = archiveLoading || (importStatus !== "idle" && importStatus !== "complete" && importStatus !== "error");
 
   /** Resolve the destination archive, opening it via the backend if
    *  no archive is currently active. Returns null if the user cancels
@@ -22,8 +22,8 @@ export function ImportButton() {
     const chosen = await pickFolder(prompt);
     if (!chosen) return null;
     try {
-      const info = await openArchive(chosen);
-      setCurrentArchive(info);
+      const info = await selectArchive(chosen);
+      if (!info) return null;
       return info.root;
     } catch (e) {
       setImportError(e instanceof Error ? e.message : String(e));
@@ -55,7 +55,7 @@ export function ImportButton() {
   }
 
   async function handleFolderImport() {
-    const sourcePath = await pickFolder("Select the folder of files to import");
+    const sourcePath = await pickFolder("Select the folder of files to import", undefined, "import-source");
     if (!sourcePath) return;
 
     const rootPath = await ensureArchiveRoot("Select your dashcam archive folder");

@@ -546,6 +546,7 @@ pub fn merge_trips(
             .map_err(|_| AppError::Internal("db mutex poisoned".into()))?;
         let tx = conn.transaction()?;
 
+        crate::bookmarks::rebase_for_merge(&tx, &primary_str, &absorbed_strs)?;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let removed_during_timelapse =
             apply_timelapse_plan_in_tx(&tx, &archive_root, &plan, now_ms)?;

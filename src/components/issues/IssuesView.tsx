@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { deleteToTrash } from "../../ipc/issues";
-import { scanFolder } from "../../ipc/scanner";
+import { reloadArchive } from "../../state/archiveNavigation";
 import { useStore } from "../../state/store";
 import type { ScanError, ScanErrorKind } from "../../types/model";
 import { basename, formatBytes, formatTimestamp } from "../../utils/format";
@@ -54,8 +54,6 @@ function sortKey(e: ScanError, col: SortCol): string | number | null {
 export function IssuesView() {
   const scanErrors = useStore((s) => s.scanErrors);
   const setMainView = useStore((s) => s.setMainView);
-  const setScanResult = useStore((s) => s.setScanResult);
-  const setStatus = useStore((s) => s.setStatus);
   const removeScanErrors = useStore((s) => s.removeScanErrors);
 
   const [filterKind, setFilterKind] = useState<ScanErrorKind | null>(null);
@@ -110,18 +108,10 @@ export function IssuesView() {
   };
 
   const onRescan = async () => {
-    const archive = useStore.getState().currentArchive;
-    if (!archive) return;
-    try {
-      setStatus("loading");
-      const result = await scanFolder(archive.root);
-      setScanResult(result);
+    if (await reloadArchive()) {
       // setScanResult flips mainView back to "player" — reopen the issues
       // view so the rescan stays in context.
       setMainView("issues");
-    } catch (e) {
-      console.error("rescan failed", e);
-      setStatus("ready");
     }
   };
 

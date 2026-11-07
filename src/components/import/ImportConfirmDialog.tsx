@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useStore } from "../../state/store";
 import { pickFolder } from "../../ipc/dialog";
-import { openArchive } from "../../ipc/archive";
+import { selectArchive } from "../../state/archiveNavigation";
 import {
   startImport,
   onImportPhase,
@@ -71,8 +71,8 @@ export function ImportConfirmDialog() {
       const chosen = await pickFolder();
       if (!chosen) return; // User cancelled the picker
       try {
-        const info = await openArchive(chosen);
-        useStore.getState().setCurrentArchive(info);
+        const info = await selectArchive(chosen);
+        if (!info) return;
         rootPath = info.root;
       } catch (e) {
         setImportError(e instanceof Error ? e.message : String(e));

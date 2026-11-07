@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { TripLoader } from "./components/loader/TripLoader";
+import { TripLoader, useArchiveAutoScan } from "./components/loader/TripLoader";
 import { TripList } from "./components/loader/TripList";
+import { UpdateChecker } from "./components/UpdateChecker";
 import { HevcSupportGate } from "./components/video/HevcSupportGate";
 import { MainNavTabs } from "./components/MainNavTabs";
 import { PlayerShell } from "./components/video/PlayerShell";
-import { UpdateChecker } from "./components/UpdateChecker";
 import { KeyboardShortcutsHelp } from "./components/KeyboardShortcutsHelp";
 import { ImportButton } from "./components/import/ImportButton";
 import { ImportConfirmDialog } from "./components/import/ImportConfirmDialog";
@@ -20,6 +20,7 @@ import { ReviewView } from "./components/review/ReviewView";
 import { PlacesView } from "./components/places/PlacesView";
 import { TimelapseView } from "./components/timelapse/TimelapseView";
 import { useStore } from "./state/store";
+import { restoreArchive } from "./state/archiveNavigation";
 import { formatBytes } from "./utils/format";
 import { KIND_META, kindCounts } from "./utils/issueKinds";
 import {
@@ -40,6 +41,10 @@ import {
   type StartupSnapshot,
 } from "./ipc/startup";
 import { StartupSplash } from "./components/StartupSplash";
+import {
+  getLayoutPreferences,
+  saveLayoutPreferences,
+} from "./settings/layout";
 
 function App() {
   const trips = useStore((s) => s.trips);
@@ -59,6 +64,11 @@ function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [version, setVersion] = useState("");
   const [startup, setStartup] = useState<StartupSnapshot | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => getLayoutPreferences().sidebarCollapsed,
+  );
+  // Must run regardless of sidebar state: the splash below waits for it.
+  useArchiveAutoScan();
 
   useEffect(() => {
     getVersion().then(setVersion);
@@ -71,18 +81,7 @@ function App() {
     // there's no archive open we mark the library "first load done"
     // immediately — there's nothing to load and the sidebar would
     // otherwise spin forever.
-    void import("./ipc/archive")
-      .then(({ currentArchive }) => currentArchive())
-      .then((info) => {
-        useStore.getState().setCurrentArchive(info);
-        if (!info) {
-          useStore.setState({ libraryFirstLoadDone: true });
-        }
-      })
-      .catch((e) => {
-        console.error("currentArchive hydration failed", e);
-        useStore.setState({ libraryFirstLoadDone: true });
-      });
+    void restoreArchive();
     void useStore.getState().loadUserApplicableTags();
     void useStore.getState().refreshPlaces();
     // Load ffmpeg path + capabilities eagerly so that by the time the
@@ -265,9 +264,29 @@ function App() {
   const startupRunning = !!(startup && !startup.done);
   const showSplash = startupRunning || libraryLoading;
 
+  // Keep PlayerShell mounted while the user visits Scan/Review/Timelapse.
+  // Unmounting it tears down three WebKitGTK/GStreamer pipelines and returning
+  // immediately recreates them; repeated cycles are what preceded the
+  // WebLoaderStrategy internal errors seen in the runtime log. Pause playback
+  // when leaving the Player, but retain all media elements and their buffers.
+  useEffect(() => {
+    if (mainView !== "player") {
+      window.dispatchEvent(new Event("tripviewer:pause-playback"));
+    }
+  }, [mainView]);
+
+  function toggleSidebar() {
+    setSidebarCollapsed((value) => {
+      const next = !value;
+      saveLayoutPreferences({ sidebarCollapsed: next });
+      return next;
+    });
+  }
+
   return (
     <HevcSupportGate>
     <>
+    <UpdateChecker />
     {showSplash && (
       <StartupSplash
         snapshot={startup ?? { tasks: [], done: false }}
@@ -275,99 +294,129 @@ function App() {
       />
     )}
     <div className="flex h-full">
-      <aside className="flex w-72 flex-col border-r border-neutral-800">
-        <header className="flex flex-col gap-3 border-b border-neutral-800 p-3">
-          <h1 className="text-sm font-semibold tracking-tight">Trip Viewer</h1>
-          <TripLoader />
-          <ImportButton />
-          {importError && (
-            <div className="flex items-start gap-2 rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
-              <span className="flex-1">{importError}</span>
-              <button onClick={resetImport} className="shrink-0 text-red-500 hover:text-red-300">
-                ×
-              </button>
-            </div>
-          )}
-          {status === "ready" && trips.length > 0 && (
-            <div className="flex flex-col gap-0.5 text-xs text-neutral-500">
-              <div>
-                {trips.length} trips ·{" "}
-                {trips.reduce((n, t) => n + t.segments.length, 0)} segments
-                {issueCount > 0 && (
-                  <button
-                    onClick={() => setMainView(issuesOpen ? "player" : "issues")}
-                    className={
-                      issuesOpen
-                        ? "ml-1 text-yellow-300 hover:text-yellow-200"
-                        : "ml-1 text-yellow-500 hover:text-yellow-400"
-                    }
-                    title={issuesOpen ? "Close issues view" : "Open issues view"}
-                  >
-                    · {issueCount} {issueCount === 1 ? "issue" : "issues"}{" "}
-                    {issuesOpen ? "◧" : "▸"}
+      <aside
+        className={`relative flex shrink-0 flex-col border-r border-neutral-800 transition-[width] duration-200 ${
+          sidebarCollapsed ? "w-10" : "w-72"
+        }`}
+      >
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          className="absolute -right-3 top-3 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-neutral-700 bg-neutral-900 text-sm text-neutral-300 shadow transition-colors hover:bg-neutral-800 hover:text-white"
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!sidebarCollapsed}
+        >
+          {sidebarCollapsed ? "»" : "«"}
+        </button>
+
+        {!sidebarCollapsed && (
+          <>
+            <header className="flex flex-col gap-3 border-b border-neutral-800 p-3">
+              <h1 className="text-sm font-semibold tracking-tight">Trip Viewer</h1>
+              <TripLoader />
+              <ImportButton />
+              {importError && (
+                <div className="flex items-start gap-2 rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
+                  <span className="flex-1">{importError}</span>
+                  <button onClick={resetImport} className="shrink-0 text-red-500 hover:text-red-300">
+                    ×
                   </button>
-                )}
-              </div>
-              <StorageSummaryLine
-                summary={librarySummary}
-                filterActive={reclaimableFilter}
-                onToggleReclaim={() =>
-                  setReclaimableFilter(!reclaimableFilter)
-                }
-              />
-              {issueCount > 0 && issueBreakdown.length > 0 && (
-                <div className="flex flex-wrap gap-x-2 text-[11px] text-neutral-600">
-                  {issueBreakdown.slice(0, 3).map(({ kind, count }) => (
-                    <span key={kind}>
-                      {count} {KIND_META[kind].label.toLowerCase()}
-                    </span>
-                  ))}
-                  {issueBreakdown.length > 3 && (
-                    <span>+{issueBreakdown.length - 3} more</span>
+                </div>
+              )}
+              {status === "ready" && trips.length > 0 && (
+                <div className="flex flex-col gap-0.5 text-xs text-neutral-500">
+                  <div>
+                    {trips.length} trips ·{" "}
+                    {trips.reduce((n, t) => n + t.segments.length, 0)} segments
+                    {issueCount > 0 && (
+                      <button
+                        onClick={() => setMainView(issuesOpen ? "player" : "issues")}
+                        className={
+                          issuesOpen
+                            ? "ml-1 text-yellow-300 hover:text-yellow-200"
+                            : "ml-1 text-yellow-500 hover:text-yellow-400"
+                        }
+                        title={issuesOpen ? "Close issues view" : "Open issues view"}
+                      >
+                        · {issueCount} {issueCount === 1 ? "issue" : "issues"}{" "}
+                        {issuesOpen ? "◧" : "▸"}
+                      </button>
+                    )}
+                  </div>
+                  <StorageSummaryLine
+                    summary={librarySummary}
+                    filterActive={reclaimableFilter}
+                    onToggleReclaim={() =>
+                      setReclaimableFilter(!reclaimableFilter)
+                    }
+                  />
+                  {issueCount > 0 && issueBreakdown.length > 0 && (
+                    <div className="flex flex-wrap gap-x-2 text-[11px] text-neutral-600">
+                      {issueBreakdown.slice(0, 3).map(({ kind, count }) => (
+                        <span key={kind}>
+                          {count} {KIND_META[kind].label.toLowerCase()}
+                        </span>
+                      ))}
+                      {issueBreakdown.length > 3 && (
+                        <span>+{issueBreakdown.length - 3} more</span>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
-            </div>
-          )}
-          {status === "ready" && trips.length === 0 && (
-            <div className="rounded-md bg-yellow-950 px-2 py-1 text-xs text-yellow-300">
-              No trips found in this folder. Check that it contains Wolf Box
-              MP4 files with _F/_I/_R naming.
-            </div>
-          )}
-          {error && (
-            <div className="rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
-              {error}
-            </div>
-          )}
-        </header>
-        <ImportProgress />
-        <TripList />
-        <footer className="flex items-center justify-between gap-2 border-t border-neutral-800 px-3 py-2.5">
-          <span className="text-xs text-neutral-500">v{version}</span>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() =>
-                void openUrl("https://github.com/chrisl8/trip-viewer/issues")
-              }
-              title="Open the GitHub issues page in your browser. If the app crashed, please attach the panic log from the app's data folder (logs/panic.log)."
-              className="text-xs text-neutral-400 hover:text-neutral-200"
-            >
-              Report a bug
-            </button>
-            <button
-              onClick={() => setShowShortcuts(true)}
-              className="text-xs text-neutral-400 hover:text-neutral-200"
-            >
-              Keyboard shortcuts
-            </button>
-          </div>
-        </footer>
+              {status === "ready" && trips.length === 0 && (
+                <div className="rounded-md bg-yellow-950 px-2 py-1 text-xs text-yellow-300">
+                  No supported recordings found in this folder. Check the selected
+                  folder and the camera model in Settings.
+                </div>
+              )}
+              {error && (
+                <div className="rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">
+                  {error}
+                </div>
+              )}
+            </header>
+            <ImportProgress />
+            <TripList />
+            <footer className="flex items-center justify-between gap-2 border-t border-neutral-800 px-3 py-2.5">
+              <span className="text-xs text-neutral-500">v{version}</span>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() =>
+                    void openUrl("https://github.com/chrisl8/trip-viewer/issues")
+                  }
+                  title="Open the GitHub issues page in your browser. If the app crashed, please attach the panic log from the app's data folder (logs/panic.log)."
+                  className="text-xs text-neutral-400 hover:text-neutral-200"
+                >
+                  Report a bug
+                </button>
+                <button
+                  onClick={() => setShowShortcuts(true)}
+                  className="text-xs text-neutral-400 hover:text-neutral-200"
+                >
+                  Keyboard shortcuts
+                </button>
+              </div>
+            </footer>
+          </>
+        )}
       </aside>
 
       <main className="flex flex-1 flex-col overflow-hidden">
         <MainNavTabs />
         <div className="flex flex-1 flex-col overflow-hidden">
+          <div
+            className={
+              mainView === "player"
+                ? "flex min-h-0 flex-1 flex-col"
+                : "hidden"
+            }
+            aria-hidden={mainView !== "player"}
+          >
+            <PlayerShell />
+          </div>
+
           {mainView === "issues" ? (
             <IssuesView />
           ) : mainView === "scan" ? (
@@ -378,9 +427,7 @@ function App() {
             <PlacesView />
           ) : mainView === "timelapse" ? (
             <TimelapseView />
-          ) : (
-            <PlayerShell />
-          )}
+          ) : null}
         </div>
       </main>
     </div>
@@ -390,7 +437,6 @@ function App() {
     <ImportConfirmDialog />
     <UnknownFilesDialog />
     <ImportSummary />
-    <UpdateChecker />
     </>
     </HevcSupportGate>
   );

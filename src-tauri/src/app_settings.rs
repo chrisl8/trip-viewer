@@ -104,10 +104,9 @@ impl AppSettingsHandle {
     }
 
     /// Apply a mutation under the write lock and persist to disk
-    /// atomically before releasing the lock. If the write fails the
-    /// in-memory state still reflects the change — the next successful
-    /// save will flush it. Returns the error so the caller can decide
-    /// whether to surface it.
+    /// atomically before releasing the lock. A failed save leaves the
+    /// previous in-memory settings intact, so a failed archive selection
+    /// cannot silently become the remembered folder on a later save.
     pub fn update<F>(&self, f: F) -> Result<(), AppError>
     where
         F: FnOnce(&mut AppSettings),
@@ -116,8 +115,11 @@ impl AppSettingsHandle {
             .inner
             .write()
             .map_err(|_| AppError::Internal("app_settings lock poisoned".into()))?;
-        f(&mut guard);
-        save_atomic(&self.path, &guard)
+        let mut next = guard.clone();
+        f(&mut next);
+        save_atomic(&self.path, &next)?;
+        *guard = next;
+        Ok(())
     }
 }
 
@@ -242,6 +244,53 @@ mod tests {
         assert_eq!(s.ffmpeg_path.as_deref(), Some("/usr/bin/ffmpeg"));
         assert_eq!(s.nvenc_hevc, Some(true));
         assert_eq!(s.schema_version, 1);
+    }
+
+    #[test]
+    fn last_archive_survives_switches_other_settings_and_relaunch() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("archive A").to_string_lossy().into_owned();
+        let second = dir
+            .path()
+            .join("archive B ü")
+            .to_string_lossy()
+            .into_owned();
+        let handle = AppSettingsHandle::load(dir.path());
+        handle
+            .update(|s| s.last_archive = Some(first.clone()))
+            .unwrap();
+        assert_eq!(
+            AppSettingsHandle::load(dir.path()).read().last_archive,
+            Some(first)
+        );
+        handle
+            .update(|s| s.last_archive = Some(second.clone()))
+            .unwrap();
+        handle
+            .update(|s| s.timelapse_max_concurrent_jobs = Some(2))
+            .unwrap();
+        let restored = AppSettingsHandle::load(dir.path()).read();
+        assert_eq!(restored.last_archive, Some(second));
+        assert_eq!(restored.timelapse_max_concurrent_jobs, Some(2));
+    }
+
+    #[test]
+    fn failed_archive_save_does_not_leak_into_a_later_settings_update() {
+        let dir = tempdir().unwrap();
+        let blocked = dir.path().join("settings-parent");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let handle = AppSettingsHandle::load(&blocked);
+        assert!(handle
+            .update(|s| s.last_archive = Some("uncommitted-archive".into()))
+            .is_err());
+        assert!(handle.read().last_archive.is_none());
+        std::fs::remove_file(&blocked).unwrap();
+        handle
+            .update(|s| s.timelapse_max_concurrent_jobs = Some(2))
+            .unwrap();
+        let restored = AppSettingsHandle::load(&blocked).read();
+        assert!(restored.last_archive.is_none());
+        assert_eq!(restored.timelapse_max_concurrent_jobs, Some(2));
     }
 
     #[test]

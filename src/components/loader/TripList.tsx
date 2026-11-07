@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
-import { extractGpsBatch, loadTripGps } from "../../ipc/gps";
+import { prepareTripGps } from "../../state/gpsPreparation";
 import { useStore } from "../../state/store";
 import type { Trip } from "../../types/model";
 import type { TimelapseJobRow } from "../../ipc/timelapse";
@@ -105,50 +105,14 @@ export function TripList() {
     const trip = useStore.getState().trips.find((t) => t.id === tripId);
     if (!trip) return;
 
-    // Trip-stitched GPS from the timelapse encoder (migration 0012's
-    // trip_gps table). Used by tiered playback (8x/16x/60x) and by
-    // the map's trip-wide track. Populating this is required for
-    // archive-only trips where the source segments are gone.
+    // GPS is now a real library cache, not a per-view calculation. The backend
+    // returns the current trip_gps row when available; otherwise it extracts
+    // once from the segment camera files, chooses the strongest usable camera
+    // source per segment, persists the stitched result, and returns it.
     try {
-      const archived = await loadTripGps(tripId);
-      if (archived.length > 0) {
-        useStore.setState((s) => ({
-          tripGpsByTrip: { ...s.tripGpsByTrip, [tripId]: archived },
-        }));
-      }
+      await prepareTripGps(trip);
     } catch (e) {
-      console.error("loadTripGps failed:", e);
-    }
-
-    // Archive-only trips have no segment files to extract from.
-    if (trip.archiveOnly) return;
-
-    // Per-segment GPS for Original playback mode. MapPanel uses this
-    // pool (gpsByFile, indexed by file path) to drive the vehicle
-    // marker when playing source segments — the archived trip-wide
-    // pool is indexed by trip-time and only fits tiered modes. We
-    // populate BOTH so the player works in every mode regardless of
-    // whether a trip_gps row exists for this trip. Earlier code
-    // returned here when archived was available, which made every
-    // trip with an archived GPS row show "No GPS data for this
-    // segment" during Original playback.
-    const requests = trip.segments
-      .map((s) => {
-        const path = s.channels[0]?.filePath;
-        if (!path || !s.gpsSupported) return null;
-        return { path, cameraKind: s.cameraKind };
-      })
-      .filter((r): r is { path: string; cameraKind: typeof trip.segments[0]["cameraKind"] } => r !== null);
-    if (requests.length === 0) return;
-    try {
-      const results = await extractGpsBatch(requests);
-      const gpsByFile = { ...useStore.getState().gpsByFile };
-      for (const item of results) {
-        gpsByFile[item.filePath] = item.points;
-      }
-      useStore.setState({ gpsByFile });
-    } catch (e) {
-      console.error("GPS extraction failed:", e);
+      console.error("ensureTripGps failed:", e);
     }
   }
 

@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ChannelMeta, ScanProgress, ScanResult } from "../types/model";
+import { getPreferencesSnapshot } from "../settings/preferences";
 
 export function scanFolder(path: string): Promise<ScanResult> {
-  return invoke<ScanResult>("scan_folder", { path });
+  const { cameraModel } = getPreferencesSnapshot();
+  return invoke<ScanResult>("scan_folder", { path, cameraModel });
 }
 
 export function probeFile(path: string): Promise<ChannelMeta> {

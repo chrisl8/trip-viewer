@@ -1,6 +1,24 @@
-import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
+import {
+  forwardRef,
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import clsx from "clsx";
+import {
+  loadMediaHealth,
+  recordMediaFailure,
+  recordMediaRecovery,
+  type MediaHealthRange,
+} from "../../ipc/mediaHealth";
 import { useStore } from "../../state/store";
+import { usePausedZoom } from "./usePausedZoom";
+import { useOverlayCrop } from "./useOverlayCrop";
+import { overlayBorderRadius, overlayMaskStyle } from "./overlayMask";
+import type { OverlayCrop, OverlayFrame } from "../../settings/overlayLayout";
+import { shouldMuteChannelAudio } from "./audioPolicy";
 
 // Diagnostic toggles. Both default off so production builds stay silent.
 //
@@ -13,8 +31,22 @@ import { useStore } from "../../state/store";
 //   DEBUG_MEDIA_VERBOSE  — per-event stream (~20 events/sec during stutter on
 //                          WebKitGTK). Turn on only for short captures when
 //                          you need event ordering.
-const DEBUG_MEDIA = false;
-const DEBUG_MEDIA_VERBOSE = false;
+function mediaDebugEnabled(key: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+// Runtime toggles: set these in the WebView console and reload the app:
+//   localStorage.setItem("tripviewer.debug.media", "1")
+//   localStorage.setItem("tripviewer.debug.media.verbose", "1")
+const DEBUG_MEDIA = mediaDebugEnabled("tripviewer.debug.media");
+const DEBUG_MEDIA_VERBOSE = mediaDebugEnabled(
+  "tripviewer.debug.media.verbose",
+);
 
 const MEDIA_EVENTS = [
   "loadstart",
@@ -36,22 +68,64 @@ const MEDIA_EVENTS = [
   "error",
 ] as const;
 
+import { probeVideoAt, recoveryDelayMs } from "./mediaRecovery";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 interface Props {
+  overlayCrop?: OverlayCrop;
+  overlayFrame?: OverlayFrame;
+  disablePausedZoom?: boolean;
   label: string;
   src: string;
+  filePath: string;
   isMaster: boolean;
+  /** Audio comes from the canonical SyncEngine master, not necessarily the
+   *  visually enlarged camera. Keeping one stable audio clock prevents audio
+   *  from jumping onto a slave pipeline that has just been re-seeked. */
+  audioEnabled: boolean;
   onClick?: () => void;
   onDoubleClick?: () => void;
+  onContextMenu?: (event: ReactMouseEvent<HTMLVideoElement>) => void;
+  /** Report a terminal media failure for this source. The parent removes the
+   *  failed channel from the active SyncEngine while keeping the panel mounted
+   *  with its error overlay. A new source/segment gets a clean retry. */
+  onMediaError?: (label: string, message: string, cached: boolean) => void;
+  onMediaRecovered?: (label: string) => void;
 }
 
 export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
-  function ChannelPanel({ label, src, isMaster, onClick, onDoubleClick }, ref) {
+  function ChannelPanel({
+    label,
+    src,
+    filePath,
+    isMaster,
+    audioEnabled,
+    onClick,
+    onDoubleClick,
+    onContextMenu,
+    onMediaError,
+    onMediaRecovered,
+    overlayCrop,
+    overlayFrame,
+    disablePausedZoom = false,
+  }, ref) {
     const [error, setError] = useState<string | null>(null);
     const [ready, setReady] = useState(false);
     // True while this channel is in a coverage gap (camera was off for
     // this stretch in tiered playback). The SyncEngine holds the
     // `<video>`; we paint black over it. Always false in Original mode.
     const gapped = useStore((s) => s.gappedChannels[label] ?? false);
+    const playbackSpeed = useStore((s) => s.speed);
+    const sourceMode = useStore((s) => s.sourceMode);
+    const audioMuted = shouldMuteChannelAudio(
+      audioEnabled,
+      playbackSpeed,
+      sourceMode,
+    );
+    const audibleVolumeRef = useRef(1);
     // `showLoading` is `!ready` debounced by LOADING_OVERLAY_DELAY_MS.
     // Fast loads (the common case on Windows/Chromium and on macOS now
     // that the loopback HTTP server feeds AVFoundation moov immediately)
@@ -59,10 +133,20 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
     // from one segment's last frame to the next segment's first frame
     // without a flash of "Loading…". Genuinely slow loads still show it.
     const [showLoading, setShowLoading] = useState(false);
+    const [healthRanges, setHealthRanges] = useState<MediaHealthRange[]>([]);
     const localRef = useRef<HTMLVideoElement | null>(null);
+    const failedRef = useRef(false);
+    const probingRef = useRef(false);
+    const sourceEpochRef = useRef(0);
+    const failureRangeRef = useRef<MediaHealthRange | undefined>(undefined);
 
     // Merge the forwarded ref with our local ref so we can attach debug
     // listeners without disturbing whatever the parent is doing with the ref.
+    const isPlaying = useStore(s => s.isPlaying);
+    const canZoom = !overlayCrop && !disablePausedZoom && !isPlaying && ready && !error && !gapped;
+    const zoom = usePausedZoom(localRef, canZoom, src);
+    const cropStyle = useOverlayCrop(localRef, overlayCrop, overlayFrame);
+
     const setRefs = useCallback(
       (node: HTMLVideoElement | null) => {
         localRef.current = node;
@@ -73,12 +157,69 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
     );
 
     useEffect(() => {
+      sourceEpochRef.current += 1;
+      failedRef.current = false;
+      probingRef.current = false;
       setError(null);
       setReady(false);
+      setHealthRanges([]);
+      const video = localRef.current;
+      if (video) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      }
+      failureRangeRef.current = undefined;
       if (DEBUG_MEDIA) {
         console.log(`[media/${label}] boundary src=…${src.slice(-50)}`);
       }
-    }, [src, label]);
+
+      let cancelled = false;
+      void loadMediaHealth([filePath])
+        .then((ranges) => {
+          if (!cancelled) {
+            setHealthRanges(ranges);
+            const t = useStore.getState().currentTime;
+            const known = ranges.find((range) => t >= range.startS && (range.endS === null || t < range.endS));
+            if (known) {
+              failureRangeRef.current = known;
+              failedRef.current = true;
+              const message = `known media failure: ${known.errorKind}`;
+              setError(message);
+              onMediaError?.(label, message, true);
+            }
+            if (!known && localRef.current) localRef.current.src = src;
+          }
+        })
+        .catch((healthError) => {
+          console.warn(`[media/${label}] health cache load failed:`, healthError);
+          if (!cancelled && localRef.current) localRef.current.src = src;
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [src, filePath, label]);
+
+    // WebKitGTK has shown that changing the React `muted` prop alone can
+    // leave the underlying GStreamer audio branch audible across a playbackRate
+    // transition. Mirror the policy imperatively onto the actual media element
+    // as well. Volume=0 is a second independent guard; when audio is allowed
+    // again we restore the last audible volume.
+    useEffect(() => {
+      const video = localRef.current;
+      if (!video) return;
+
+      if (audioMuted) {
+        if (video.volume > 0) audibleVolumeRef.current = video.volume;
+        video.muted = true;
+        video.defaultMuted = true;
+        video.volume = 0;
+      } else {
+        video.volume = audibleVolumeRef.current;
+        video.defaultMuted = false;
+        video.muted = false;
+      }
+    }, [audioMuted, src]);
 
     // The loading overlay covers the <video> until `loadeddata` fires,
     // so the user sees "Loading…" rather than the black <video> element
@@ -87,7 +228,11 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
       const video = localRef.current;
       if (!video) return;
 
-      const onLoaded = () => setReady(true);
+      const onLoaded = () => {
+        if (failedRef.current) return;
+        setReady(true);
+        setError(null);
+      };
       video.addEventListener("loadeddata", onLoaded);
       if (video.readyState >= 2) setReady(true);
 
@@ -95,6 +240,163 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
         video.removeEventListener("loadeddata", onLoaded);
       };
     }, [src]);
+
+    const markFailed = useCallback(
+      (
+        displayMessage: string,
+        failureTime: number,
+        persist = true,
+      ) => {
+        if (failedRef.current) return;
+        failedRef.current = true;
+        localRef.current?.pause();
+        setReady(false);
+        setError(displayMessage);
+        onMediaError?.(label, displayMessage, !persist);
+        if (persist) {
+          void recordMediaFailure(filePath, failureTime, displayMessage).catch(
+            (healthError) => {
+              console.warn(
+                `[media/${label}] health cache failure write failed:`,
+                healthError,
+              );
+            },
+          );
+        }
+      },
+      [filePath, label, onMediaError],
+    );
+
+    // If this exact file fingerprint has a known bad interval, isolate the
+    // channel before WebKit spends CPU rediscovering the same decode failure.
+    // Closed ranges recover at their recorded end; open ranges still get the
+    // exponential probe loop below because their end is not known yet.
+    useEffect(() => {
+      if (healthRanges.length === 0) return;
+      const handle = window.setInterval(() => {
+        if (failedRef.current) return;
+        const t = useStore.getState().currentTime;
+        const known = healthRanges.find(
+          (range) =>
+            t >= range.startS &&
+            (range.endS === null || t < range.endS),
+        );
+        if (!known) return;
+        failureRangeRef.current = known;
+        markFailed(
+          `known media failure: ${known.errorKind}`,
+          known.startS,
+          false,
+        );
+      }, 250);
+      return () => window.clearInterval(handle);
+    }, [healthRanges, markFailed]);
+
+    // Once isolated, probe only this failed camera while the healthy cameras
+    // keep playing. Probe intervals grow 1s -> 2s -> 4s -> 8s -> 16s -> 30s.
+    // A cached closed range suppresses probing until its known end, which saves
+    // decoder work on repeat views.
+    useEffect(() => {
+      if (!error) return;
+      const video = localRef.current;
+      if (!video) return;
+
+      const epoch = sourceEpochRef.current;
+      let cancelled = false;
+      const abort = new AbortController();
+      // Keep repeated decoder resets off the visible failed pipeline. A tiny
+      // rendered, muted element permits WebKit frame callbacks in background.
+      const probe = document.createElement("video");
+      probe.src = src;
+      probe.muted = true;
+      probe.playsInline = true;
+      probe.style.cssText = "position:fixed;top:0;left:0;z-index:2147483647;width:1px;height:1px;opacity:0.01;pointer-events:none";
+      probe.setAttribute("aria-hidden", "true");
+      document.body.appendChild(probe);
+
+      const run = async () => {
+        let attempt = 0;
+        while (!cancelled && failedRef.current && epoch === sourceEpochRef.current) {
+          const nowT = useStore.getState().currentTime;
+          const known = failureRangeRef.current;
+          await delay(recoveryDelayMs(attempt, nowT, known));
+          const currentT = useStore.getState().currentTime;
+          if (known?.endS != null && currentT >= known.startS && currentT < known.endS) continue;
+          if (
+            cancelled ||
+            !failedRef.current ||
+            epoch !== sourceEpochRef.current
+          ) {
+            return;
+          }
+
+          // Also probe when every camera failed and transport is paused;
+          // otherwise the final failure would deadlock recovery forever.
+          const target = useStore.getState().currentTime;
+          let ok = await probeVideoAt(probe, target, abort.signal);
+          if (ok && !cancelled && epoch === sourceEpochRef.current) {
+            probingRef.current = true;
+            if (video.getAttribute("src") !== src) video.src = src;
+            ok = await probeVideoAt(video, useStore.getState().currentTime, abort.signal);
+            probingRef.current = false;
+          }
+
+          if (
+            cancelled ||
+            epoch !== sourceEpochRef.current ||
+            !failedRef.current
+          ) {
+            return;
+          }
+
+          if (ok) {
+            failedRef.current = false;
+            setError(null);
+            setReady(true);
+            const recoveredAt = video.currentTime;
+            setHealthRanges((ranges) => ranges.map((range) =>
+              range.endS === null && range.startS <= recoveredAt
+                ? { ...range, endS: recoveredAt } : range));
+            failureRangeRef.current = undefined;
+            void recordMediaRecovery(filePath, recoveredAt).catch((healthError) => {
+              console.warn(
+                `[media/${label}] health cache recovery write failed:`,
+                healthError,
+              );
+            });
+            onMediaRecovered?.(label);
+            return;
+          }
+
+          // A previously closed range is only a hint: if decoding still fails
+          // outside it, persist the newly observed failure rather than making
+          // the next session rediscover the continuation again.
+          if (known?.endS != null) {
+            const continued: MediaHealthRange = {
+              path: filePath, startS: target, endS: null, errorKind: known.errorKind,
+            };
+            failureRangeRef.current = continued;
+            setHealthRanges((ranges) => [...ranges, continued]);
+            void recordMediaFailure(filePath, target, known.errorKind).catch((healthError) => {
+              console.warn(`[media/${label}] continued failure write failed:`, healthError);
+            });
+          }
+
+          attempt += 1;
+        }
+      };
+
+      void run();
+      return () => {
+        cancelled = true;
+        abort.abort();
+        probe.pause();
+        probe.removeAttribute("src");
+        probe.load();
+        probe.remove();
+        probingRef.current = false;
+      };
+    }, [error, filePath, src, label, onMediaRecovered]);
 
     // Debounce the overlay. If `ready` flips back to true within the
     // delay window (almost always, on a healthy machine), the timer is
@@ -205,6 +507,9 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
 
     return (
       <div
+        style={overlayFrame ? overlayMaskStyle(overlayFrame) : undefined}
+        title={canZoom ? "Paused: scroll to zoom, drag the enlarged image to pan" : undefined}
+        onClickCapture={zoom.onClickCapture}
         onClick={onClick}
         onDoubleClick={onDoubleClick}
         className={clsx(
@@ -214,39 +519,70 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
       >
         <video
           ref={setRefs}
-          src={src}
+          onPointerDown={zoom.onPointerDown}
+          onPointerMove={zoom.onPointerMove}
+          onPointerUp={zoom.onPointerUp}
+          onPointerCancel={zoom.onPointerCancel}
+          onLostPointerCapture={zoom.onLostPointerCapture}
+          style={cropStyle ?? { transform: zoom.view.scale > 1 ? `translate(${zoom.view.x}px, ${zoom.view.y}px) scale(${zoom.view.scale})` : undefined,
+            touchAction: canZoom && zoom.view.scale > 1 ? "none" : "auto",
+            cursor: canZoom && zoom.view.scale > 1 ? "grab" : undefined }}
           className="h-full w-full object-contain"
-          muted={!isMaster}
+          muted={audioMuted}
           preload="auto"
           playsInline
+          onContextMenu={onContextMenu}
           onError={(e) => {
             const video = e.currentTarget as HTMLVideoElement;
             const code = video.error?.code ?? 0;
             const message = video.error?.message ?? "";
             const networkState = video.networkState;
-            // Dump everything the browser knows so the terminal/devtools
-            // console can disambiguate "couldn't load" from "couldn't decode".
             console.error(
               `[${label}] video error code=${code} networkState=${networkState} ` +
                 `src=${video.currentSrc || video.src} message=${message}`,
             );
+
             const map: Record<number, string> = {
               1: "aborted",
               2: "network error (failed to load)",
               3: "decode error",
               4: "source not supported (load or codec failure)",
             };
-            setError(map[code] ?? `playback error ${code}`);
+            const displayMessage = message
+              ? `${map[code] ?? `playback error ${code}`}: ${message}`
+              : map[code] ?? `playback error ${code}`;
+
+            // Probe failures are expected while a channel is isolated. The
+            // recovery loop owns their backoff and must not repeatedly rebuild
+            // the SyncEngine or create duplicate DB ranges.
+            if (probingRef.current) return;
+
+            markFailed(
+              displayMessage,
+              useStore.getState().currentTime,
+              true,
+            );
           }}
         />
 
+        {canZoom && (
+          <div className="absolute bottom-2 right-2 z-20 flex items-center gap-1 rounded bg-black/80 p-1 text-xs text-white"
+            onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}>
+            <button type="button" aria-label={`Zoom out ${label}`} disabled={zoom.view.scale <= 1}
+              className="rounded px-2 py-1 hover:bg-neutral-700 disabled:opacity-40" onClick={() => zoom.changeZoom(1 / 1.5)}>−</button>
+            <button type="button" aria-label={`Reset zoom ${label}`} title="Reset zoom and pan"
+              className="rounded px-2 py-1 hover:bg-neutral-700" onClick={zoom.reset}>{Math.round(zoom.view.scale * 100)}%</button>
+            <button type="button" aria-label={`Zoom in ${label}`} disabled={zoom.view.scale >= 8}
+              className="rounded px-2 py-1 hover:bg-neutral-700 disabled:opacity-40" onClick={() => zoom.changeZoom(1.5)}>+</button>
+          </div>
+        )}
         {gapped && (
           <div className="absolute inset-0 flex items-center justify-center bg-black text-xs text-neutral-600">
             camera off
           </div>
         )}
 
-        <div className="absolute left-2 top-2 flex flex-col items-start gap-1">
+        <div hidden={overlayFrame === "mirror"} className="absolute left-2 top-2 flex flex-col items-start gap-1">
           <div
             className={clsx(
               "rounded px-2 py-1 text-xs font-medium uppercase tracking-wide backdrop-blur",
@@ -280,6 +616,12 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
             </div>
             <div className="text-xs text-red-200">{error}</div>
           </div>
+        )}
+        {overlayFrame && (
+          <div aria-hidden="true" data-overlay-frame={overlayFrame}
+            className="pointer-events-none absolute inset-0 z-30"
+            style={{ borderRadius: overlayBorderRadius(overlayFrame),
+              border: overlayFrame === "mirror" ? "3px solid #71717a" : "2px solid #52525b" }} />
         )}
       </div>
     );

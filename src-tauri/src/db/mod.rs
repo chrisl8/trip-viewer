@@ -5,6 +5,7 @@ use rusqlite::Connection;
 
 use crate::error::AppError;
 
+pub mod gps_segment_checkpoints;
 pub mod manual_trip_merges;
 mod migrations;
 pub mod places;

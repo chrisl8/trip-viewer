@@ -1,14 +1,11 @@
 import { useStore } from "../../state/store";
-import { scanFolder } from "../../ipc/scanner";
+import { reloadArchive } from "../../state/archiveNavigation";
 import { formatBytes } from "../../utils/format";
 
 export function ImportSummary() {
   const importStatus = useStore((s) => s.importStatus);
   const result = useStore((s) => s.importResult);
-  const currentArchive = useStore((s) => s.currentArchive);
   const resetImport = useStore((s) => s.resetImport);
-  const setScanResult = useStore((s) => s.setScanResult);
-  const setStatus = useStore((s) => s.setStatus);
 
   if (importStatus !== "complete" || !result) return null;
 
@@ -17,20 +14,11 @@ export function ImportSummary() {
     // routes everything into <archive>/Videos and <archive>/Photos,
     // and scan_folder walks recursively, so we hand it the archive
     // root directly.
-    const root = currentArchive?.root ?? null;
-
     // Dismiss the modal first so the click feels responsive. The rescan runs
     // in the background; the sidebar's "Scanning…" indicator (status="loading")
     // shows progress, and the trip list updates when the scan resolves.
     resetImport();
-    if (root) {
-      setStatus("loading");
-      scanFolder(root)
-        .then(setScanResult)
-        .catch(() => {
-          // Ignore scan errors on close
-        });
-    }
+    void reloadArchive({ fresh: true });
   }
 
   return (

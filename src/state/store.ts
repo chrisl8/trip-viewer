@@ -68,6 +68,8 @@ export interface LibrarySlice {
    *  0012's `trip_gps` table. Absent key → fall back to gpsByFile
    *  (which requires the originals to still be on disk). */
   tripGpsByTrip: Record<string, GpsPoint[]>;
+  gpsPreparationByTrip: Record<string, "loading" | "ready" | "error">;
+  gpsProgressByTrip: Record<string, { completed: number; total: number }>;
   /** Library-wide bytes used + reclaimable, refreshed after every
    *  storage-changing action. `null` until the first refresh resolves. */
   librarySummary: LibraryStorageSummary | null;
@@ -309,6 +311,8 @@ export const useStore = create<AppState>((set) => ({
   scanErrors: [],
   gpsByFile: {},
   tripGpsByTrip: {},
+  gpsPreparationByTrip: {},
+  gpsProgressByTrip: {},
   librarySummary: null,
   reclaimableFilter: false,
   libraryFirstLoadDone: false,
@@ -413,8 +417,24 @@ export const useStore = create<AppState>((set) => ({
     }),
   setVideoPort: (videoPort) => set({ videoPort }),
   setMainView: (mainView) => set({ mainView }),
-  setCurrentArchive: (currentArchive) => set({ currentArchive }),
+  setCurrentArchive: (currentArchive) => set({
+    currentArchive: currentArchive ? { ...currentArchive } : null,
+    status: currentArchive ? "loading" : "idle",
+    error: null,
+    libraryFirstLoadDone: currentArchive === null,
+    trips: [], scanErrors: [], selectedTripId: null, loadedTripId: null,
+    activeSegmentId: null, currentTime: 0, isPlaying: false, primaryChannel: null,
+    sourceMode: "original", activeSpeedCurve: null, gappedChannels: {}, drift: [],
+    gpsByFile: {}, tripGpsByTrip: {}, gpsPreparationByTrip: {}, gpsProgressByTrip: {},
+    librarySummary: null, reclaimableFilter: false,
+    selectedTripIds: new Set<string>(), tripSelectionAnchorId: null,
+    selectionMode: false, selectedSegmentIds: new Set<string>(), selectionAnchorId: null,
+    tagsBySegmentId: {}, tagsByTripId: {}, tagsLoadingTripId: null, tripTagCounts: {},
+    places: [], placesById: {}, timelapseJobs: [], orphanTimelapseCount: 0,
+    scanCoverage: [], mainView: "player",
+  }),
   setScanResult: ({ trips, errors }) => {
+    const archive = useStore.getState().currentArchive;
     set({
       trips,
       scanErrors: errors,
@@ -436,7 +456,11 @@ export const useStore = create<AppState>((set) => ({
     void useStore
       .getState()
       .mergeArchiveOnlyTrips()
-      .finally(() => useStore.setState({ libraryFirstLoadDone: true }));
+      .finally(() => {
+        if (useStore.getState().currentArchive === archive) {
+          useStore.setState({ libraryFirstLoadDone: true });
+        }
+      });
     // Sizes change on every scan (new segments, vanished segments,
     // backfilled sizes from migration 0009) — refresh the header
     // summary so "X GB used / Y GB reclaimable" stays honest.
@@ -606,8 +630,10 @@ export const useStore = create<AppState>((set) => ({
     return report;
   },
   mergeArchiveOnlyTrips: async () => {
+    const current = useStore.getState().currentArchive;
     try {
       const archive = await listArchiveOnlyTrips();
+      if (useStore.getState().currentArchive !== current) return;
       if (archive.length === 0) {
         // Still drop any stale archive-only entries that are no longer
         // backed by a row in the DB (e.g. after Delete trip…).
@@ -927,9 +953,11 @@ export const useStore = create<AppState>((set) => ({
     }),
 
   refreshTripTags: async (tripId) => {
+    const archive = useStore.getState().currentArchive;
     set({ tagsLoadingTripId: tripId });
     try {
       const tags = await getTagsForTrip(tripId);
+      if (useStore.getState().currentArchive !== archive) return;
       const tripTags: Tag[] = [];
       const bySegment: Record<string, Tag[]> = {};
       for (const tag of tags) {
@@ -946,12 +974,14 @@ export const useStore = create<AppState>((set) => ({
       });
     } catch (e) {
       console.error("refreshTripTags failed", e);
-      set({ tagsLoadingTripId: null });
+      if (useStore.getState().currentArchive === archive) set({ tagsLoadingTripId: null });
     }
   },
   refreshTripTagCounts: async () => {
+    const archive = useStore.getState().currentArchive;
     try {
       const counts = await getTagCountsByTrip();
+      if (useStore.getState().currentArchive !== archive) return;
       set({ tripTagCounts: counts });
     } catch (e) {
       console.error("refreshTripTagCounts failed", e);
@@ -966,8 +996,10 @@ export const useStore = create<AppState>((set) => ({
     }
   },
   refreshPlaces: async () => {
+    const archive = useStore.getState().currentArchive;
     try {
       const places = await listPlaces();
+      if (useStore.getState().currentArchive !== archive) return;
       const placesById: Record<number, (typeof places)[number]> = {};
       for (const p of places) placesById[p.id] = p;
       set({ places, placesById });
@@ -995,8 +1027,10 @@ export const useStore = create<AppState>((set) => ({
     await ipcCancelScan();
   },
   refreshScanCoverage: async () => {
+    const archive = useStore.getState().currentArchive;
     try {
       const coverage = await ipcListScanCoverage();
+      if (useStore.getState().currentArchive !== archive) return;
       set({ scanCoverage: coverage });
     } catch (e) {
       console.error("refreshScanCoverage failed", e);
@@ -1015,8 +1049,10 @@ export const useStore = create<AppState>((set) => ({
     }
   },
   refreshTimelapseJobs: async () => {
+    const archive = useStore.getState().currentArchive;
     try {
       const jobs = await ipcListTimelapseJobs();
+      if (useStore.getState().currentArchive !== archive) return;
       set({ timelapseJobs: jobs });
       // Job completions push timelapse_bytes up and may flip a trip
       // into the reclaimable set — refresh totals together.
@@ -1030,8 +1066,10 @@ export const useStore = create<AppState>((set) => ({
     }
   },
   refreshTripGps: async (tripId) => {
+    const archive = useStore.getState().currentArchive;
     try {
       const archived = await ipcLoadTripGps(tripId);
+      if (useStore.getState().currentArchive !== archive) return;
       // Set unconditionally (even when empty) so a rebuild that produced
       // GPS replaces a stale/empty entry, and a trip with genuinely no
       // GPS falls back correctly to the per-file pool.
@@ -1043,16 +1081,20 @@ export const useStore = create<AppState>((set) => ({
     }
   },
   refreshOrphanCount: async () => {
+    const archive = useStore.getState().currentArchive;
     try {
       const n = await ipcCountOrphanTimelapseFiles();
+      if (useStore.getState().currentArchive !== archive) return;
       set({ orphanTimelapseCount: n });
     } catch (e) {
       console.error("refreshOrphanCount failed", e);
     }
   },
   refreshLibrarySummary: async () => {
+    const archive = useStore.getState().currentArchive;
     try {
       const summary = await ipcGetLibraryStorageSummary();
+      if (useStore.getState().currentArchive !== archive) return;
       set({ librarySummary: summary });
     } catch (e) {
       console.error("refreshLibrarySummary failed", e);

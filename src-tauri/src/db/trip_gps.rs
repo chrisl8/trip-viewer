@@ -26,10 +26,22 @@ pub fn upsert(
             points_json    = excluded.points_json,
             point_count    = excluded.point_count,
             parser_version = excluded.parser_version,
+            source_signature = NULL,
             created_at_ms  = excluded.created_at_ms",
         params![trip_id, json, points.len() as i64, parser_version, now],
     )?;
     Ok(())
+}
+
+pub fn source_signature(conn: &Connection, trip_id: &str) -> Result<Option<String>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT source_signature FROM trip_gps WHERE trip_id = ?1",
+            params![trip_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten())
 }
 
 pub fn load(conn: &Connection, trip_id: &str) -> Result<Option<Vec<GpsPoint>>, AppError> {
@@ -48,10 +60,7 @@ pub fn load(conn: &Connection, trip_id: &str) -> Result<Option<Vec<GpsPoint>>, A
 
 #[allow(dead_code)] // reserved for an explicit invalidation path
 pub fn delete(conn: &Connection, trip_id: &str) -> Result<usize, AppError> {
-    Ok(conn.execute(
-        "DELETE FROM trip_gps WHERE trip_id = ?1",
-        params![trip_id],
-    )?)
+    Ok(conn.execute("DELETE FROM trip_gps WHERE trip_id = ?1", params![trip_id])?)
 }
 
 /// Returns true when the trip already has an archived GPS row at or
@@ -70,7 +79,9 @@ pub fn has_current(
             |r| r.get::<_, i64>(0),
         )
         .optional()?;
-    Ok(row.map(|pv| pv as i32 >= min_parser_version).unwrap_or(false))
+    Ok(row
+        .map(|pv| pv as i32 >= min_parser_version)
+        .unwrap_or(false))
 }
 
 #[cfg(test)]

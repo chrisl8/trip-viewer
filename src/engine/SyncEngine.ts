@@ -1,4 +1,4 @@
-import { useStore } from "../state/store";
+import { useStore, type PlaybackSlice } from "../state/store";
 import { type CurveSegment, coverageAt, fileToConcat } from "../utils/speedCurve";
 
 // How often to re-evaluate coverage gaps. Gaps are seconds-to-minutes
@@ -55,25 +55,19 @@ const WATCHDOG_STALL_MS = 1500;
 const WATCHDOG_COOLDOWN_MS = 1500;
 const ENABLE_STALL_WATCHDOG = SKIP_DRIFT_CORRECTION;
 
-// Coarse drift re-anchor for the same WebKit-based pipelines that need
-// SKIP_DRIFT_CORRECTION. The per-frame correction in start()'s tick is
-// disabled there because a `currentTime=` is a full pipeline flush, and
-// per-frame seeks thrash the compositor. But *no* correction lets a long
-// single-file tier accumulate unbounded drift: slaves free-run with no
-// segment boundary to re-anchor them, and every watchdog kick (pause→
-// play, no seek) bakes in a fixed offset that nothing ever removes —
-// observed as channels drifting *minutes* apart over a multi-hour
-// timelapse. So on a slow timer we re-anchor any slave that has drifted
-// past REANCHOR_DRIFT_S back to its correct file-time, and resume any
-// that should be playing but isn't (e.g. a slave whose play() rejected at
-// start). The coarse cadence, large threshold, and per-slave cooldown
-// keep this from re-creating the flush-thrash loop the per-frame path
-// caused. REANCHOR_DRIFT_S is the main tuning knob — verify with the
-// drift HUD and tighten if visible offset is still too large.
+// WebKit pipelines cannot tolerate Chromium-style per-frame currentTime
+// correction, but leaving slaves entirely free-running means every short stall
+// or pipeline restart can leave a permanent offset. Reconcile slowly and only
+// when the visible drift is large enough to justify a pipeline flush.
 const REANCHOR_INTERVAL_MS = 1000;
 const REANCHOR_DRIFT_S = 0.5;
 const REANCHOR_COOLDOWN_MS = 2000;
 const ENABLE_DRIFT_REANCHOR = SKIP_DRIFT_CORRECTION;
+
+// WebKit/GStreamer occasionally drops seek/metadata completion events during
+// rapid source changes. Transport operations must never wait forever.
+const SEEK_WAIT_TIMEOUT_MS = 5000;
+const METADATA_WAIT_TIMEOUT_MS = 5000;
 
 interface WatchdogEntry {
   /** Last sampled `currentTime` for this video. */
@@ -94,9 +88,18 @@ export class SyncEngine {
   private slaveLabels: string[];
   private disposed = false;
   private pauseIntentional = false;
+  /** Canonical user intent. This remains true during an internal speed-change
+   *  pause so the button and watchdog do not mistake a synchronization barrier
+   *  for a user-requested Pause. */
+  private playIntent = false;
+  /** Incremented for every transport operation so a superseded async play or
+   *  speed transition can never restart playback after the user pressed Pause
+   *  or selected another speed. */
+  private transportGeneration = 0;
   private cleanups: Array<() => void> = [];
   private watchdogState: WeakMap<HTMLVideoElement, WatchdogEntry> =
     new WeakMap();
+  private reconcileActionAt: WeakMap<HTMLVideoElement, number> = new WeakMap();
   // Coverage curves for tiered playback. `masterCurve` maps the master's
   // file-time → concat-time (the trip clock); each `slaveCurves[i]` maps
   // concat-time → that slave's coverage. Null in Original mode / for
@@ -147,6 +150,7 @@ export class SyncEngine {
     });
     this.slaveInGap = this.slaves.map(() => false);
     this.attachPauseGuard();
+    this.attachPlaybackStateMirror();
     this.attachTimeUpdate();
     this.attachStallWatchdog();
     this.attachSlaveReconciler();
@@ -157,6 +161,7 @@ export class SyncEngine {
     const speed = useStore.getState().speed;
     this.master.playbackRate = speed;
     this.slaves.forEach((s) => (s.playbackRate = speed));
+    this.applyAudioPolicy(speed);
 
     const tick: VideoFrameRequestCallback = (_now, meta) => {
       if (this.disposed) return;
@@ -284,12 +289,97 @@ export class SyncEngine {
     if (playing && slave.paused) slave.play().catch(() => {});
   }
 
+  private slaveTargetAtMasterTime(i: number, masterT: number): number | null {
+    if (!Number.isFinite(masterT)) return null;
+    if (!this.masterCurve || this.masterCurve.length === 0) return masterT;
+
+    const curve = this.slaveCurves[i];
+    if (!curve || curve.length === 0) return masterT;
+
+    const concatT = fileToConcat(masterT, this.masterCurve);
+    const cov = coverageAt(concatT, curve);
+    if (!cov.covered || !Number.isFinite(cov.fileTime)) return null;
+    return cov.fileTime;
+  }
+
+  // Slow, coarse reconciliation for WebKit-based media pipelines. Per-frame
+  // currentTime correction is deliberately disabled there because each seek
+  // flushes the decoder. This timer only acts when a slave is visibly out of
+  // alignment or has stopped while the master is still playing.
+  private attachSlaveReconciler(): void {
+    if (!ENABLE_DRIFT_REANCHOR) return;
+
+    const handle = setInterval(() => {
+      if (this.disposed) return;
+      const store = useStore.getState();
+      if (!this.playIntent && !store.isPlaying) return;
+      if (
+        this.master.readyState < 2 ||
+        this.master.paused ||
+        this.master.seeking
+      ) {
+        return;
+      }
+
+      const masterT = this.master.currentTime;
+      const now = performance.now();
+      for (let i = 0; i < this.slaves.length; i++) {
+        const slave = this.slaves[i];
+        if (
+          this.slaveInGap[i] ||
+          slave.readyState < 2 ||
+          slave.ended ||
+          slave.seeking
+        ) {
+          continue;
+        }
+
+        const targetRaw = this.slaveTargetAtMasterTime(i, masterT);
+        if (targetRaw === null) continue;
+        const duration = Number.isFinite(slave.duration)
+          ? slave.duration
+          : Infinity;
+        const target = Math.min(Math.max(0, targetRaw), duration);
+        const drift = Math.abs(slave.currentTime - target);
+        const needsResume = slave.paused;
+        if (!needsResume && drift <= REANCHOR_DRIFT_S) continue;
+
+        const last = this.reconcileActionAt.get(slave);
+        if (last !== undefined && now - last < REANCHOR_COOLDOWN_MS) continue;
+        this.reconcileActionAt.set(slave, now);
+
+        const resume = () =>
+          slave.play().catch((e) => {
+            if (!(e instanceof DOMException && e.name === "AbortError")) {
+              console.warn("[sync] reconciler: slave play() rejected:", e);
+            }
+          });
+
+        if (drift > REANCHOR_DRIFT_S) {
+          console.warn(
+            `[sync] reconciler: ${this.slaveLabels[i]} drift ${Math.round(
+              drift * 1000,
+            )}ms — re-anchoring`,
+          );
+          slave.currentTime = target;
+          this.watchdogState.delete(slave);
+          if (needsResume) {
+            void this.waitForPendingSeek(slave).then(resume);
+          }
+        } else if (needsResume) {
+          void resume();
+        }
+      }
+    }, REANCHOR_INTERVAL_MS);
+
+    this.cleanups.push(() => clearInterval(handle));
+  }
+
   private attachPauseGuard(): void {
     const m = this.master;
     const onPause = () => {
       if (this.disposed || this.pauseIntentional) return;
-      const { isPlaying } = useStore.getState();
-      if (isPlaying && m.paused && !m.ended) {
+      if (this.playIntent && m.paused && !m.ended) {
         m.play().then(() => {
           this.slaves.forEach((s, i) => {
             // Leave gap-held slaves paused — see play().
@@ -301,6 +391,27 @@ export class SyncEngine {
     };
     m.addEventListener("pause", onPause);
     this.cleanups.push(() => m.removeEventListener("pause", onPause));
+  }
+
+  // Mirror real master events only when they agree with current user intent.
+  // A late "playing" event from a superseded play() must never flip the UI back
+  // to Pause after the user has already pressed Pause.
+  private attachPlaybackStateMirror(): void {
+    const onPlaying = () => {
+      if (this.disposed || !this.playIntent || this.master.paused) return;
+      useStore.getState().setIsPlaying(true);
+    };
+    const onEnded = () => {
+      if (this.disposed) return;
+      this.playIntent = false;
+      useStore.getState().setIsPlaying(false);
+    };
+    this.master.addEventListener("playing", onPlaying);
+    this.master.addEventListener("ended", onEnded);
+    this.cleanups.push(() => {
+      this.master.removeEventListener("playing", onPlaying);
+      this.master.removeEventListener("ended", onEnded);
+    });
   }
 
   // Authoritative writer of store.currentTime. The rVFC tick in start()
@@ -379,115 +490,215 @@ export class SyncEngine {
   }
 
   private kickStalled(v: HTMLVideoElement): void {
-    // pause()→play() forces WebKit's pipeline (GStreamer on Linux,
-    // AVFoundation on macOS) to flush its decoder state. This is the
-    // same operation the user performs manually to unstick a frozen
-    // channel — automating it removes the workaround burden.
-    //
-    // For the master we must briefly suppress the pause-guard, which
-    // otherwise tries to auto-resume on the pause event and races our
-    // play() call.
+    // pause()→seek-to-master (for slaves)→play() forces a wedged decoder to
+    // recover without baking the stall offset into the rest of playback.
     const isMaster = v === this.master;
+    const generation = this.transportGeneration;
     if (isMaster) this.pauseIntentional = true;
+
     try {
       v.pause();
     } catch {
       // ignore — pause is best-effort
     }
-    v.play()
+
+    if (!isMaster) {
+      const i = this.slaves.indexOf(v);
+      if (i >= 0 && !this.slaveInGap[i]) {
+        const targetRaw = this.slaveTargetAtMasterTime(i, this.master.currentTime);
+        if (targetRaw !== null && v.readyState >= 1) {
+          const duration = Number.isFinite(v.duration) ? v.duration : Infinity;
+          v.currentTime = Math.min(Math.max(0, targetRaw), duration);
+          this.watchdogState.delete(v);
+        }
+      }
+    }
+
+    void this.waitForPendingSeek(v)
+      .then(() => {
+        if (
+          this.disposed ||
+          generation !== this.transportGeneration ||
+          (!this.playIntent && !useStore.getState().isPlaying)
+        ) {
+          return;
+        }
+        return v.play();
+      })
       .catch((e) => {
-        console.warn("[sync] watchdog: kick play() rejected:", e);
+        if (!(e instanceof DOMException && e.name === "AbortError")) {
+          console.warn("[sync] watchdog: kick play() rejected:", e);
+        }
       })
       .finally(() => {
         if (isMaster) this.pauseIntentional = false;
       });
   }
 
-  // See the ENABLE_DRIFT_REANCHOR comment. Slow-timer reconciler that
-  // keeps slaves aligned with — and playing alongside — the master on
-  // WebKit-based pipelines, where per-frame correction is off. No-op
-  // elsewhere (Chromium corrects per frame in start()'s tick).
-  private attachSlaveReconciler(): void {
-    if (!ENABLE_DRIFT_REANCHOR) return;
-    const lastActionAt = new WeakMap<HTMLVideoElement, number>();
-    const handle = setInterval(() => {
-      if (this.disposed) return;
-      if (!useStore.getState().isPlaying) return;
-      if (this.master.readyState < 2 || this.master.paused) return;
-      const masterT = this.master.currentTime;
-      const now = performance.now();
-      // Master file-time → concat-time, so curved slaves can be mapped to
-      // their own axis below (mirrors seek()). Null when there's no curve
-      // (Original mode): every slave then shares the master's file-time.
-      const concatT =
-        this.masterCurve && this.masterCurve.length > 0
-          ? fileToConcat(masterT, this.masterCurve)
-          : null;
-      for (let i = 0; i < this.slaves.length; i++) {
-        const slave = this.slaves[i];
-        // A slave held in a coverage gap must stay paused/black — the gap
-        // loop owns it. Skip.
-        if (this.slaveInGap[i]) continue;
-        if (slave.readyState < 2 || slave.ended) continue;
+  private waitForPendingSeek(video: HTMLVideoElement): Promise<void> {
+    if (!video.seeking) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (reason?: string) => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(timeout);
+        video.removeEventListener("seeked", onSeeked);
+        video.removeEventListener("error", onError);
+        video.removeEventListener("emptied", onEmptied);
+        if (reason) console.warn(`[sync] seek wait ended via ${reason}`);
+        resolve();
+      };
+      const onSeeked = () => finish();
+      const onError = () => finish("media error");
+      const onEmptied = () => finish("media emptied");
+      const timeout = globalThis.setTimeout(
+        () => finish(`${SEEK_WAIT_TIMEOUT_MS}ms timeout`),
+        SEEK_WAIT_TIMEOUT_MS,
+      );
+      video.addEventListener("seeked", onSeeked);
+      video.addEventListener("error", onError);
+      video.addEventListener("emptied", onEmptied);
+    });
+  }
 
-        // Resolve this slave's correct file-time for the master's current
-        // position. A curved slave lives on its own axis (gap-closed
-        // and/or a per-channel speed curve), so map through its curve
-        // exactly as seek() does; a curveless slave (Original mode, or a
-        // full-coverage channel with no curve) shares the master file-time.
-        const curve = this.slaveCurves[i];
-        let target = masterT;
-        if (curve && curve.length > 0 && concatT !== null) {
-          const cov = coverageAt(concatT, curve);
-          // Not covered here → it's entering a gap the gap loop hasn't
-          // processed yet; leave it alone rather than fight that.
-          if (!cov.covered || !Number.isFinite(cov.fileTime)) continue;
-          target = cov.fileTime;
+  private waitForPendingSeeks(videos: HTMLVideoElement[]): Promise<void[]> {
+    return Promise.all(videos.map((video) => this.waitForPendingSeek(video)));
+  }
+
+  private applyAudioPolicy(rate: PlaybackSlice["speed"]): void {
+    const tiered = Boolean(this.masterCurve && this.masterCurve.length > 0);
+    const masterAudible = rate === 1 && !tiered;
+
+    // Slaves are never audio clocks. Muting them here as well as in React
+    // prevents a visual-primary change or stale DOM property from creating
+    // multiple slightly-offset audio streams ("hall"/echo).
+    for (const slave of this.slaves) {
+      slave.muted = true;
+      slave.defaultMuted = true;
+      slave.volume = 0;
+    }
+
+    if (masterAudible) {
+      this.master.defaultMuted = false;
+      this.master.muted = false;
+      if (this.master.volume === 0) this.master.volume = 1;
+    } else {
+      this.master.muted = true;
+      this.master.defaultMuted = true;
+      this.master.volume = 0;
+    }
+  }
+
+  private waitForReloadMetadata(video: HTMLVideoElement): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (reason?: string) => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(timeout);
+        video.removeEventListener("loadedmetadata", onLoaded);
+        video.removeEventListener("error", onError);
+        video.removeEventListener("abort", onAbort);
+        if (reason) console.warn(`[sync] metadata wait ended via ${reason}`);
+        resolve();
+      };
+      const onLoaded = () => finish();
+      const onError = () => finish("media error");
+      const onAbort = () => finish("abort");
+      const timeout = globalThis.setTimeout(
+        () => finish(`${METADATA_WAIT_TIMEOUT_MS}ms timeout`),
+        METADATA_WAIT_TIMEOUT_MS,
+      );
+      video.addEventListener("loadedmetadata", onLoaded);
+      video.addEventListener("error", onError);
+      video.addEventListener("abort", onAbort);
+    });
+  }
+
+  private async reloadMasterAt(
+    mediaTime: number,
+    rate: PlaybackSlice["speed"],
+  ): Promise<void> {
+    if (!Number.isFinite(mediaTime)) return;
+
+    // Keep the audio branch silent while load() tears down and recreates
+    // GStreamer's pipeline.
+    this.master.muted = true;
+    this.master.defaultMuted = true;
+    this.master.volume = 0;
+
+    const metadata = this.waitForReloadMetadata(this.master);
+    this.master.load();
+    await metadata;
+
+    this.master.playbackRate = rate;
+    const duration = Number.isFinite(this.master.duration)
+      ? this.master.duration
+      : Infinity;
+    this.master.currentTime = Math.min(Math.max(0, mediaTime), duration);
+    await this.waitForPendingSeek(this.master);
+  }
+
+  private startAll(): Promise<void> {
+    // Start every live pipeline in the same turn of the event loop. We only
+    // await the canonical master; a slow slave must not leave the UI stuck on
+    // "Play" while playback is visibly continuing.
+    const slaveStarts = this.slaves.map((s, i) => {
+      if (this.slaveInGap[i]) return Promise.resolve();
+      return s.play().catch((e) => {
+        if (!(e instanceof DOMException && e.name === "AbortError")) {
+          console.warn("[sync] slave play() rejected:", e);
         }
+      });
+    });
+    const masterStart = this.master.play();
+    void Promise.allSettled(slaveStarts);
+    return masterStart;
+  }
 
-        const drift = Math.abs(slave.currentTime - target);
-        const needsResume = slave.paused;
-        if (!needsResume && drift <= REANCHOR_DRIFT_S) continue;
-        // One action per slave per cooldown window — never a per-tick
-        // storm that would re-create the thrash loop SKIP_DRIFT_CORRECTION
-        // exists to avoid.
-        if (now - (lastActionAt.get(slave) ?? 0) < REANCHOR_COOLDOWN_MS)
-          continue;
-        lastActionAt.set(slave, now);
-        if (drift > REANCHOR_DRIFT_S) slave.currentTime = target;
-        if (needsResume) slave.play().catch(() => {});
+  private stopAllAfterFailure(): void {
+    this.pauseIntentional = true;
+    try {
+      this.master.pause();
+    } catch {
+      /* best-effort */
+    }
+    for (const slave of this.slaves) {
+      try {
+        slave.pause();
+      } catch {
+        /* best-effort */
       }
-    }, REANCHOR_INTERVAL_MS);
-    this.cleanups.push(() => clearInterval(handle));
+    }
   }
 
   async play(): Promise<void> {
+    const generation = ++this.transportGeneration;
+    this.playIntent = true;
     this.pauseIntentional = false;
+    useStore.getState().setIsPlaying(true);
+
     try {
       const speed = useStore.getState().speed;
       this.master.playbackRate = speed;
       this.slaves.forEach((s) => (s.playbackRate = speed));
-      // The MASTER is the source of truth for "is the trip playing." Mark
-      // the store playing as soon as the master starts — do NOT gate it on
-      // the slaves. On WebKit-based pipelines a wedged slave's play() can
-      // reject; if we awaited all slaves (Promise.all) before
-      // setIsPlaying(true), a single rejection would skip it entirely,
-      // leaving the store paused while the master plays — the Play button
-      // reads "Play" yet does nothing, and every later seek() refuses to
-      // resume the slaves (it only plays them when store.isPlaying). The
-      // slave reconciler recovers a slave that failed to start here.
-      await this.master.play();
+      this.applyAudioPolicy(speed);
+
+      // Pause→Play is a synchronization barrier for slaves only. The master is
+      // the audible/canonical clock and remains the anchor.
+      this.resyncToMaster(speed, false);
+      await this.waitForPendingSeeks(this.slaves);
+      if (generation !== this.transportGeneration || this.disposed) return;
+
+      await this.startAll();
+      if (generation !== this.transportGeneration || this.disposed) return;
       useStore.getState().setIsPlaying(true);
-      // Slaves are best-effort: allSettled so one rejection can't throw.
-      // Don't un-pause a slave held in a coverage gap — it must stay black
-      // until its gap ends; the gap loop resumes it on the covered
-      // transition.
-      await Promise.allSettled(
-        this.slaves.map((s, i) =>
-          this.slaveInGap[i] ? Promise.resolve() : s.play(),
-        ),
-      );
     } catch (e) {
+      if (generation !== this.transportGeneration || this.disposed) return;
+      this.playIntent = false;
+      useStore.getState().setIsPlaying(false);
+      this.stopAllAfterFailure();
       if (e instanceof DOMException && e.name === "AbortError") return;
       console.error("SyncEngine.play failed:", e);
       useStore.getState().setError(
@@ -497,10 +708,20 @@ export class SyncEngine {
   }
 
   pause(): void {
+    ++this.transportGeneration;
+    this.playIntent = false;
     this.pauseIntentional = true;
+    // Flip UI state first so every control immediately agrees with the user's
+    // intent even if WebKit delivers media pause events asynchronously.
+    useStore.getState().setIsPlaying(false);
     this.master.pause();
     this.slaves.forEach((s) => s.pause());
-    useStore.getState().setIsPlaying(false);
+  }
+
+  togglePlayback(): void {
+    const mediaPlaying = !this.master.paused && !this.master.ended;
+    if (this.playIntent || mediaPlaying) this.pause();
+    else void this.play();
   }
 
   // `t` is a position on the MASTER's time axis (file-time in tiered
@@ -510,7 +731,36 @@ export class SyncEngine {
   // (trip clock) and position every slave independently through its own
   // curve. Without this, seeking/tier-switching sent slaves to the
   // master's file-time and the rear landed somewhere unrelated.
-  seek(t: number): void {
+  async seek(
+    t: number,
+    options: { resume?: boolean } = {},
+  ): Promise<void> {
+    const generation = ++this.transportGeneration;
+    const state = useStore.getState();
+    const mediaPlaying = !this.master.paused && !this.master.ended;
+    const shouldResume =
+      options.resume ?? (this.playIntent || mediaPlaying || state.isPlaying);
+
+    this.playIntent = shouldResume;
+    this.pauseIntentional = true;
+    state.setIsPlaying(shouldResume);
+
+    // Treat a seek as a transport transaction. WebKitGTK is especially prone
+    // to pipeline errors when a second seek or play() lands while a previous
+    // seek is still flushing.
+    try {
+      this.master.pause();
+    } catch {
+      /* best-effort */
+    }
+    for (const slave of this.slaves) {
+      try {
+        slave.pause();
+      } catch {
+        /* best-effort */
+      }
+    }
+
     const duration = Number.isFinite(this.master.duration)
       ? this.master.duration
       : Infinity;
@@ -518,30 +768,164 @@ export class SyncEngine {
     this.master.currentTime = clamped;
 
     if (!this.masterCurve || this.masterCurve.length === 0) {
-      // Original mode: all channels share the segment-local axis.
-      this.slaves.forEach((s) => (s.currentTime = clamped));
-      useStore.getState().setCurrentTime(clamped);
+      for (let i = 0; i < this.slaves.length; i++) {
+        const slave = this.slaves[i];
+        const slaveDuration = Number.isFinite(slave.duration)
+          ? slave.duration
+          : Infinity;
+        slave.currentTime = Math.min(Math.max(0, clamped), slaveDuration);
+        this.slaveInGap[i] = false;
+        this.gapPaused.delete(slave);
+        state.setChannelGapped(this.slaveLabels[i], false);
+      }
+    } else {
+      const concatT = fileToConcat(clamped, this.masterCurve);
+      for (let i = 0; i < this.slaves.length; i++) {
+        const slave = this.slaves[i];
+        const curve = this.slaveCurves[i];
+        let covered = true;
+        let target = clamped;
+
+        if (curve && curve.length > 0) {
+          const cov = coverageAt(concatT, curve);
+          covered = cov.covered;
+          if (Number.isFinite(cov.fileTime)) target = cov.fileTime;
+        }
+
+        const slaveDuration = Number.isFinite(slave.duration)
+          ? slave.duration
+          : Infinity;
+        slave.currentTime = Math.min(Math.max(0, target), slaveDuration);
+        this.slaveInGap[i] = !covered;
+        state.setChannelGapped(this.slaveLabels[i], !covered);
+        if (covered) this.gapPaused.delete(slave);
+        else this.gapPaused.add(slave);
+      }
+    }
+
+    state.setCurrentTime(clamped);
+    this.watchdogState.delete(this.master);
+    for (const slave of this.slaves) this.watchdogState.delete(slave);
+
+    await this.waitForPendingSeeks([this.master, ...this.slaves]);
+    if (generation !== this.transportGeneration || this.disposed) return;
+
+    this.applyAudioPolicy(state.speed);
+
+    if (!shouldResume) {
+      this.playIntent = false;
+      this.pauseIntentional = false;
+      state.setIsPlaying(false);
       return;
     }
 
-    const concatT = fileToConcat(clamped, this.masterCurve);
+    this.pauseIntentional = false;
+    try {
+      await this.startAll();
+      if (generation !== this.transportGeneration || this.disposed) return;
+      useStore.getState().setIsPlaying(true);
+    } catch (e) {
+      if (generation !== this.transportGeneration || this.disposed) return;
+      this.playIntent = false;
+      useStore.getState().setIsPlaying(false);
+      this.stopAllAfterFailure();
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      console.error("SyncEngine.seek restart failed:", e);
+      useStore.getState().setError(
+        e instanceof Error ? e.message : "playback failed after seek",
+      );
+    }
+  }
+
+  /**
+   * Re-anchor every slave to the master's current playback position exactly
+   * once. This is intentionally event-driven: on WebKitGTK/macOS a
+   * currentTime assignment flushes that video's decode pipeline, so continuous
+   * drift correction is too expensive, but a one-shot re-anchor after a user
+   * action is safe and deterministic.
+   *
+   * The master itself is never seeked here, which keeps the visible anchor
+   * playing smoothly. Tiered/gappy channels are mapped through their own speed
+   * curves instead of assuming a shared file-time axis.
+   */
+  resyncToMaster(
+    rate: PlaybackSlice["speed"] = useStore.getState().speed,
+    resumeSlaves = true,
+  ): void {
+    if (this.disposed || this.master.readyState < 1) return;
+
+    const masterT = this.master.currentTime;
+    if (!Number.isFinite(masterT)) return;
+
     const store = useStore.getState();
-    const playing = store.isPlaying;
+    const playing = resumeSlaves && store.isPlaying;
+    this.master.playbackRate = rate;
+
+    if (!this.masterCurve || this.masterCurve.length === 0) {
+      // Original mode: all channels share the same segment-local time axis.
+      for (let i = 0; i < this.slaves.length; i++) {
+        const slave = this.slaves[i];
+        slave.playbackRate = rate;
+        if (slave.readyState < 1) continue;
+
+        const duration = Number.isFinite(slave.duration)
+          ? slave.duration
+          : Infinity;
+        const target = Math.min(Math.max(0, masterT), duration);
+        slave.currentTime = target;
+        this.watchdogState.delete(slave);
+
+        this.slaveInGap[i] = false;
+        this.gapPaused.delete(slave);
+        store.setChannelGapped(this.slaveLabels[i], false);
+        if (playing && slave.paused && !slave.ended) {
+          slave.play().catch(() => {});
+        }
+      }
+      store.setCurrentTime(masterT);
+      return;
+    }
+
+    // Tiered mode: map the master's file-time to the shared trip clock,
+    // then map that position independently onto each channel's own file.
+    const concatT = fileToConcat(masterT, this.masterCurve);
     for (let i = 0; i < this.slaves.length; i++) {
       const slave = this.slaves[i];
+      slave.playbackRate = rate;
+      if (slave.readyState < 1) continue;
+
       const curve = this.slaveCurves[i];
       if (!curve || curve.length === 0) {
-        slave.currentTime = clamped; // full-coverage, no curve info
+        const duration = Number.isFinite(slave.duration)
+          ? slave.duration
+          : Infinity;
+        slave.currentTime = Math.min(Math.max(0, masterT), duration);
+        this.watchdogState.delete(slave);
+        if (playing && slave.paused && !slave.ended) {
+          slave.play().catch(() => {});
+        }
         continue;
       }
+
       const cov = coverageAt(concatT, curve);
-      if (Number.isFinite(cov.fileTime)) slave.currentTime = cov.fileTime;
+      if (Number.isFinite(cov.fileTime)) {
+        const duration = Number.isFinite(slave.duration)
+          ? slave.duration
+          : Infinity;
+        slave.currentTime = Math.min(
+          Math.max(0, cov.fileTime),
+          duration,
+        );
+        this.watchdogState.delete(slave);
+      }
+
       this.slaveInGap[i] = !cov.covered;
-      this.slaveLabels[i] &&
-        store.setChannelGapped(this.slaveLabels[i], !cov.covered);
+      store.setChannelGapped(this.slaveLabels[i], !cov.covered);
       if (cov.covered) {
         this.gapPaused.delete(slave);
-        if (playing && slave.paused) slave.play().catch(() => {});
+        if (playing && slave.paused && !slave.ended) {
+          slave.play().catch(() => {});
+        }
       } else {
         this.gapPaused.add(slave);
         if (!slave.paused) {
@@ -553,11 +937,85 @@ export class SyncEngine {
         }
       }
     }
-    useStore.getState().setCurrentTime(clamped);
+    store.setCurrentTime(masterT);
   }
 
-  setSpeed(rate: number): void {
-    this.master.playbackRate = rate;
+  async setSpeed(rate: PlaybackSlice["speed"]): Promise<void> {
+    const generation = ++this.transportGeneration;
+    const state = useStore.getState();
+    const mediaPlaying = !this.master.paused && !this.master.ended;
+    const wasPlaying = this.playIntent || mediaPlaying;
+    const previousRate = this.master.playbackRate;
+    const anchorTime = this.master.currentTime;
+
+    // Keep the user's transport intent stable while the pipelines are briefly
+    // paused for a rate change. This makes Pause during the transition a real
+    // cancellation rather than a race with a pending restart.
+    this.playIntent = wasPlaying;
+    state.setIsPlaying(wasPlaying);
+    this.pauseIntentional = true;
+
+    // Mute *before* touching playbackRate. WebKitGTK/GStreamer can emit a short
+    // piece of stretched audio during the rate transition otherwise.
+    this.master.muted = true;
+    this.master.defaultMuted = true;
+    this.master.volume = 0;
+    for (const slave of this.slaves) {
+      slave.muted = true;
+      slave.defaultMuted = true;
+      slave.volume = 0;
+    }
+
+    this.master.pause();
+    this.slaves.forEach((s) => s.pause());
     this.slaves.forEach((s) => (s.playbackRate = rate));
+
+    // Returning from any stretched rate to 1x gets a fresh master pipeline.
+    // A same-time currentTime assignment was not sufficient on WebKitGTK:
+    // the audio time-stretch branch could remain in a reverberant state.
+    if (rate === 1 && previousRate !== 1) {
+      await this.reloadMasterAt(anchorTime, rate);
+    } else {
+      this.master.playbackRate = rate;
+      if (Number.isFinite(anchorTime) && this.master.readyState >= 1) {
+        const duration = Number.isFinite(this.master.duration)
+          ? this.master.duration
+          : Infinity;
+        this.master.currentTime = Math.min(Math.max(0, anchorTime), duration);
+      }
+      await this.waitForPendingSeek(this.master);
+    }
+
+    if (generation !== this.transportGeneration || this.disposed) return;
+
+    this.resyncToMaster(rate, false);
+    await this.waitForPendingSeeks(this.slaves);
+    if (generation !== this.transportGeneration || this.disposed) return;
+
+    // Only now expose audio again, and only for Original 1x.
+    this.applyAudioPolicy(rate);
+
+    if (!wasPlaying) {
+      this.playIntent = false;
+      state.setIsPlaying(false);
+      return;
+    }
+
+    this.pauseIntentional = false;
+    try {
+      await this.startAll();
+      if (generation !== this.transportGeneration || this.disposed) return;
+      useStore.getState().setIsPlaying(true);
+    } catch (e) {
+      if (generation !== this.transportGeneration || this.disposed) return;
+      this.playIntent = false;
+      useStore.getState().setIsPlaying(false);
+      this.stopAllAfterFailure();
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      console.error("SyncEngine.setSpeed restart failed:", e);
+      useStore.getState().setError(
+        e instanceof Error ? e.message : "playback failed after speed change",
+      );
+    }
   }
 }
