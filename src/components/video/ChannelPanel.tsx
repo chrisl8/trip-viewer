@@ -16,6 +16,7 @@ import {
 import { useStore } from "../../state/store";
 import { usePausedZoom } from "./usePausedZoom";
 import { useOverlayCrop } from "./useOverlayCrop";
+import { overlayBorderRadius, overlayMaskStyle } from "./overlayMask";
 import type { OverlayCrop, OverlayFrame } from "../../settings/overlayLayout";
 import { shouldMuteChannelAudio } from "./audioPolicy";
 
@@ -144,7 +145,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
     const isPlaying = useStore(s => s.isPlaying);
     const canZoom = !overlayCrop && !disablePausedZoom && !isPlaying && ready && !error && !gapped;
     const zoom = usePausedZoom(localRef, canZoom, src);
-    const cropStyle = useOverlayCrop(localRef, overlayCrop);
+    const cropStyle = useOverlayCrop(localRef, overlayCrop, overlayFrame);
 
     const setRefs = useCallback(
       (node: HTMLVideoElement | null) => {
@@ -506,11 +507,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
 
     return (
       <div
-        style={overlayFrame ? {
-          borderRadius: overlayFrame === "mirror" ? "18% 18% 24% 24% / 35% 35% 45% 45%" : "10px",
-          border: overlayFrame === "mirror" ? "3px solid #71717a" : "2px solid #52525b",
-          isolation: "isolate", transform: "translateZ(0)",
-        } : undefined}
+        style={overlayFrame ? overlayMaskStyle(overlayFrame) : undefined}
         title={canZoom ? "Paused: scroll to zoom, drag the enlarged image to pan" : undefined}
         onClickCapture={zoom.onClickCapture}
         onClick={onClick}
@@ -619,6 +616,12 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
             </div>
             <div className="text-xs text-red-200">{error}</div>
           </div>
+        )}
+        {overlayFrame && (
+          <div aria-hidden="true" data-overlay-frame={overlayFrame}
+            className="pointer-events-none absolute inset-0 z-30"
+            style={{ borderRadius: overlayBorderRadius(overlayFrame),
+              border: overlayFrame === "mirror" ? "3px solid #71717a" : "2px solid #52525b" }} />
         )}
       </div>
     );

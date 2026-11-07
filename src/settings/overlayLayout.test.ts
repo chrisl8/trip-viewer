@@ -49,6 +49,16 @@ describe("overlay placement", () => {
 });
 
 describe("persistent camera crop", () => {
+  it("selects the top or bottom of Rear at every zoom while preserving image scale", () => {
+    for (const zoom of [1, 2, 8]) {
+      const top = cropGeometry({ zoom, x: 0, y: 1 }, 600, 160, 1920, 1080)!;
+      const bottom = cropGeometry({ zoom, x: 0, y: -1 }, 600, 160, 1920, 1080)!;
+      expect(top.top).toBe(0);
+      expect(bottom.top).toBeLessThan(top.top);
+      expect(bottom.top + bottom.height).toBeCloseTo(160);
+      expect(bottom.width).toEqual(top.width);
+    }
+  });
   it("fills a wide mirror with undistorted video and pans inside it without exposed gaps", () => {
     const crop = { zoom: 1, x: 0, y: 0 };
     const geometry = cropGeometry(crop, 600, 160, 1920, 1080)!;

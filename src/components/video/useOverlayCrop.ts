@@ -1,9 +1,10 @@
 import { useEffect, useState, type CSSProperties, type MutableRefObject } from "react";
-import { cropGeometry, type OverlayCrop } from "../../settings/overlayLayout";
+import { cropGeometry, type OverlayCrop, type OverlayFrame } from "../../settings/overlayLayout";
+import { croppedVideoMask, overlayMaskStyle } from "./overlayMask";
 
 // Only measure on resize/metadata changes, never on playback frames. The same
 // video element remains mounted; crop changes do not touch its source or clock.
-export function useOverlayCrop(ref: MutableRefObject<HTMLVideoElement | null>, crop: OverlayCrop | undefined): CSSProperties | undefined {
+export function useOverlayCrop(ref: MutableRefObject<HTMLVideoElement | null>, crop: OverlayCrop | undefined, frame: OverlayFrame = "rounded"): CSSProperties | undefined {
   const [size, setSize] = useState({ width: 0, height: 0, mediaWidth: 0, mediaHeight: 0 });
   const enabled = crop !== undefined;
   useEffect(() => {
@@ -19,6 +20,7 @@ export function useOverlayCrop(ref: MutableRefObject<HTMLVideoElement | null>, c
   }, [enabled, ref]);
   if (!crop) return undefined;
   const geometry = cropGeometry(crop, size.width, size.height, size.mediaWidth, size.mediaHeight);
-  return geometry ? { position: "absolute", left: geometry.left, top: geometry.top, width: geometry.width, height: geometry.height, maxWidth: "none" }
-    : { width: "100%", height: "100%", objectFit: "cover" };
+  return geometry ? { position: "absolute", left: geometry.left, top: geometry.top, width: geometry.width, height: geometry.height, maxWidth: "none",
+    ...croppedVideoMask(geometry, size.width, size.height, frame) }
+    : { width: "100%", height: "100%", objectFit: "cover", ...overlayMaskStyle(frame) };
 }
