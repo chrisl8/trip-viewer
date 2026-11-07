@@ -5,6 +5,54 @@ Original project attribution, icons and licenses are retained. Björn Fries
 (`gubiq`) authored the archive-auto-scan and Linux libva/DMABuf fixes; their
 commits and co-author notices are preserved in this contribution branch.
 
+## Current follow-up: shared functionality from stable fork 0.9.0
+
+This PR now includes the shared display functionality from published
+[fork 0.9.0](https://github.com/Marcus-P/trip-viewer/releases/tag/v0.9.0), source
+`a89fe4ceb98865db2a1d30dfc70921f588be095e`. The
+[incremental diff since the previous PR head](https://github.com/Marcus-P/trip-viewer/compare/4fc170ae9f4617799fe8456bb48e71d8be82c187...contrib/viofo-playback-081)
+isolates this update, preserving all original commits and contributor credit.
+
+- Classic tiled playback remains the default with its existing saved proportions.
+  Overlay adds Front as background, a rear-view mirror mask and independently
+  movable/resizable camera layers, including Interior and additional labels.
+- Frame geometry is separate from the video crop. Horizontal/vertical crop
+  controls select the road instead of the sky; zoom/position controls enable
+  direct crop dragging. The mask clips the composited video itself, with a frame
+  drawn above it and transparent outside corners showing Front.
+- Positions, zoom, crop, shape and stacking persist. Reset crop restores 100%
+  zoom and centers both axes without moving the frame or another camera;
+  Reset overlay restores layer defaults. Save/Cancel preserve draft semantics.
+- Dashboard fullscreen retains the composition. Single-camera fullscreen shows
+  the full source and restores the crop on exit. Layout changes reuse the same
+  video elements and SyncEngine, without replacing sources or changing audio.
+
+For a quick app-level test without compiling, the published fork release above
+contains Windows x64, Ubuntu Debian/AppImage and experimental universal Mac
+downloads. Those are **fork binaries**, not a new upstream release. The PR keeps
+upstream's application version **0.3.3**, dependencies, updater/endpoint, signing,
+workflows, icons and license material. Maintainer release decisions remain yours.
+Use a copy/backup of an archive: the schema 13-to-17 migration is part of the
+original contribution; an unmodified schema-13-only build cannot reopen it.
+This display follow-up adds no migration or GPS parser change.
+
+The owner accepted the overlay, crop controls and mirror masking, paused and
+playing, with VIOFO A229 Pro 3CH footage on Ubuntu 24.04 LTS, and confirmed the
+installed stable 0.9.0 works. The final reset is also checked with rendered video
+center alignment, both position sliders, Save/Cancel and restart restoration.
+This does not add a Windows/Mac overlay certification or certify other cameras.
+
+The updated contribution passes **110 frontend tests** and the TypeScript/Vite
+production build. All fourteen shared frontend files match stable fork 0.9.0;
+Settings deliberately omits the fork's release-update widget. Static comparisons
+confirm the upstream distribution/update files remain unchanged. No Rust runtime
+code changes in this follow-up. The corresponding fork PR/package CI
+[42283614546](https://github.com/Marcus-P/trip-viewer/actions/runs/42283614546)
+and merged release
+[42307839895](https://github.com/Marcus-P/trip-viewer/actions/runs/42307839895)
+passed for all three platforms. No duplicate native package pipeline is started
+for this port; any upstream workflow approval remains with the maintainer.
+
 The fork maintainer's hands-on camera testing covers **VIOFO A229 Pro 3CH on
 Ubuntu 24.04 LTS and Windows 11 x64**. The Ubuntu acceptance covers playback/GPS
 preparation, segment transitions, map seeking, dashboard timeline, paused zoom,
@@ -54,7 +102,7 @@ fixture failures before the correction. Production parser/cache behaviour and
 upstream distribution configuration are unchanged by this test-only follow-up.
 
 
-## Application changes aligned with fork 0.8.1
+## Earlier settings update: fork 0.8.1
 
 This contribution uses upstream main `a9617fcb0ec53bd23a627fa7f5c30cbd3a65d148`
 and incorporates the shared application changes from fork release
@@ -82,6 +130,7 @@ installer/release/update implementation is separate from these shared changes.
 | Shared playback/recovery | `engine/SyncEngine.ts`, `components/video/PlayerShell.tsx`, `VideoGrid.tsx`, `mediaRecovery.ts` |
 | Map seeking and bookmarks | `components/map/routeSeek.ts`, `components/timeline/useBookmarks.ts`, `bookmarks.rs`, DB migration 0017 |
 | Latest settings follow-up | `components/settings/SettingsDialog.tsx`, `settings/layout.ts`, its test, `PlayerShell.tsx`, `MainNavTabs.tsx` |
+| Overlay/crop follow-up from 0.9.0 | `components/video/VideoLayoutControls.tsx`, `OverlayHandles.tsx`, `useCameraLayout.ts`, `useOverlayCrop.ts`, `overlayMask.ts`, `settings/overlayLayout.ts` and their tests |
 
 Frontend paths above are relative to `src/`; Rust paths are relative to
 `src-tauri/src/`. Original contributor commits remain intact, with the settings
@@ -101,11 +150,12 @@ signing/release scripts, workflows, icons and license files are retained.
 The follow-up changes no Rust runtime code or migration scripts.
 
 
-## Archive-switch bugfix (fork 0.8.2 candidate)
+## Archive-switch bugfix (released in fork 0.8.2)
 
-The prepared contribution also includes the shared bugfix from
-[fork PR #10](https://github.com/Marcus-P/trip-viewer/pull/10), a follow-up to
-published 0.8.1. The fork's stable publication is separate from test acceptance.
+The contribution also includes the shared bugfix from
+[fork PR #10](https://github.com/Marcus-P/trip-viewer/pull/10), published in
+[fork 0.8.2](https://github.com/Marcus-P/trip-viewer/releases/tag/v0.8.2) and retained
+in 0.9.0. The fork's release/version metadata is not copied into this PR.
 
 - Selecting another archive, or reselecting the same folder, automatically
   reloads the recording list. Old playback/library/cache state is cleared.
