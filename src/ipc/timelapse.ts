@@ -66,6 +66,21 @@ export interface TimelapseDoneEvent {
   cancelled: boolean;
 }
 
+export interface TimelapseEncodingProgress {
+  tripId: string;
+  tier: string;
+  channel: string;
+  phase: "preparing" | "encoding" | "finalizing";
+  encoder: string;
+  processedSeconds: number;
+  totalSeconds: number;
+  elapsedSeconds: number;
+}
+
+export function onTimelapseEncodingProgress(cb: (progress: TimelapseEncodingProgress) => void): Promise<() => void> {
+  return listen<TimelapseEncodingProgress>("timelapse:encoding-progress", (event) => cb(event.payload));
+}
+
 export interface StartTimelapseArgs {
   tripIds: string[] | null;
   tiers: TimelapseTier[];

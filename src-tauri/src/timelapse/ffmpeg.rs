@@ -31,6 +31,7 @@ use crate::error::AppError;
 use crate::timelapse::speed_curve::{self, CurveSegment};
 use crate::timelapse::types::{Channel, FfmpegCapabilities, Tier};
 use crate::timelapse::CancelFlag;
+use crate::timelapse::progress::{ProgressCallback, Reporter};
 
 // On Windows, a GUI-subsystem process (the installed build sets
 // `windows_subsystem = "windows"`) that spawns a console child via
@@ -172,7 +173,7 @@ fn synthetic_probe_command(path: &str) -> Command {
 
 fn run_probe(command: Command) -> Result<(), AppError> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    run_ffmpeg_with_deadline(command, &cancel, Some(Duration::from_secs(10)))
+    run_ffmpeg_with_deadline(command, &cancel, Some(Duration::from_secs(10)), None)
 }
 
 fn probe_nvenc(path: &str) -> Result<(), AppError> {
@@ -254,6 +255,7 @@ impl Encoder {
 /// one-stage passthrough; for variable tiers it's the alternating
 /// base/event-rate concat. The three channels of a given trip-tier
 /// share identical `(windows, total_duration_s)` so they stay synced.
+#[derive(Clone)]
 pub struct EncodeArgs<'a> {
     pub ffmpeg_path: &'a str,
     pub source_paths: &'a [String],
@@ -282,6 +284,7 @@ pub struct EncodeArgs<'a> {
     /// thread count near the host's logical-core count instead of N×
     /// oversubscribing it. `None` = let x265 pick its own pool size.
     pub cpu_pool_threads: Option<usize>,
+    pub progress: Option<ProgressCallback>,
     /// Force software decode + `scale` (CPU) filter even when `encoder`
     /// is `HevcNvenc`. NVENC encoding stays GPU-side. Caller sets this
     /// for jobs whose concat source mixes black-placeholder segments
@@ -349,6 +352,7 @@ pub fn encode_trip_channel(
         curve: args.curve,
         scratch_dir: args.scratch_dir,
         cpu_pool_threads: args.cpu_pool_threads,
+        progress: args.progress.clone(),
         software_input: args.software_input,
     };
 
@@ -386,7 +390,7 @@ pub fn encode_with_cpu_fallback(
             encoder,
             cpu_pool_threads: if matches!(args.encoder, Encoder::HevcNvenc)
                 && matches!(encoder, Encoder::LibX265) { Some(1) } else { args.cpu_pool_threads },
-            ..*args
+            ..args.clone()
         };
         encode_trip_channel(&retry_args, cancel)
     })
@@ -426,6 +430,19 @@ fn with_cpu_fallback(
 /// regardless of how many segments the trip has. Stream-copy concat
 /// also means phase 1 doesn't decode at all, so memory there is
 /// trivial.
+fn reporter(args: &EncodeArgs<'_>, phase: &'static str, total: f64) -> Option<Reporter> {
+    args.progress.as_ref().map(|callback|
+        Reporter::new(callback.clone(), phase, args.encoder.as_str(), total))
+}
+
+fn output_seconds(args: &EncodeArgs<'_>) -> f64 {
+    args.curve.iter().map(|seg| (seg.concat_end - seg.concat_start).max(0.0) / seg.rate.max(1) as f64).sum()
+}
+
+fn source_seconds(args: &EncodeArgs<'_>) -> f64 {
+    args.curve.last().map(|seg| seg.concat_end).unwrap_or(0.0)
+}
+
 fn encode_single_shot(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<PathBuf, AppError> {
     fs::create_dir_all(args.scratch_dir)
         .map_err(|e| AppError::Internal(format!("scratch dir create failed: {e}")))?;
@@ -436,7 +453,8 @@ fn encode_single_shot(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Path
     // placeholders share codec/resolution/fps/pix_fmt by construction,
     // so the demuxer accepts them without normalization.
     let source_path = args.scratch_dir.join("__single_source.mp4");
-    if let Err(e) = prepare_concat_source(args.source_paths, &source_path, args.ffmpeg_path, cancel)
+    if let Err(e) = prepare_concat_source(args.source_paths, &source_path, args.ffmpeg_path, cancel,
+        reporter(args, "preparing", source_seconds(args)))
     {
         if source_path.exists() {
             let _ = fs::remove_file(&source_path);
@@ -474,7 +492,7 @@ fn encode_single_shot(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Path
 
     cmd.arg(args.output_path);
 
-    let result = run_ffmpeg_with_cancel(cmd, cancel);
+    let result = run_ffmpeg_with_cancel(cmd, cancel, reporter(args, "encoding", output_seconds(args)));
     let _ = fs::remove_file(&source_path);
 
     match result {
@@ -504,6 +522,7 @@ fn encode_multi_window(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Pat
         &source_path,
         args.ffmpeg_path,
         cancel,
+        reporter(args, "preparing", source_seconds(args)),
     );
     if let Err(e) = prep_result {
         if source_path.exists() {
@@ -530,6 +549,8 @@ fn encode_multi_window(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Pat
     // don't undo the memory savings by running them in parallel.
     let mut window_paths: Vec<PathBuf> = Vec::with_capacity(args.curve.len());
     let mut window_err: Option<AppError> = None;
+    let report = reporter(args, "encoding", output_seconds(args));
+    let mut output_offset = 0.0;
     for (i, seg) in args.curve.iter().enumerate() {
         let mut duration = (seg.concat_end - seg.concat_start).max(0.0);
         // Skip a window that starts at/after the real source end, and
@@ -562,8 +583,12 @@ fn encode_multi_window(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Pat
             args.ffmpeg_path,
             args.cpu_pool_threads,
             cancel,
+            report.as_ref().map(|report| report.offset(output_offset)),
         ) {
-            Ok(()) => window_paths.push(window_path),
+            Ok(()) => {
+                window_paths.push(window_path);
+                output_offset += duration / seg.rate.max(1) as f64;
+            }
             Err(e) => {
                 window_err = Some(e);
                 break;
@@ -595,6 +620,7 @@ fn encode_multi_window(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Pat
         args.output_path,
         args.ffmpeg_path,
         cancel,
+        reporter(args, "finalizing", output_offset),
     );
     for w in &window_paths {
         let _ = fs::remove_file(w);
@@ -619,6 +645,7 @@ fn prepare_concat_source(
     output: &Path,
     ffmpeg_path: &str,
     cancel: &CancelFlag,
+    progress: Option<Reporter>,
 ) -> Result<(), AppError> {
     let parent = output.parent().ok_or_else(|| {
         AppError::Internal("multi-window source output has no parent dir".into())
@@ -639,7 +666,7 @@ fn prepare_concat_source(
         .arg("-an")
         .arg(output);
 
-    let result = run_ffmpeg_with_cancel(cmd, cancel);
+    let result = run_ffmpeg_with_cancel(cmd, cancel, progress);
     let _ = fs::remove_file(&list_path);
     result
 }
@@ -663,6 +690,7 @@ fn encode_window(
     ffmpeg_path: &str,
     cpu_pool_threads: Option<usize>,
     cancel: &CancelFlag,
+    progress: Option<Reporter>,
 ) -> Result<(), AppError> {
     if output.exists() {
         let _ = fs::remove_file(output);
@@ -697,7 +725,7 @@ fn encode_window(
 
     cmd.arg(output);
 
-    match run_ffmpeg_with_cancel(cmd, cancel) {
+    match run_ffmpeg_with_cancel(cmd, cancel, progress) {
         Ok(()) => Ok(()),
         Err(e) => {
             if output.exists() {
@@ -720,6 +748,7 @@ fn concat_window_outputs(
     output: &Path,
     ffmpeg_path: &str,
     cancel: &CancelFlag,
+    progress: Option<Reporter>,
 ) -> Result<(), AppError> {
     let parent = output.parent().ok_or_else(|| {
         AppError::Internal("multi-window concat output has no parent dir".into())
@@ -744,7 +773,7 @@ fn concat_window_outputs(
         .arg("-an")
         .arg(output);
 
-    let result = run_ffmpeg_with_cancel(cmd, cancel);
+    let result = run_ffmpeg_with_cancel(cmd, cancel, progress);
     let _ = fs::remove_file(&list_path);
     result
 }
@@ -837,14 +866,18 @@ fn apply_encoder_flags(cmd: &mut Command, encoder: Encoder, cpu_pool_threads: Op
 /// 64 KB regardless of how chatty the child gets, which is the fix
 /// for the parent-process OOM that hit when CUDA exhaustion made
 /// ffmpeg emit one error line per frame.
-fn run_ffmpeg_with_cancel(cmd: Command, cancel: &CancelFlag) -> Result<(), AppError> {
-    run_ffmpeg_with_deadline(cmd, cancel, None)
+fn run_ffmpeg_with_cancel(cmd: Command, cancel: &CancelFlag, progress: Option<Reporter>) -> Result<(), AppError> {
+    run_ffmpeg_with_deadline(cmd, cancel, None, progress)
 }
 
 fn run_ffmpeg_with_deadline(
-    mut cmd: Command, cancel: &CancelFlag, timeout: Option<Duration>,
+    mut cmd: Command, cancel: &CancelFlag, timeout: Option<Duration>, progress: Option<Reporter>,
 ) -> Result<(), AppError> {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    if progress.is_some() {
+        cmd.args(["-progress", "pipe:1"]);
+        cmd.stdout(Stdio::piped());
+    }
     let started = Instant::now();
 
     let mut child = cmd
@@ -856,6 +889,8 @@ fn run_ffmpeg_with_deadline(
         .stderr
         .take()
         .map(|s| thread::spawn(move || drain_to_tail(s, STDERR_TAIL_BYTES)));
+    let progress_handle = progress.and_then(|report| child.stdout.take()
+        .map(|stdout| thread::spawn(move || report.read(stdout))));
 
     // Poll for exit or cancel. 500ms is a compromise between cancel
     // responsiveness and CPU wakeups — the worker-level progress
@@ -886,6 +921,7 @@ fn run_ffmpeg_with_deadline(
     let stderr_tail = stderr_handle
         .map(|h| h.join().unwrap_or_default())
         .unwrap_or_default();
+    if let Some(handle) = progress_handle { let _ = handle.join(); }
 
     if timed_out {
         return Err(AppError::Internal("FFmpeg capability test timed out after 10 seconds".into()));
@@ -1011,7 +1047,7 @@ mod tests {
         command.args(["-c", "exec sleep 5"]);
         let cancel = crate::timelapse::worker::new_cancel_flag();
         let started = Instant::now();
-        let result = run_ffmpeg_with_deadline(command, &cancel, Some(Duration::from_millis(20)));
+        let result = run_ffmpeg_with_deadline(command, &cancel, Some(Duration::from_millis(20)), None);
         assert!(result.unwrap_err().to_string().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(3));
     }

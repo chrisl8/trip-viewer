@@ -4,6 +4,7 @@ import type {
   TimelapseDoneEvent,
   TimelapseJobRow,
   TimelapseProgressEvent,
+  TimelapseEncodingProgress,
 } from "../ipc/timelapse";
 
 /**
@@ -19,6 +20,7 @@ export interface TimelapseSlice {
   timelapseScanning: boolean;
   /** Progress event from the last `timelapse:progress` tick. */
   timelapseProgress: TimelapseProgressEvent | null;
+  timelapseEncodingProgress: (TimelapseEncodingProgress & { receivedAtMs: number }) | null;
   /** Set when `timelapse:done` fires; cleared when a new run starts. */
   timelapseLastResult: TimelapseDoneEvent | null;
   /** Epoch ms when the current (or most recent) run started. Used for

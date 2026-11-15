@@ -31,6 +31,7 @@ import {
 import {
   onTimelapseStart,
   onTimelapseProgress,
+  onTimelapseEncodingProgress,
   onTimelapseDone,
   onTimelapseScanning,
 } from "./ipc/timelapse";
@@ -213,6 +214,7 @@ function App() {
             currentChannel: null,
           },
           timelapseLastResult: null,
+          timelapseEncodingProgress: null,
         });
       }),
     );
@@ -222,10 +224,16 @@ function App() {
       }),
     );
     unlisteners.push(
+      onTimelapseEncodingProgress((p) => {
+        useStore.setState({ timelapseEncodingProgress: { ...p, receivedAtMs: Date.now() } });
+      }),
+    );
+    unlisteners.push(
       onTimelapseDone((result) => {
         useStore.setState({
           timelapseRunning: false,
           timelapseScanning: false,
+          timelapseEncodingProgress: null,
           timelapseLastResult: result,
         });
         // Jobs list may have new rows — refresh so the trip table

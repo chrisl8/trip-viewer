@@ -23,6 +23,7 @@ pub mod commands;
 pub mod concurrency;
 pub mod events;
 pub mod ffmpeg;
+pub mod progress;
 pub mod speed_curve;
 pub mod types;
 pub mod worker;

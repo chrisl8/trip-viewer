@@ -29,6 +29,7 @@ use crate::timelapse::events;
 use crate::timelapse::ffmpeg::{self, EncodeArgs, Encoder};
 use crate::timelapse::types::{Channel, EventWindow, FfmpegCapabilities, JobScope, Tier};
 use crate::timelapse::CancelFlag;
+use crate::timelapse::progress::{EncodingProgress, ProgressCallback};
 
 pub fn new_cancel_flag() -> CancelFlag {
     Arc::new(AtomicBool::new(false))
@@ -71,6 +72,16 @@ pub struct TimelapseDoneEvent {
     pub done: u64,
     pub failed: u64,
     pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelapseEncodingProgress {
+    trip_id: String,
+    tier: String,
+    channel: String,
+    #[serde(flatten)]
+    progress: EncodingProgress,
 }
 
 /// One unit of work for the worker loop.
@@ -264,6 +275,7 @@ fn run_inner(
                         );
 
                         match process_item(
+                            app,
                             db,
                             cancel,
                             item,
@@ -402,6 +414,7 @@ enum ProcessOutcome {
 /// caller-side state lives in the `process_item`-free scope.
 #[allow(clippy::too_many_arguments)]
 fn process_item(
+    app: &AppHandle,
     db: &DbHandle,
     cancel: &CancelFlag,
     item: &WorkItem,
@@ -526,6 +539,15 @@ fn process_item(
     // scale_cuda path no longer hits the placeholder→real reinit failure
     // that forced software decode. Keep the fast GPU-only pipeline.
     let software_input = false;
+    let app = app.clone();
+    let trip_id = item.trip_id.clone();
+    let tier = item.tier.as_str().to_string();
+    let channel = item.channel.as_str().to_string();
+    let progress: ProgressCallback = Arc::new(move |progress| {
+        let _ = app.emit("timelapse:encoding-progress", TimelapseEncodingProgress {
+            trip_id: trip_id.clone(), tier: tier.clone(), channel: channel.clone(), progress,
+        });
+    });
 
     let args = EncodeArgs {
         ffmpeg_path,
@@ -537,6 +559,7 @@ fn process_item(
         curve: &curve,
         scratch_dir: &scratch_dir,
         cpu_pool_threads,
+        progress: Some(progress),
         software_input,
     };
     let started = Instant::now();
@@ -1483,18 +1506,27 @@ mod tests {
             let resolved = resolve_channel_sources(&masters, &[2.0, 2.0], channel).unwrap();
             assert_eq!(resolved.sources.len(), 2);
             for tier in [Tier::Tier8x, Tier::Tier16x, Tier::Tier60x] {
-                let curve = crate::timelapse::speed_curve::build_curve(&[], tier, 4.0);
+                let events = if matches!(tier, Tier::Tier8x) { vec![] }
+                    else { vec![EventWindow { start_s: 1.0, end_s: 2.0 }] };
+                let curve = crate::timelapse::speed_curve::build_curve(&events, tier, 4.0);
                 let curve = crate::timelapse::speed_curve::sanitize_for_encode(&curve, 0.1);
+                let reports = Arc::new(Mutex::new(Vec::new()));
+                let sink = reports.clone();
+                let callback: ProgressCallback = Arc::new(move |p| sink.lock().unwrap().push(p));
                 let output = dir.path().join(format!("{}-{}.mp4", tier.as_str(), channel.as_str()));
                 let scratch = dir.path().join(format!("scratch-{}-{}", tier.as_str(), channel.as_str()));
                 let args = EncodeArgs {
                     ffmpeg_path: &binary, source_paths: &resolved.sources, output_path: &output,
                     tier, channel, encoder: Encoder::pick(&caps), curve: &curve,
-                    scratch_dir: &scratch, cpu_pool_threads: Some(1), software_input: false,
+                    scratch_dir: &scratch, cpu_pool_threads: Some(1), software_input: false, progress: Some(callback),
                 };
                 let (path, _) = ffmpeg::encode_with_cpu_fallback(&args, &new_cancel_flag(), &gpu_failed).unwrap();
                 let meta = crate::metadata::mp4_probe::probe(&path).unwrap();
                 assert!(meta.duration_s > 0.0, "empty output for {} {}", tier.as_str(), channel.as_str());
+                let reports = reports.lock().unwrap();
+                assert!(reports.iter().any(|p| p.phase == "preparing"));
+                assert!(reports.iter().any(|p| p.phase == "encoding" && p.processed_seconds > 0.0));
+                assert!(reports.iter().all(|p| p.processed_seconds.is_finite() && p.processed_seconds <= p.total_seconds));
             }
         }
     }
