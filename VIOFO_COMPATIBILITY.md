@@ -5,7 +5,41 @@ Original project attribution, icons and licenses are retained. Björn Fries
 (`gubiq`) authored the archive-auto-scan and Linux libva/DMABuf fixes; their
 commits and co-author notices are preserved in this contribution branch.
 
-## Current follow-up: shared functionality from stable fork 0.9.0
+## Current follow-up: VIOFO timelapse and runtime GPU checks
+
+This incremental follow-up fixes the fork owner's VIOFO timelapse failure:
+scanning recognized A229 names but the inherited sibling lookup used a naming
+registry without VIOFO, so all F/I/R jobs reported no files before encoding.
+The central recognizer now serves both paths, including different per-channel
+sequence numbers and separation of normal/parking files at the same timestamp.
+Existing format parsers remain in place.
+
+The encoder-list check alone could advertise NVENC without a working GPU/driver.
+The new probe encodes two synthetic frames, then exercises CUDA decode/scaling
+and HEVC encoding. If unavailable it verifies libx265 CPU encoding. Each probe
+stage has a ten-second limit. Old cached list-only flags require a fresh Test;
+configured paths are retained. Each batch rechecks hardware availability. A GPU
+job that fails on real material can retry once on CPU; later jobs in that batch
+stay on CPU with capped pools. Cancellation never launches the retry, and
+completion metadata records the actual encoder. Saved per-job errors are now
+expandable in Timelapse.
+
+The shared runtime change passes **349 Rust tests** (two ignored) in both the
+fork and contribution worktrees. An additional opt-in real-FFmpeg synthetic test
+produces nine valid HEVC outputs from two HEVC source segments with VIOFO names,
+covering F/I/R and 8x/16x/60x. The cloud's unavailable NVIDIA path is correctly
+rejected and CPU encoding succeeds; positive GPU hardware validation is not
+claimed. TypeScript/Vite build passes. Real owner VIOFO acceptance for this new
+fix remains pending; prior playback/overlay acceptance remains established.
+
+The fork prepares this fix as **0.10.2**, not yet published. This contribution
+continues to use Chris' **0.3.3** version and unchanged dependencies, updater,
+release workflows, identity and licenses. The optional new machine-settings
+probe revision is backward compatible; no additional archive migration, GPS
+parser increment or media changes are introduced. No fork download-statistics
+endpoint or release/branch configuration is copied here.
+
+## Previous display follow-up: shared functionality from stable fork 0.9.0
 
 This PR now includes the shared display functionality from published
 [fork 0.9.0](https://github.com/Marcus-P/trip-viewer/releases/tag/v0.9.0), source
