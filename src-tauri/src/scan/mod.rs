@@ -66,10 +66,7 @@ fn parse_filename(
     camera_model: CameraModelPreference,
 ) -> Result<naming::ParsedName, AppError> {
     match camera_model {
-        CameraModelPreference::Auto => match viofo::parse(name) {
-            Some(parsed) => Ok(parsed),
-            None => naming::parse(name),
-        },
+        CameraModelPreference::Auto => naming::parse(name),
         CameraModelPreference::ViofoA229Pro => viofo::parse(name).ok_or_else(|| {
             AppError::Parse(format!("not a VIOFO A229 Pro filename: {name}"))
         }),

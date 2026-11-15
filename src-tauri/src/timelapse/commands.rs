@@ -28,8 +28,8 @@ pub async fn get_timelapse_settings(
     settings: State<'_, AppSettingsHandle>,
 ) -> Result<TimelapseSettings, AppError> {
     let s = settings.read();
-    let capabilities = match (s.ffmpeg_version, s.nvenc_hevc) {
-        (Some(v), Some(n)) => Some(FfmpegCapabilities {
+    let capabilities = match (s.ffmpeg_probe_revision, s.ffmpeg_version, s.nvenc_hevc) {
+        (Some(1), Some(v), Some(n)) => Some(FfmpegCapabilities {
             version: v,
             nvenc_hevc: n,
         }),
@@ -53,6 +53,7 @@ pub async fn clear_timelapse_settings(
         s.ffmpeg_path = None;
         s.ffmpeg_version = None;
         s.nvenc_hevc = None;
+        s.ffmpeg_probe_revision = None;
     })
 }
 
@@ -108,12 +109,15 @@ pub async fn test_ffmpeg(
     path: String,
     settings: State<'_, AppSettingsHandle>,
 ) -> Result<FfmpegCapabilities, AppError> {
-    let caps = ffmpeg::probe_ffmpeg(&path)?;
+    let probe_path = path.clone();
+    let caps = tauri::async_runtime::spawn_blocking(move || ffmpeg::probe_ffmpeg(&probe_path))
+        .await.map_err(|error| AppError::Internal(format!("FFmpeg test task failed: {error}")))??;
     let caps_for_save = caps.clone();
     settings.update(move |s| {
         s.ffmpeg_path = Some(path);
         s.ffmpeg_version = Some(caps_for_save.version);
         s.nvenc_hevc = Some(caps_for_save.nvenc_hevc);
+        s.ffmpeg_probe_revision = Some(1);
     })?;
     Ok(caps)
 }
@@ -144,17 +148,17 @@ pub async fn start_timelapse(
     let ffmpeg_path = s.ffmpeg_path.ok_or_else(|| {
         AppError::Internal("ffmpeg not configured — set path in settings first".into())
     })?;
-    let caps = match (s.ffmpeg_version, s.nvenc_hevc) {
-        (Some(v), Some(n)) => FfmpegCapabilities {
-            version: v,
-            nvenc_hevc: n,
-        },
-        _ => {
-            return Err(AppError::Internal(
-                "ffmpeg capabilities not cached — run the Test button first".into(),
-            ))
-        }
-    };
+    // Old caches only proved that NVENC was compiled in. Revalidate before
+    // each batch so changed drivers/devices never silently select that path.
+    let probe_path = ffmpeg_path.clone();
+    let caps = tauri::async_runtime::spawn_blocking(move || ffmpeg::probe_ffmpeg(&probe_path))
+        .await.map_err(|error| AppError::Internal(format!("FFmpeg test task failed: {error}")))??;
+    let checked = caps.clone();
+    settings.update(move |s| {
+        s.ffmpeg_version = Some(checked.version);
+        s.nvenc_hevc = Some(checked.nvenc_hevc);
+        s.ffmpeg_probe_revision = Some(1);
+    })?;
     let concurrency_override = s.timelapse_max_concurrent_jobs.map(|n| n as usize);
 
     // Concurrency: explicit override wins, otherwise auto-detect from

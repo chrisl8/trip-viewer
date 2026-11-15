@@ -306,6 +306,16 @@ pub fn find_sibling_in_listing(
     // false-negative placeholder. For different-channel lookups
     // the channel-label filter below excludes the anchor anyway.
     for entry in listing {
+        // VIOFO parking and normal recordings may share a timestamp but are
+        // separate recordings. Their group keys end in P/N (not the sequence
+        // number, which differs between F/I/R).
+        if anchor.group_key.starts_with("vf:")
+            && (!entry.parsed.group_key.starts_with("vf:")
+                || entry.parsed.group_key.rsplit('_').next()
+                    != anchor.group_key.rsplit('_').next())
+        {
+            continue;
+        }
         if entry.parsed.camera_kind != anchor.camera_kind {
             continue;
         }

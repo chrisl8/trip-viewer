@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::AppError;
 use crate::timelapse::speed_curve::{self, CurveSegment};
@@ -96,8 +96,8 @@ pub fn clear_quarantine_attr(path: &str) -> Result<(), AppError> {
     )))
 }
 
-/// Run `ffmpeg -version` and `ffmpeg -encoders`, returning the parsed
-/// capabilities. Returns an error if the binary can't be executed or
+/// Verify the binary and exercise its GPU pipeline or CPU encoder on two
+/// synthetic frames, returning runtime-verified capabilities. Returns an error if the binary can't be executed or
 /// doesn't produce recognizable ffmpeg output.
 pub fn probe_ffmpeg(path: &str) -> Result<FfmpegCapabilities, AppError> {
     let version_out = ffmpeg_command(path)
@@ -130,12 +130,74 @@ pub fn probe_ffmpeg(path: &str) -> Result<FfmpegCapabilities, AppError> {
         .output()
         .map_err(|e| AppError::Internal(format!("could not list ffmpeg encoders: {e}")))?;
     let encoders_text = String::from_utf8_lossy(&encoders_out.stdout);
-    let nvenc_hevc = encoders_text.contains("hevc_nvenc");
+    if !encoders_out.status.success() {
+        return Err(AppError::Internal("ffmpeg could not list its encoders".into()));
+    }
+    // Listing an encoder proves only that FFmpeg was compiled with it.
+    // Exercise the same GPU decode/scale/encode path used by real jobs.
+    let nvenc_hevc = encoders_text.contains("hevc_nvenc") && match probe_nvenc(path) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("[timelapse] GPU pipeline unavailable, checking CPU encoding: {error}");
+            false
+        }
+    };
+    if !nvenc_hevc {
+        if !encoders_text.contains("libx265") {
+            return Err(AppError::Internal(
+                "GPU encoding is unavailable and this FFmpeg has no libx265 CPU encoder".into(),
+            ));
+        }
+        let mut cpu = synthetic_probe_command(path);
+        apply_encoder_flags(&mut cpu, Encoder::LibX265, Some(1));
+        cpu.args(["-f", "null", "-"]);
+        run_probe(cpu).map_err(|error| AppError::Internal(format!(
+            "GPU encoding is unavailable and the CPU encoding test failed: {error}"
+        )))?;
+    }
 
     Ok(FfmpegCapabilities {
         version: version_line,
         nvenc_hevc,
     })
+}
+
+fn synthetic_probe_command(path: &str) -> Command {
+    let mut command = ffmpeg_command(path);
+    apply_loglevel_flags(&mut command);
+    command.args(["-f", "lavfi", "-i", "color=size=128x128:rate=30",
+        "-frames:v", "2", "-pix_fmt", "yuv420p", "-an"]);
+    command
+}
+
+fn run_probe(command: Command) -> Result<(), AppError> {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    run_ffmpeg_with_deadline(command, &cancel, Some(Duration::from_secs(10)))
+}
+
+fn probe_nvenc(path: &str) -> Result<(), AppError> {
+    struct ProbeFile(PathBuf);
+    impl Drop for ProbeFile {
+        fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+    }
+    let source = ProbeFile(std::env::temp_dir().join(format!(
+        "tripviewer-gpu-probe-{}.mp4", uuid::Uuid::new_v4()
+    )));
+    let mut encode = synthetic_probe_command(path);
+    apply_encoder_flags(&mut encode, Encoder::HevcNvenc, None);
+    encode.arg(&source.0);
+    run_probe(encode)?;
+
+    let mut pipeline = ffmpeg_command(path);
+    apply_loglevel_flags(&mut pipeline);
+    pipeline.args(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i"])
+        .arg(&source.0)
+        .arg("-filter_complex")
+        .arg(speed_curve::compose_window_filter("scale_cuda", 1))
+        .args(["-map", "[out]", "-frames:v", "2", "-an"]);
+    apply_encoder_flags(&mut pipeline, Encoder::HevcNvenc, None);
+    pipeline.args(["-f", "null", "-"]);
+    run_probe(pipeline)
 }
 
 /// What encoder the caller picked for this invocation. Decided once at
@@ -310,6 +372,44 @@ pub fn encode_trip_channel(
             let _ = fs::remove_file(&tmp_output);
             Err(e)
         }
+    }
+}
+
+/// A GPU may pass the small probe yet fail on real footage or session limits.
+/// Retry that job once on CPU, and keep later jobs in this batch on CPU too.
+pub fn encode_with_cpu_fallback(
+    args: &EncodeArgs<'_>, cancel: &CancelFlag,
+    gpu_failed: &std::sync::atomic::AtomicBool,
+) -> Result<(PathBuf, Encoder), AppError> {
+    with_cpu_fallback(args.encoder, cancel, gpu_failed, |encoder| {
+        let retry_args = EncodeArgs {
+            encoder,
+            cpu_pool_threads: if matches!(args.encoder, Encoder::HevcNvenc)
+                && matches!(encoder, Encoder::LibX265) { Some(1) } else { args.cpu_pool_threads },
+            ..*args
+        };
+        encode_trip_channel(&retry_args, cancel)
+    })
+}
+
+fn with_cpu_fallback(
+    preferred: Encoder, cancel: &CancelFlag,
+    gpu_failed: &std::sync::atomic::AtomicBool,
+    mut encode: impl FnMut(Encoder) -> Result<PathBuf, AppError>,
+) -> Result<(PathBuf, Encoder), AppError> {
+    let encoder = if gpu_failed.load(Ordering::Relaxed) { Encoder::LibX265 } else { preferred };
+    match encode(encoder) {
+        Ok(path) => Ok((path, encoder)),
+        Err(error) if matches!(encoder, Encoder::HevcNvenc) && !cancel.load(Ordering::Relaxed) => {
+            gpu_failed.store(true, Ordering::Relaxed);
+            eprintln!("[timelapse] GPU job failed; retrying once with CPU encoding: {error}");
+            encode(Encoder::LibX265).map(|path| (path, Encoder::LibX265)).map_err(|cpu| {
+                if cancel.load(Ordering::Relaxed) { cpu } else {
+                    AppError::Internal(format!("GPU encoding failed: {error}; CPU retry failed: {cpu}"))
+                }
+            })
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -737,8 +837,15 @@ fn apply_encoder_flags(cmd: &mut Command, encoder: Encoder, cpu_pool_threads: Op
 /// 64 KB regardless of how chatty the child gets, which is the fix
 /// for the parent-process OOM that hit when CUDA exhaustion made
 /// ffmpeg emit one error line per frame.
-fn run_ffmpeg_with_cancel(mut cmd: Command, cancel: &CancelFlag) -> Result<(), AppError> {
-    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+fn run_ffmpeg_with_cancel(cmd: Command, cancel: &CancelFlag) -> Result<(), AppError> {
+    run_ffmpeg_with_deadline(cmd, cancel, None)
+}
+
+fn run_ffmpeg_with_deadline(
+    mut cmd: Command, cancel: &CancelFlag, timeout: Option<Duration>,
+) -> Result<(), AppError> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    let started = Instant::now();
 
     let mut child = cmd
         .spawn()
@@ -754,14 +861,15 @@ fn run_ffmpeg_with_cancel(mut cmd: Command, cancel: &CancelFlag) -> Result<(), A
     // responsiveness and CPU wakeups — the worker-level progress
     // events already throttle at 250ms, so sub-second cancel is
     // plenty responsive for the user.
-    let cancelled = loop {
-        if cancel.load(Ordering::Relaxed) {
+    let (cancelled, timed_out) = loop {
+        let timed_out = timeout.is_some_and(|limit| started.elapsed() >= limit);
+        if cancel.load(Ordering::Relaxed) || timed_out {
             let _ = child.kill();
             let _ = child.wait();
-            break true;
+            break (true, timed_out);
         }
         match child.try_wait() {
-            Ok(Some(_status)) => break false,
+            Ok(Some(_status)) => break (false, false),
             Ok(None) => thread::sleep(Duration::from_millis(500)),
             Err(e) => {
                 return Err(AppError::Internal(format!(
@@ -778,6 +886,10 @@ fn run_ffmpeg_with_cancel(mut cmd: Command, cancel: &CancelFlag) -> Result<(), A
     let stderr_tail = stderr_handle
         .map(|h| h.join().unwrap_or_default())
         .unwrap_or_default();
+
+    if timed_out {
+        return Err(AppError::Internal("FFmpeg capability test timed out after 10 seconds".into()));
+    }
 
     if cancelled {
         return Err(AppError::Internal("cancelled".into()));
@@ -844,6 +956,64 @@ mod tests {
             nvenc_hevc: false,
         };
         assert!(matches!(Encoder::pick(&caps), Encoder::LibX265));
+    }
+
+    #[test]
+    fn gpu_failure_retries_cpu_once_and_next_jobs_keep_cpu() {
+        let cancel = crate::timelapse::worker::new_cancel_flag();
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let mut encoders = Vec::new();
+        let result = with_cpu_fallback(Encoder::HevcNvenc, &cancel, &failed, |encoder| {
+            encoders.push(encoder.as_str());
+            if matches!(encoder, Encoder::HevcNvenc) { Err(AppError::Internal("NVENC session unavailable".into())) }
+            else { Ok(PathBuf::from("output.mp4")) }
+        }).unwrap();
+        assert_eq!(encoders, vec!["hevc_nvenc", "libx265"]);
+        assert!(matches!(result.1, Encoder::LibX265));
+        with_cpu_fallback(Encoder::HevcNvenc, &cancel, &failed, |encoder| {
+            assert!(matches!(encoder, Encoder::LibX265));
+            Ok(PathBuf::from("next.mp4"))
+        }).unwrap();
+    }
+
+    #[test]
+    fn cancellation_never_starts_cpu_retry() {
+        let cancel = crate::timelapse::worker::new_cancel_flag();
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let mut calls = 0;
+        let result = with_cpu_fallback(Encoder::HevcNvenc, &cancel, &failed, |_| {
+            calls += 1;
+            cancel.store(true, Ordering::Relaxed);
+            Err(AppError::Internal("cancelled".into()))
+        });
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert_eq!(calls, 1);
+        assert!(!failed.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn failed_cpu_retry_keeps_both_diagnostics_and_stops() {
+        let cancel = crate::timelapse::worker::new_cancel_flag();
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let mut calls = 0;
+        let error = with_cpu_fallback(Encoder::HevcNvenc, &cancel, &failed, |encoder| {
+            calls += 1;
+            Err(AppError::Internal(encoder.as_str().into()))
+        }).unwrap_err().to_string();
+        assert_eq!(calls, 2);
+        assert!(error.contains("hevc_nvenc") && error.contains("libx265"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capability_probe_timeout_terminates_child() {
+        let mut command = ffmpeg_command("sh");
+        command.args(["-c", "exec sleep 5"]);
+        let cancel = crate::timelapse::worker::new_cancel_flag();
+        let started = Instant::now();
+        let result = run_ffmpeg_with_deadline(command, &cancel, Some(Duration::from_millis(20)));
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
 }

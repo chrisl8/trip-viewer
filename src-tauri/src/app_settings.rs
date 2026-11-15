@@ -40,6 +40,10 @@ pub struct AppSettings {
     pub ffmpeg_version: Option<String>,
     #[serde(default)]
     pub nvenc_hevc: Option<bool>,
+    /// Revision of the runtime encoder test. Older cached flags only indicated
+    /// compile-time encoder presence and must not be shown as verified.
+    #[serde(default)]
+    pub ffmpeg_probe_revision: Option<u32>,
     #[serde(default)]
     pub timelapse_max_concurrent_jobs: Option<u32>,
     #[serde(default)]
@@ -192,6 +196,17 @@ pub fn migrate_from_sqlite(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_encoder_cache_requires_runtime_verification() {
+        let old: AppSettings = serde_json::from_str(r#"{"nvenc_hevc":true,"ffmpeg_version":"old"}"#).unwrap();
+        assert_eq!(old.ffmpeg_probe_revision, None);
+        let mut verified = old;
+        verified.ffmpeg_probe_revision = Some(1);
+        let roundtrip: AppSettings = serde_json::from_str(&serde_json::to_string(&verified).unwrap()).unwrap();
+        assert_eq!(roundtrip.ffmpeg_probe_revision, Some(1));
+    }
+
     use tempfile::tempdir;
 
     /// Build a connection with the legacy schema shape (settings table

@@ -729,6 +729,16 @@ export function TimelapseView() {
                               )}
                             </span>
                           )}
+                          {failedCount > 0 && (
+                            <details className="mt-2 max-w-lg text-neutral-400">
+                              <summary className="cursor-pointer">Encoding error details</summary>
+                              {tripJobs.filter((job) => job.status === "failed").map((job) => (
+                                <p key={`${job.tier}-${job.channel}`} className="mt-1 whitespace-pre-wrap break-words">
+                                  {job.tier} · {job.channel}: {job.errorMessage || "No diagnostic was recorded. Retry this job for details."}
+                                </p>
+                              ))}
+                            </details>
+                          )}
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex gap-1">

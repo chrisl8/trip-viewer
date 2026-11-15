@@ -19,7 +19,7 @@ interface Props {
  * First-run configuration for the opt-in ffmpeg dependency. The user
  * installs ffmpeg themselves (we suggest `winget install ffmpeg` on
  * Windows), then points this dialog at the binary. The Test button
- * runs `ffmpeg -version` and `-encoders` and caches the result.
+ * checks the version and performs a short GPU/CPU encoding test.
  */
 export function FfmpegConfig({ onClose }: Props) {
   const existingPath = useStore((s) => s.ffmpegPath);
@@ -201,8 +201,8 @@ export function FfmpegConfig({ onClose }: Props) {
               <span className="text-emerald-400">✓ {caps.version}</span>
               <span className="ml-2 text-neutral-400">
                 {caps.nvencHevc
-                  ? "· NVENC available (fast GPU encoding)"
-                  : "· NVENC not found (will use CPU encoding)"}
+                  ? "· GPU encoding verified (NVENC / CUDA)"
+                  : "· CPU encoding verified (GPU pipeline unavailable)"}
               </span>
             </div>
           )}

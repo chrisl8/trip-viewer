@@ -179,6 +179,7 @@ fn run_inner(
     // so we walk it once and slice on trip_id boundaries.
     let chunks = group_work_by_trip(&work);
     let pool_size = concurrency.max(1);
+    let gpu_failed = AtomicBool::new(false);
 
     for chunk in &chunks {
         if cancel.load(Ordering::Relaxed) {
@@ -272,6 +273,7 @@ fn run_inner(
                             caps,
                             &output_root,
                             cpu_pool_threads,
+                            &gpu_failed,
                         ) {
                             ProcessOutcome::Done => {
                                 done.fetch_add(1, Ordering::Relaxed);
@@ -409,6 +411,7 @@ fn process_item(
     caps: &FfmpegCapabilities,
     output_root: &Path,
     cpu_pool_threads: Option<usize>,
+    gpu_failed: &AtomicBool,
 ) -> ProcessOutcome {
     if let Err(e) = mark_running(db, item) {
         eprintln!("[timelapse] mark_running failed: {e}");
@@ -537,7 +540,7 @@ fn process_item(
         software_input,
     };
     let started = Instant::now();
-    let encode_result = ffmpeg::encode_trip_channel(&args, cancel);
+    let encode_result = ffmpeg::encode_with_cpu_fallback(&args, cancel, gpu_failed);
     let elapsed = started.elapsed();
 
     // Sweep the per-job scratch dir: placeholders, multi-window
@@ -547,7 +550,7 @@ fn process_item(
     sweep_scratch_dir(&scratch_dir);
 
     match encode_result {
-        Ok(path) => {
+        Ok((path, actual_encoder)) => {
             // Persist the concat-time (gappy) curve — that's what the
             // player maps against. The encoder used the gap-collapsed
             // source-time curve; never persist that one.
@@ -558,7 +561,7 @@ fn process_item(
                 item,
                 &path,
                 &caps.version,
-                encoder.as_str(),
+                actual_encoder.as_str(),
                 // `padded_count` column now records gapped (missing)
                 // segments — no black is baked, but it stays a useful
                 // "how many gaps does this channel have" diagnostic.
@@ -1431,6 +1434,68 @@ mod tests {
         assert_eq!(r.covered, vec![(0.0, 360.0)]);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn viofo_sources_resolve_distinct_sequences_and_keep_parking_separate() {
+        let dir = tempfile::tempdir().unwrap();
+        let front = "2026_0101_120000_000001F.MP4";
+        for name in [front, "2026_0101_120000_000002I.MP4", "2026_0101_120000_000003R.MP4",
+            "2026_0101_120000_000004PF.MP4", "2026_0101_120000_000005PI.MP4"] {
+            fs::write(dir.path().join(name), b"").unwrap();
+        }
+        let sources = vec![dir.path().join(front).to_string_lossy().into_owned()];
+        for (channel, suffix) in [(Channel::Front, "000001F.MP4"),
+            (Channel::Interior, "000002I.MP4"), (Channel::Rear, "000003R.MP4")] {
+            let resolved = resolve_channel_sources(&sources, &[180.0], channel).unwrap();
+            assert_eq!(resolved.sources.len(), 1);
+            assert!(resolved.sources[0].ends_with(suffix));
+            assert_eq!(resolved.covered, vec![(0.0, 180.0)]);
+        }
+        let parking = vec![dir.path().join("2026_0101_120000_000004PF.MP4").to_string_lossy().into_owned()];
+        assert!(resolve_channel_sources(&parking, &[180.0], Channel::Rear).unwrap().sources.is_empty());
+        let interior = resolve_channel_sources(&parking, &[180.0], Channel::Interior).unwrap();
+        assert!(interior.sources[0].ends_with("000005PI.MP4"));
+    }
+
+    #[test]
+    #[ignore = "requires a real FFmpeg binary with libx264 and HEVC encoding"]
+    fn synthetic_viofo_timelapse_all_channels_and_tiers() {
+        let binary = std::env::var("TRIPVIEWER_TEST_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let caps = ffmpeg::probe_ffmpeg(&binary).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut masters = Vec::new();
+        for (stamp, sequence) in [("120000", 1), ("120002", 4)] {
+            for (offset, channel) in [(0, "F"), (1, "I"), (2, "R")] {
+                let path = dir.path().join(format!("2026_0101_{stamp}_{:06}{channel}.MP4", sequence + offset));
+                let result = ffmpeg::ffmpeg_command(&binary).args([
+                    "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "color=size=160x90:rate=30", "-t", "2", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", "-threads", "1", "-an",
+                ]).arg(&path).status().unwrap();
+                assert!(result.success());
+                if channel == "F" { masters.push(path.to_string_lossy().into_owned()); }
+            }
+        }
+        let gpu_failed = AtomicBool::new(false);
+        for channel in [Channel::Front, Channel::Interior, Channel::Rear] {
+            let resolved = resolve_channel_sources(&masters, &[2.0, 2.0], channel).unwrap();
+            assert_eq!(resolved.sources.len(), 2);
+            for tier in [Tier::Tier8x, Tier::Tier16x, Tier::Tier60x] {
+                let curve = crate::timelapse::speed_curve::build_curve(&[], tier, 4.0);
+                let curve = crate::timelapse::speed_curve::sanitize_for_encode(&curve, 0.1);
+                let output = dir.path().join(format!("{}-{}.mp4", tier.as_str(), channel.as_str()));
+                let scratch = dir.path().join(format!("scratch-{}-{}", tier.as_str(), channel.as_str()));
+                let args = EncodeArgs {
+                    ffmpeg_path: &binary, source_paths: &resolved.sources, output_path: &output,
+                    tier, channel, encoder: Encoder::pick(&caps), curve: &curve,
+                    scratch_dir: &scratch, cpu_pool_threads: Some(1), software_input: false,
+                };
+                let (path, _) = ffmpeg::encode_with_cpu_fallback(&args, &new_cancel_flag(), &gpu_failed).unwrap();
+                let meta = crate::metadata::mp4_probe::probe(&path).unwrap();
+                assert!(meta.duration_s > 0.0, "empty output for {} {}", tier.as_str(), channel.as_str());
+            }
+        }
     }
 
     #[test]

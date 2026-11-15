@@ -135,14 +135,14 @@ pub struct EventWindow {
 /// Capabilities reported by a configured ffmpeg binary. Populated by
 /// `ffmpeg::probe_ffmpeg` when the user runs the Test button in the
 /// settings dialog, and cached in the `settings` table so subsequent
-/// launches don't re-probe.
+/// settings can display the last result. Each encoding batch re-probes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FfmpegCapabilities {
     /// Full version string reported by `ffmpeg -version`'s first line.
     /// Displayed in the settings dialog for sanity-check.
     pub version: String,
-    /// Whether `hevc_nvenc` appeared in `ffmpeg -encoders` output.
+    /// Whether a bounded GPU HEVC encode/decode/scale test succeeded.
     /// The worker prefers NVENC when available (15-40x realtime) and
     /// falls back to `libx265` (0.5-2x realtime) when it isn't.
     pub nvenc_hevc: bool,
