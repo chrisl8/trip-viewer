@@ -24,13 +24,23 @@ stay on CPU with capped pools. Cancellation never launches the retry, and
 completion metadata records the actual encoder. Saved per-job errors are now
 expandable in Timelapse.
 
-The shared runtime change passes **349 Rust tests** (two ignored) in both the
-fork and contribution worktrees. An additional opt-in real-FFmpeg synthetic test
-produces nine valid HEVC outputs from two HEVC source segments with VIOFO names,
-covering F/I/R and 8x/16x/60x. The cloud's unavailable NVIDIA path is correctly
-rejected and CPU encoding succeeds; positive GPU hardware validation is not
-claimed. TypeScript/Vite build passes. Real owner VIOFO acceptance for this new
-fix remains pending; prior playback/overlay acceptance remains established.
+The owner confirmed that VIOFO encoding now runs on Ubuntu and accepted the fix.
+Their follow-up exposed the inherited ETA waiting for two complete jobs. The
+new FFmpeg progress stream reports preparation/encoding/finalization, processed
+video time, CPU/GPU choice, elapsed time and a live current-step ETA before the
+first job finishes. Multi-window output offsets share one encoding clock;
+stale progress suppresses the step ETA. Batch ETA becomes approximate after
+one finished attempt. Quality and the existing CPU preset are unchanged.
+
+The updated contribution passes **351 Rust tests** (two ignored), **114 frontend
+tests** and TypeScript/Vite build. The fork passes 131 frontend tests. The opt-in
+real-FFmpeg test produces nine HEVC outputs across F/I/R and 8x/16x/60x, now also
+covering multi-window stages and live progress. A Chromium check of the actual
+Timelapse view verifies progress/ETA before any job completes, updates, stale
+suppression and phase resets. The cloud rejects unavailable GPU support and
+uses CPU; positive GPU hardware validation is not claimed. The owner explicitly
+authorized stable promotion of the fork after automated ETA checks, without
+another manual-test gate; prior playback/overlay acceptance remains established.
 
 The fork prepares this fix as **0.10.2**, not yet published. This contribution
 continues to use Chris' **0.3.3** version and unchanged dependencies, updater,
