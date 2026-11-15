@@ -1459,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a real FFmpeg binary with libx264 and HEVC encoding"]
+    #[ignore = "requires a real FFmpeg binary with HEVC encoding"]
     fn synthetic_viofo_timelapse_all_channels_and_tiers() {
         let binary = std::env::var("TRIPVIEWER_TEST_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
         let caps = ffmpeg::probe_ffmpeg(&binary).unwrap();
@@ -1470,8 +1470,9 @@ mod tests {
                 let path = dir.path().join(format!("2026_0101_{stamp}_{:06}{channel}.MP4", sequence + offset));
                 let result = ffmpeg::ffmpeg_command(&binary).args([
                     "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-                    "color=size=160x90:rate=30", "-t", "2", "-c:v", "libx264",
-                    "-pix_fmt", "yuv420p", "-threads", "1", "-an",
+                    "color=size=160x90:rate=30", "-t", "2", "-c:v", "libx265",
+                    "-preset", "ultrafast", "-x265-params", "log-level=error:pools=1",
+                    "-tag:v", "hvc1", "-pix_fmt", "yuv420p", "-threads", "1", "-an",
                 ]).arg(&path).status().unwrap();
                 assert!(result.success());
                 if channel == "F" { masters.push(path.to_string_lossy().into_owned()); }
