@@ -23,12 +23,23 @@ No unchanged frontend tests/build are rerun for this native filename change.
 The fork prepares it as **0.10.3**; this contribution keeps Chris' **0.3.3**.
 No new dependencies, archive migration or GPS parser version are introduced.
 
-The requested historical A229 Pro firmware-changelog review is a separate
-research item: direct vendor access was blocked in the cloud and a network
-configuration draft was saved for the owner. Do not infer firmware versions
-from recording dates or claim that every past firmware was reviewed/tested.
-Counter-free names are owner-observed; accepting counter-free parking follows
-the structural grammar rather than certifying a particular firmware release.
+The historical review is now based on accessible manufacturer records. VIOFO's
+[official V1.3 notes](https://www.viofo.com/blogs/viofo-car-dash-camera-guide-faq-and-news/firmware-updates-viofo-a229-pro-a229-plus-version-v13)
+explicitly say: “In the V1.3 firmware, the recorded file names now include
+sequential numbering.” The article names front V1.3_240612/rear V1.3_240605;
+its displayed publication date and those build identifiers are distinct facts.
+The [current firmware page](https://www.viofo.com/pages/firmware?s=A229%20Pro)
+lists front V1.5_260813 and rear V1.3.1_250421, each with only “Other bugs” notes.
+The old linked A229 Pro support path now redirects to manuals. Both pages of the
+legacy support firmware folder (20 entries), vendor searches and the 125-entry
+article sitemap do not expose a complete per-build historical A229 Pro archive.
+Missing earlier/intermediate/beta builds are not marked reviewed or tested.
+
+The fix covers the two evidenced filename families by structure, without
+firmware guessing. Counter-free parking is an orthogonal grammar combination,
+not attributed to an unverified release. Recording dates alone do not identify
+the installed firmware. Corresponding fork PR #17's Ubuntu, Windows and Mac
+package CI is green; no native rerun is needed for this documentation update.
 
 ## Previous follow-up: VIOFO timelapse and runtime GPU checks
 
