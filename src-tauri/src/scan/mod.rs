@@ -389,6 +389,17 @@ mod tests {
     }
 
     #[test]
+    fn auto_and_manual_viofo_recognize_mixed_filename_generations() {
+        for name in ["2025_0706_201953_F.MP4", "2025_0706_201953_I.MP4",
+            "2025_0706_201953_000001R.MP4", "2025_0706_201953_PF.MP4"] {
+            let auto = parse_filename(name, CameraModelPreference::Auto).unwrap();
+            let manual = parse_filename(name, CameraModelPreference::ViofoA229Pro).unwrap();
+            assert_eq!(auto, manual);
+            assert_eq!(auto, naming::parse(name).unwrap());
+        }
+    }
+
+    #[test]
     fn manual_viofo_model_rejects_other_naming() {
         assert!(parse_filename(
             "2026_08_31_065229_00_F.MP4",

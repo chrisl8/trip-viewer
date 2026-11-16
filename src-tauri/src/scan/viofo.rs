@@ -1,12 +1,14 @@
 //! VIOFO filename recognition.
 //!
 //! A229-family cameras store each camera channel in a separate file. The
-//! per-file sequence number is monotonic across channels, so the three files
+//! optional per-file sequence number is monotonic across channels, so the three files
 //! belonging to one recording have *different* sequence numbers. Grouping must
 //! therefore use the recording timestamp (plus parking-mode marker), not the
 //! sequence number.
 //!
 //! Observed / documented shapes:
+//!   `2025_0706_201953_F.MP4`       front without a sequence counter
+//!   `2025_0706_201953_I.MP4`       interior without a sequence counter
 //!   `2026_0831_065229_000646F.MP4`  normal front
 //!   `2026_0831_065229_000647I.MP4`  normal interior
 //!   `2026_0831_065229_000648R.MP4`  normal rear
@@ -45,26 +47,28 @@ pub fn parse(filename: &str) -> Option<ParsedName> {
     if hms.len() != 6 || !hms.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    if tail.len() < 2 {
+    if tail.is_empty() {
         return None;
     }
 
-    let (seq_and_mode, channel) = tail.split_at(tail.len() - 1);
-    let channel_label = match channel {
-        "F" => LABEL_FRONT.to_string(),
-        "I" => LABEL_INTERIOR.to_string(),
-        "R" => LABEL_REAR.to_string(),
+    // Match the ASCII channel first, before slicing a potentially non-ASCII
+    // filename. This also avoids panicking on an unrecognized Unicode suffix.
+    let channel_label = match tail.as_bytes().last()?.to_ascii_uppercase() {
+        b'F' => LABEL_FRONT.to_string(),
+        b'I' => LABEL_INTERIOR.to_string(),
+        b'R' => LABEL_REAR.to_string(),
         _ => return None,
     };
+    let seq_and_mode = &tail[..tail.len() - 1];
 
     // Parking recordings insert `P` immediately before the camera letter.
-    // Sequence number width has changed across firmware generations, so accept
-    // any non-empty run of decimal digits rather than hard-coding 3/5/6 digits.
-    let (serial, parking) = match seq_and_mode.strip_suffix('P') {
-        Some(serial) => (serial, true),
-        None => (seq_and_mode, false),
+    // The counter is optional, and its width is not a firmware-version test.
+    let (serial, parking) = if seq_and_mode.ends_with(['P', 'p']) {
+        (&seq_and_mode[..seq_and_mode.len() - 1], true)
+    } else {
+        (seq_and_mode, false)
     };
-    if serial.is_empty() || !serial.bytes().all(|b| b.is_ascii_digit()) {
+    if !serial.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
 
@@ -91,9 +95,8 @@ pub fn is_viofo_filename(filename: &str) -> bool {
 }
 
 fn strip_mp4_ext(filename: &str) -> Option<&str> {
-    filename
-        .strip_suffix(".MP4")
-        .or_else(|| filename.strip_suffix(".mp4"))
+    let (stem, extension) = filename.rsplit_once('.')?;
+    extension.eq_ignore_ascii_case("mp4").then_some(stem)
 }
 
 #[cfg(test)]
@@ -151,7 +154,42 @@ mod tests {
         assert!(parse("2026_0831_065229_000646X.MP4").is_none());
         assert!(parse("2026_1331_065229_000646F.MP4").is_none());
         assert!(parse("2026_0831_256229_000646F.MP4").is_none());
-        assert!(parse("2026_0831_065229_PF.MP4").is_none());
         assert!(parse("2026_08_31_065229_00_F.MP4").is_none());
+    }
+
+    #[test]
+    fn accepts_sequence_free_names_and_preserves_the_timestamp_group_key() {
+        for (suffix, label) in [("F", LABEL_FRONT), ("I", LABEL_INTERIOR), ("R", LABEL_REAR)] {
+            let plain = parse(&format!("2025_0706_201953_{suffix}.MP4")).unwrap();
+            let numbered = parse(&format!("2025_0706_201953_000123{suffix}.MP4")).unwrap();
+            assert_eq!(plain.channel_label, label);
+            assert_eq!(plain.group_key, numbered.group_key);
+            assert_eq!(plain.start_time, numbered.start_time);
+            assert_eq!(plain.start_time.to_string(), "2025-07-06 20:19:53");
+        }
+    }
+
+    #[test]
+    fn detects_counter_and_parking_independently_for_each_file() {
+        for serial in ["", "0", "012", "000001", "12345678901234567890"] {
+            for channel in ["F", "I", "R"] {
+                for (marker, mode) in [("", "N"), ("P", "P")] {
+                    let parsed = parse(&format!("2024_0229_235959_{serial}{marker}{channel}.MP4")).unwrap();
+                    assert_eq!(parsed.group_key, format!("vf:2024_0229_235959_{mode}"));
+                }
+            }
+        }
+        assert_eq!(parse("2024_0229_235959_pf.mP4").unwrap().group_key, "vf:2024_0229_235959_P");
+    }
+
+    #[test]
+    fn rejects_malformed_dates_modes_channels_and_non_ascii_suffixes_without_panicking() {
+        for name in ["2025_0229_235959_F.MP4", "2025_0706_240000_F.MP4",
+            "2025_0706_201953_.MP4", "2025_0706_201953_P.MP4", "2025_0706_201953_X.MP4",
+            "2025_0706_201953_P12F.MP4", "2025_0706_201953_12PPF.MP4",
+            "2025_0706_201953_12_F.MP4", "2025_0706_201953_é.MP4",
+            "2025_0706_201953_éF.MP4", "2025_0706_201953_F.MOV"] {
+            assert!(parse(name).is_none(), "unexpected match for {name}");
+        }
     }
 }

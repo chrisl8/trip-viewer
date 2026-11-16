@@ -369,6 +369,31 @@ mod tests {
     }
 
     #[test]
+    fn mixed_viofo_filename_generations_group_and_find_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["2025_0706_201953_F.MP4", "2025_0706_201953_000002I.MP4",
+            "2025_0706_201953_R.MP4", "2025_0706_201953_PF.MP4",
+            "2025_0706_201953_000005PI.MP4"];
+        let inputs = names.iter().map(|name| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"").unwrap();
+            GroupingInput { path, parsed: naming::parse(name).unwrap() }
+        }).collect();
+        let grouped = group(inputs, DEFAULT_TRIP_GAP_SECONDS, dir.path());
+        let segments: Vec<_> = grouped.trips.iter().flat_map(|trip| &trip.segments).collect();
+        assert_eq!(segments.len(), 2, "normal and parking recordings must stay separate");
+        assert!(segments.iter().any(|segment| segment.channels.len() == 3));
+        assert!(segments.iter().any(|segment| segment.channels.len() == 2));
+        let front = dir.path().join(names[0]);
+        assert_eq!(find_sibling_file(&front, LABEL_FRONT).unwrap(), Some(front.clone()));
+        assert_eq!(find_sibling_file(&front, LABEL_INTERIOR).unwrap(), Some(dir.path().join(names[1])));
+        assert_eq!(find_sibling_file(&front, LABEL_REAR).unwrap(), Some(dir.path().join(names[2])));
+        let parking_front = dir.path().join(names[3]);
+        assert_eq!(find_sibling_file(&parking_front, LABEL_INTERIOR).unwrap(), Some(dir.path().join(names[4])));
+        assert_eq!(find_sibling_file(&parking_front, LABEL_REAR).unwrap(), None);
+    }
+
+    #[test]
     fn thinkware_pair_makes_two_channel_segment() {
         let items = vec![
             input("REC_2026_03_06_07_25_52_F.MP4"),

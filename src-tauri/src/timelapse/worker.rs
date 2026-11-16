@@ -1490,7 +1490,14 @@ mod tests {
         let mut masters = Vec::new();
         for (stamp, sequence) in [("120000", 1), ("120002", 4)] {
             for (offset, channel) in [(0, "F"), (1, "I"), (2, "R")] {
-                let path = dir.path().join(format!("2026_0101_{stamp}_{:06}{channel}.MP4", sequence + offset));
+                // Mixed archives can contain both filename generations even
+                // within a channel or segment; never choose one folder-wide.
+                let name = if (sequence + offset) % 2 == 0 {
+                    format!("2026_0101_{stamp}_{:06}{channel}.MP4", sequence + offset)
+                } else {
+                    format!("2026_0101_{stamp}_{channel}.MP4")
+                };
+                let path = dir.path().join(name);
                 let result = ffmpeg::ffmpeg_command(&binary).args([
                     "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
                     "color=size=160x90:rate=30", "-t", "2", "-c:v", "libx265",

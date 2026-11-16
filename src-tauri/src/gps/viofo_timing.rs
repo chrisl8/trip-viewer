@@ -117,6 +117,15 @@ mod tests {
     }
 
     #[test]
+    fn filename_generations_share_the_same_gps_time_anchor() {
+        let utc = dt(2025, 7, 6, 18, 20, 3);
+        for name in ["2025_0706_201953_F.MP4", "2025_0706_201953_000123F.MP4",
+            "2025_0706_201953_PF.MP4", "2025_0706_201953_123PF.MP4"] {
+            assert_eq!(first_fix_delay_s(Path::new(name), utc, 180.0), Some(10.0));
+        }
+    }
+
+    #[test]
     fn supports_quarter_hour_civil_offsets() {
         let aligned = infer_alignment(dt(2026, 8, 31, 9, 59, 30), dt(2026, 8, 31, 4, 15, 0), 180.0);
         assert_eq!(aligned, Some((345, 30.0)));
