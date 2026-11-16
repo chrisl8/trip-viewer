@@ -5,7 +5,29 @@ Original project attribution, icons and licenses are retained. Björn Fries
 (`gubiq`) authored the archive-auto-scan and Linux libva/DMABuf fixes; their
 commits and co-author notices are preserved in this contribution branch.
 
-## Current follow-up: counter-free VIOFO filenames
+## Current follow-up: AMF and Linux VA-API encoding
+
+The shared encoder now tries runtime-verified NVENC, then AMD AMF, Linux
+VA-API and CPU/libx265. AMF uses software decode/scale and hardware HEVC encode;
+VA-API uploads NV12 frames for GPU scale/encode and retains the verified render
+device. No NPU integration or new dependency is introduced. Automatic AMF/VA-API
+concurrency starts at one job. Hardware failure retries once on CPU, subsequent
+batch jobs stay on CPU, and cancellation does not start a retry. Configuration
+and progress identify the verified/actual encoder. Cached older probe results
+are invalidated while retaining the configured executable.
+
+The fork prepares this capability as **0.11.0**; the contribution retains Chris'
+**0.3.3**, updater/release policy and dependencies. On the fork, 366 Rust tests,
+132 frontend tests and the production build pass, plus the real synthetic CPU
+FFmpeg test across all nine channel/tier outputs. Tests cover selection,
+multiple render nodes, GPU failure/cancellation, device/encoder flags, filter
+ordering and older settings. Positive AMD 780M/VA-API hardware validation is
+**pending**: the cloud has no suitable GPU. Runtime verification requires a
+compatible FFmpeg build, driver/runtime and Linux render-device access. No
+fixed speed gain, broader camera/firmware certification or Mac GPU support is
+claimed. Original media, GPS parser and archive schema remain unchanged.
+
+## Counter-free VIOFO filenames
 
 The owner supplied timestamp/channel filenames with no sequence counter, which
 0.10.2's recognizer rejected. The shared parser now accepts the known timestamp
