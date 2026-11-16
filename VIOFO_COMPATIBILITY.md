@@ -41,6 +41,12 @@ not attributed to an unverified release. Recording dates alone do not identify
 the installed firmware. Corresponding fork PR #17's Ubuntu, Windows and Mac
 package CI is green; no native rerun is needed for this documentation update.
 
+The owner subsequently confirmed on Ubuntu that the two counter-free Front and
+Interior recordings are recognized as the same segment and are playable. This
+accepts the filename/playback fix; it is not a new claim about every firmware's
+GPS payload or GPU hardware support. Fork integration PR #17 is merged into
+permanent develop; stable promotion is prepared as fork PR #18.
+
 ## Previous follow-up: VIOFO timelapse and runtime GPU checks
 
 This incremental follow-up fixes the fork owner's VIOFO timelapse failure:
