@@ -5,7 +5,32 @@ Original project attribution, icons and licenses are retained. Björn Fries
 (`gubiq`) authored the archive-auto-scan and Linux libva/DMABuf fixes; their
 commits and co-author notices are preserved in this contribution branch.
 
-## Current follow-up: VIOFO timelapse and runtime GPU checks
+## Current follow-up: counter-free VIOFO filenames
+
+The owner supplied timestamp/channel filenames with no sequence counter, which
+0.10.2's recognizer rejected. The shared parser now accepts the known timestamp
+shape with an optional decimal counter and independent parking marker, per file.
+Numbered and counter-free inputs can coexist in the same folder/segment without
+renaming recordings or guessing a firmware version. The centralized recognition
+serves Auto/manual scanning, GPS dispatch/time anchors and timelapse siblings.
+Normal/parking recordings remain separate, and malformed/Unicode suffixes are
+rejected safely. Existing camera recognizers and GPS payload decoding remain.
+
+Both code trees pass **357 Rust tests** (two ignored). The explicit real-FFmpeg
+synthetic HEVC test now uses mixed filename variants across its source segments
+and produces all nine F/I/R × 8x/16x/60x outputs, with multi-window/live progress.
+No unchanged frontend tests/build are rerun for this native filename change.
+The fork prepares it as **0.10.3**; this contribution keeps Chris' **0.3.3**.
+No new dependencies, archive migration or GPS parser version are introduced.
+
+The requested historical A229 Pro firmware-changelog review is a separate
+research item: direct vendor access was blocked in the cloud and a network
+configuration draft was saved for the owner. Do not infer firmware versions
+from recording dates or claim that every past firmware was reviewed/tested.
+Counter-free names are owner-observed; accepting counter-free parking follows
+the structural grammar rather than certifying a particular firmware release.
+
+## Previous follow-up: VIOFO timelapse and runtime GPU checks
 
 This incremental follow-up fixes the fork owner's VIOFO timelapse failure:
 scanning recognized A229 names but the inherited sibling lookup used a naming
