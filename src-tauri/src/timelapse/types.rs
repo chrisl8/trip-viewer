@@ -146,4 +146,10 @@ pub struct FfmpegCapabilities {
     /// The worker prefers NVENC when available (15-40x realtime) and
     /// falls back to `libx265` (0.5-2x realtime) when it isn't.
     pub nvenc_hevc: bool,
+    /// Runtime-verified AMD AMF encoder (Windows or supported Linux runtime).
+    #[serde(default)]
+    pub amf_hevc: bool,
+    /// First Linux render node whose VA-API HEVC pipeline passed the probe.
+    #[serde(default)]
+    pub vaapi_device: Option<String>,
 }

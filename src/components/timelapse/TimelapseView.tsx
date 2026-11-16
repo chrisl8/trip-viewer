@@ -12,6 +12,7 @@ import { formatTripStart } from "../../utils/format";
 import { parseCurveJson } from "../../utils/speedCurve";
 import { fallbackCurveForTier } from "../../utils/tripTime";
 import { estimateEncodingStep } from "./encodingProgress";
+import { encoderLabel } from "./encoderLabel";
 import { TripActionsMenu } from "../trip/TripActionsMenu";
 import { FfmpegConfig } from "./FfmpegConfig";
 
@@ -542,7 +543,7 @@ export function TimelapseView() {
                       <div className="flex flex-wrap justify-between gap-2">
                         <span>
                           {{ preparing: "Preparing source", encoding: "Encoding", finalizing: "Finalizing file" }[encodingProgress.phase]}
-                          {" · "}{encodingProgress.encoder === "libx265" ? "CPU / HEVC" : "GPU / NVENC"}
+                          {" · "}{encoderLabel(encodingProgress.encoder)}
                           {" · "}{encodingProgress.tier} / {encodingProgress.channel}
                           {" · trip "}{encodingProgress.tripId.slice(0, 8)}…
                         </span>

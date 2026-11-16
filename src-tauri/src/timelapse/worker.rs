@@ -551,6 +551,7 @@ fn process_item(
 
     let args = EncodeArgs {
         ffmpeg_path,
+        vaapi_device: caps.vaapi_device.as_deref(),
         source_paths: &sources,
         output_path: &output_path,
         tier: item.tier,
@@ -1523,7 +1524,7 @@ mod tests {
                 let output = dir.path().join(format!("{}-{}.mp4", tier.as_str(), channel.as_str()));
                 let scratch = dir.path().join(format!("scratch-{}-{}", tier.as_str(), channel.as_str()));
                 let args = EncodeArgs {
-                    ffmpeg_path: &binary, source_paths: &resolved.sources, output_path: &output,
+                    ffmpeg_path: &binary, vaapi_device: caps.vaapi_device.as_deref(), source_paths: &resolved.sources, output_path: &output,
                     tier, channel, encoder: Encoder::pick(&caps), curve: &curve,
                     scratch_dir: &scratch, cpu_pool_threads: Some(1), software_input: false, progress: Some(callback),
                 };

@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::app_settings::AppSettingsHandle;
+use crate::app_settings::{AppSettings, AppSettingsHandle};
 use crate::archive::{require_db, ArchiveSlot};
 use crate::db;
 use crate::error::AppError;
@@ -28,17 +28,46 @@ pub async fn get_timelapse_settings(
     settings: State<'_, AppSettingsHandle>,
 ) -> Result<TimelapseSettings, AppError> {
     let s = settings.read();
-    let capabilities = match (s.ffmpeg_probe_revision, s.ffmpeg_version, s.nvenc_hevc) {
-        (Some(1), Some(v), Some(n)) => Some(FfmpegCapabilities {
-            version: v,
-            nvenc_hevc: n,
-        }),
-        _ => None,
-    };
+    let capabilities = cached_capabilities(&s);
     Ok(TimelapseSettings {
         ffmpeg_path: s.ffmpeg_path,
         capabilities,
     })
+}
+
+fn cached_capabilities(s: &AppSettings) -> Option<FfmpegCapabilities> {
+    match (s.ffmpeg_probe_revision, s.ffmpeg_version.as_ref(), s.nvenc_hevc) {
+        (Some(ffmpeg::FFMPEG_PROBE_REVISION), Some(v), Some(n)) => Some(FfmpegCapabilities {
+            version: v.clone(),
+            nvenc_hevc: n,
+            amf_hevc: s.ffmpeg_amf_hevc.unwrap_or(false),
+            vaapi_device: s.ffmpeg_vaapi_device.clone(),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn older_probe_results_are_invalidated_without_losing_the_ffmpeg_path() {
+        let mut settings: AppSettings = serde_json::from_str(r#"{
+            "ffmpeg_path":"ffmpeg", "ffmpeg_version":"old", "nvenc_hevc":false,
+            "ffmpeg_probe_revision":1
+        }"#).unwrap();
+        assert!(cached_capabilities(&settings).is_none());
+        assert_eq!(settings.ffmpeg_path.as_deref(), Some("ffmpeg"));
+        settings.ffmpeg_probe_revision = Some(ffmpeg::FFMPEG_PROBE_REVISION);
+        settings.ffmpeg_vaapi_device = Some("/dev/dri/renderD129".into());
+        let roundtrip: AppSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        let caps = cached_capabilities(&roundtrip).unwrap();
+        assert_eq!(caps.vaapi_device.as_deref(), Some("/dev/dri/renderD129"));
+        assert!(!caps.amf_hevc);
+        settings.ffmpeg_amf_hevc = Some(true);
+        assert!(cached_capabilities(&settings).unwrap().amf_hevc);
+    }
 }
 
 /// Erase the cached ffmpeg path and capability flags. Used by the
@@ -54,6 +83,8 @@ pub async fn clear_timelapse_settings(
         s.ffmpeg_version = None;
         s.nvenc_hevc = None;
         s.ffmpeg_probe_revision = None;
+        s.ffmpeg_amf_hevc = None;
+        s.ffmpeg_vaapi_device = None;
     })
 }
 
@@ -117,7 +148,9 @@ pub async fn test_ffmpeg(
         s.ffmpeg_path = Some(path);
         s.ffmpeg_version = Some(caps_for_save.version);
         s.nvenc_hevc = Some(caps_for_save.nvenc_hevc);
-        s.ffmpeg_probe_revision = Some(1);
+        s.ffmpeg_amf_hevc = Some(caps_for_save.amf_hevc);
+        s.ffmpeg_vaapi_device = caps_for_save.vaapi_device;
+        s.ffmpeg_probe_revision = Some(ffmpeg::FFMPEG_PROBE_REVISION);
     })?;
     Ok(caps)
 }
@@ -157,7 +190,9 @@ pub async fn start_timelapse(
     settings.update(move |s| {
         s.ffmpeg_version = Some(checked.version);
         s.nvenc_hevc = Some(checked.nvenc_hevc);
-        s.ffmpeg_probe_revision = Some(1);
+        s.ffmpeg_amf_hevc = Some(checked.amf_hevc);
+        s.ffmpeg_vaapi_device = checked.vaapi_device;
+        s.ffmpeg_probe_revision = Some(ffmpeg::FFMPEG_PROBE_REVISION);
     })?;
     let concurrency_override = s.timelapse_max_concurrent_jobs.map(|n| n as usize);
 

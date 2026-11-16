@@ -40,8 +40,12 @@ pub struct AppSettings {
     pub ffmpeg_version: Option<String>,
     #[serde(default)]
     pub nvenc_hevc: Option<bool>,
-    /// Revision of the runtime encoder test. Older cached flags only indicated
-    /// compile-time encoder presence and must not be shown as verified.
+    #[serde(default)]
+    pub ffmpeg_amf_hevc: Option<bool>,
+    #[serde(default)]
+    pub ffmpeg_vaapi_device: Option<String>,
+    /// Revision of the runtime encoder test. Invalidate older results when the
+    /// supported GPU backends or pipeline verification change.
     #[serde(default)]
     pub ffmpeg_probe_revision: Option<u32>,
     #[serde(default)]
