@@ -155,4 +155,7 @@ pub struct FfmpegCapabilities {
     /// First Linux render node whose VA-API HEVC pipeline passed the probe.
     #[serde(default)]
     pub vaapi_device: Option<String>,
+    /// Selected hardware encoder needs CPU processing instead of CUDA/GPU scale.
+    #[serde(default)]
+    pub software_processing: bool,
 }

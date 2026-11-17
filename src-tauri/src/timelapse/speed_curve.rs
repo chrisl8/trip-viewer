@@ -343,6 +343,8 @@ pub fn compose_filter_from_curve(
         format!("scale_cuda={OUT_WIDTH}:-2:format=yuv420p")
     } else if scale_filter == "scale_vaapi" {
         format!("format=nv12,hwupload,scale_vaapi={OUT_WIDTH}:-2")
+    } else if scale_filter == "scale_then_upload" {
+        format!("scale={OUT_WIDTH}:-2,format=nv12,hwupload")
     } else {
         format!("format=yuv420p,{scale_filter}={OUT_WIDTH}:-2")
     };
@@ -388,6 +390,8 @@ pub fn compose_window_filter(scale_filter: &str, rate: u32) -> String {
         format!("[0:v]scale_cuda={OUT_WIDTH}:-2:format=yuv420p,setpts=PTS/{rate}[out]")
     } else if scale_filter == "scale_vaapi" {
         format!("[0:v]format=nv12,hwupload,scale_vaapi={OUT_WIDTH}:-2,setpts=PTS/{rate}[out]")
+    } else if scale_filter == "scale_then_upload" {
+        format!("[0:v]scale={OUT_WIDTH}:-2,format=nv12,hwupload,setpts=PTS/{rate}[out]")
     } else {
         format!("[0:v]format=yuv420p,{scale_filter}={OUT_WIDTH}:-2,setpts=PTS/{rate}[out]")
     }
@@ -405,6 +409,14 @@ mod tests {
         assert!(!filter.contains("cuda"));
         let curve = build_curve(&[], Tier::Tier8x, 16.0);
         assert_eq!(compose_filter_from_curve(&curve, "scale_vaapi", "0:v"), filter);
+    }
+
+    #[test]
+    fn cpu_scaled_vaapi_frames_are_uploaded_after_scaling() {
+        let filter = compose_window_filter("scale_then_upload", 8);
+        assert_eq!(filter, "[0:v]scale=1920:-2,format=nv12,hwupload,setpts=PTS/8[out]");
+        let curve = build_curve(&[], Tier::Tier8x, 16.0);
+        assert_eq!(compose_filter_from_curve(&curve, "scale_then_upload", "0:v"), filter);
     }
 
     fn w(start: f64, end: f64) -> EventWindow {

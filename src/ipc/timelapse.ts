@@ -13,6 +13,7 @@ export interface FfmpegCapabilities {
   amfHevc?: boolean;
   qsvHevc?: boolean;
   vaapiDevice?: string | null;
+  softwareProcessing?: boolean;
 }
 
 export interface TimelapseSettings {

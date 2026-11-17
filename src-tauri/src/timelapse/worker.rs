@@ -561,7 +561,7 @@ fn process_item(
         scratch_dir: &scratch_dir,
         cpu_pool_threads,
         progress: Some(progress),
-        software_input,
+        software_input: software_input || caps.software_processing,
     };
     let started = Instant::now();
     let encode_result = ffmpeg::encode_with_cpu_fallback(&args, cancel, gpu_failed);
@@ -1526,7 +1526,7 @@ mod tests {
                 let args = EncodeArgs {
                     ffmpeg_path: &binary, vaapi_device: caps.vaapi_device.as_deref(), source_paths: &resolved.sources, output_path: &output,
                     tier, channel, encoder: Encoder::pick(&caps), curve: &curve,
-                    scratch_dir: &scratch, cpu_pool_threads: Some(1), software_input: false, progress: Some(callback),
+                    scratch_dir: &scratch, cpu_pool_threads: Some(1), software_input: caps.software_processing, progress: Some(callback),
                 };
                 let (path, _) = ffmpeg::encode_with_cpu_fallback(&args, &new_cancel_flag(), &gpu_failed).unwrap();
                 let meta = crate::metadata::mp4_probe::probe(&path).unwrap();

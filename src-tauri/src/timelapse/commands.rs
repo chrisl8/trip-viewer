@@ -43,6 +43,7 @@ fn cached_capabilities(s: &AppSettings) -> Option<FfmpegCapabilities> {
             amf_hevc: s.ffmpeg_amf_hevc.unwrap_or(false),
             qsv_hevc: s.ffmpeg_qsv_hevc.unwrap_or(false),
             vaapi_device: s.ffmpeg_vaapi_device.clone(),
+            software_processing: s.ffmpeg_software_processing.unwrap_or(false),
         }),
         _ => None,
     }
@@ -58,7 +59,7 @@ mod cache_tests {
             "ffmpeg_path":"ffmpeg", "ffmpeg_version":"old", "nvenc_hevc":false,
             "ffmpeg_probe_revision":2
         }"#).unwrap();
-        for revision in [None, Some(1), Some(2)] {
+        for revision in [None, Some(1), Some(2), Some(3)] {
             settings.ffmpeg_probe_revision = revision;
             assert!(cached_capabilities(&settings).is_none());
         }
@@ -73,8 +74,10 @@ mod cache_tests {
         settings.ffmpeg_amf_hevc = Some(true);
         assert!(cached_capabilities(&settings).unwrap().amf_hevc);
         settings.ffmpeg_qsv_hevc = Some(true);
+        settings.ffmpeg_software_processing = Some(true);
         let roundtrip: AppSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert!(cached_capabilities(&roundtrip).unwrap().qsv_hevc);
+        assert!(cached_capabilities(&roundtrip).unwrap().software_processing);
     }
 }
 
@@ -94,6 +97,7 @@ pub async fn clear_timelapse_settings(
         s.ffmpeg_amf_hevc = None;
         s.ffmpeg_qsv_hevc = None;
         s.ffmpeg_vaapi_device = None;
+        s.ffmpeg_software_processing = None;
     })
 }
 
@@ -160,6 +164,7 @@ pub async fn test_ffmpeg(
         s.ffmpeg_amf_hevc = Some(caps_for_save.amf_hevc);
         s.ffmpeg_qsv_hevc = Some(caps_for_save.qsv_hevc);
         s.ffmpeg_vaapi_device = caps_for_save.vaapi_device;
+        s.ffmpeg_software_processing = Some(caps_for_save.software_processing);
         s.ffmpeg_probe_revision = Some(ffmpeg::FFMPEG_PROBE_REVISION);
     })?;
     Ok(caps)
@@ -203,6 +208,7 @@ pub async fn start_timelapse(
         s.ffmpeg_amf_hevc = Some(checked.amf_hevc);
         s.ffmpeg_qsv_hevc = Some(checked.qsv_hevc);
         s.ffmpeg_vaapi_device = checked.vaapi_device;
+        s.ffmpeg_software_processing = Some(checked.software_processing);
         s.ffmpeg_probe_revision = Some(ffmpeg::FFMPEG_PROBE_REVISION);
     })?;
     let concurrency_override = s.timelapse_max_concurrent_jobs.map(|n| n as usize);
