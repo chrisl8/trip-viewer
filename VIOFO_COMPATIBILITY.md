@@ -5,27 +5,38 @@ Original project attribution, icons and licenses are retained. Björn Fries
 (`gubiq`) authored the archive-auto-scan and Linux libva/DMABuf fixes; their
 commits and co-author notices are preserved in this contribution branch.
 
-## Current follow-up: AMF and Linux VA-API encoding
+## Current follow-up: AMF, Windows QSV and Linux VA-API encoding
 
-The shared encoder now tries runtime-verified NVENC, then AMD AMF, Linux
-VA-API and CPU/libx265. AMF uses software decode/scale and hardware HEVC encode;
-VA-API uploads NV12 frames for GPU scale/encode and retains the verified render
-device. No NPU integration or new dependency is introduced. Automatic AMF/VA-API
-concurrency starts at one job. Hardware failure retries once on CPU, subsequent
-batch jobs stay on CPU, and cancellation does not start a retry. Configuration
-and progress identify the verified/actual encoder. Cached older probe results
-are invalidated while retaining the configured executable.
+The shared encoder now tries runtime-verified NVENC, AMD AMF, Windows Intel Quick
+Sync, Linux VA-API and CPU/libx265. QSV derives a hardware session from an Intel
+D3D11 device and consumes NV12 frames; a current FFmpeg build is recommended for
+Intel adapter selection on mixed-vendor Windows systems. AMF/QSV use software
+decode/scale and hardware HEVC encode. VA-API uploads NV12 for GPU scale/encode
+and retains the verified render device. Linux keeps the accepted VA-API route
+without attempting Windows QSV. This selects one backend, not a combined pool
+of GPUs or a benchmark-based fastest-device choice.
 
-The fork prepares this capability as **0.11.0**; the contribution retains Chris'
-**0.3.3**, updater/release policy and dependencies. On the fork, 366 Rust tests,
-132 frontend tests and the production build pass, plus the real synthetic CPU
-FFmpeg test across all nine channel/tier outputs. Tests cover selection,
-multiple render nodes, GPU failure/cancellation, device/encoder flags, filter
-ordering and older settings. Positive AMD 780M/VA-API hardware validation is
-**pending**: the cloud has no suitable GPU. Runtime verification requires a
-compatible FFmpeg build, driver/runtime and Linux render-device access. No
-fixed speed gain, broader camera/firmware certification or Mac GPU support is
-claimed. Original media, GPS parser and archive schema remain unchanged.
+There is no NPU integration or new dependency. Automatic AMF/QSV/VA-API concurrency
+starts at one job. Hardware failure retries once on CPU, subsequent batch jobs
+stay on CPU, and cancellation does not start a retry. Configuration/progress
+identify the verified/actual encoder. Probe revision 3 invalidates older cached
+results while retaining the configured executable.
+
+The fork prepares **0.11.0**; this contribution retains Chris' **0.3.3**, updater,
+release policy and dependencies. On the fork 369 Rust tests, 132 frontend tests
+and the production build pass. Earlier real synthetic CPU FFmpeg checks cover
+all nine channel/tier outputs. Selection tests cover Windows QSV, preserving
+Linux VA-API, hardware flags, fallback/cancellation and older settings.
+
+On 2026-11-17 the owner confirmed real Intel UHD (Comet Lake) VA-API encoding and
+playable 8x output on Ubuntu 24.04 LTS / FFmpeg 6.1.1. The free Intel driver failed
+at `scale_vaapi` with unsupported VAProfile; Ubuntu's complete
+`intel-media-va-driver-non-free` resolved the full probe and real encoding.
+Observed CPU load was 75–85%, with no obvious speed gain or controlled timing
+comparison. Software decoding still contributes load; GPU encoding is not a
+universal throughput guarantee. Windows AMD/QSV hardware acceptance is pending.
+No broader camera/firmware or Mac GPU certification is claimed. Original media,
+GPS parser and archive schema remain unchanged.
 
 ## Counter-free VIOFO filenames
 
