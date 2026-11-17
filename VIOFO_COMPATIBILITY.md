@@ -19,11 +19,19 @@ of GPUs or a benchmark-based fastest-device choice.
 There is no NPU integration or new dependency. Automatic AMF/QSV/VA-API concurrency
 starts at one job. Hardware failure retries once on CPU, subsequent batch jobs
 stay on CPU, and cancellation does not start a retry. Configuration/progress
-identify the verified/actual encoder. Probe revision 3 invalidates older cached
+identify the verified/actual encoder. Probe revision 4 invalidates older cached
 results while retaining the configured executable.
 
+All GPU probes now use a finite one-second Full-HD sample and drain both stages
+to EOF, with the existing ten-second stage deadline. The owner's tiny AMF test
+stalled, while a finite 30-frame Full-HD NV12 diagnostic completed. AMF production
+uses NV12. If CUDA processing or VA-API GPU scaling fails its probe, a second
+profile checks CPU processing while retaining GPU encoding; the chosen profile
+is persisted and used by jobs. These are API-capability checks, not model rules.
+No individual trigger of the original tiny-test stall is claimed as isolated.
+
 The fork prepares **0.11.0**; this contribution retains Chris' **0.3.3**, updater,
-release policy and dependencies. On the fork 369 Rust tests, 132 frontend tests
+release policy and dependencies. On the fork 373 Rust tests, 132 frontend tests
 and the production build pass. Earlier real synthetic CPU FFmpeg checks cover
 all nine channel/tier outputs. Selection tests cover Windows QSV, preserving
 Linux VA-API, hardware flags, fallback/cancellation and older settings.
@@ -34,7 +42,9 @@ at `scale_vaapi` with unsupported VAProfile; Ubuntu's complete
 `intel-media-va-driver-non-free` resolved the full probe and real encoding.
 Observed CPU load was 75–85%, with no obvious speed gain or controlled timing
 comparison. Software decoding still contributes load; GPU encoding is not a
-universal throughput guarantee. Windows AMD/QSV hardware acceptance is pending.
+universal throughput guarantee. The owner subsequently confirmed the Radeon 780M Windows app probe and a real
+Front/8x AMF job progressing, and authorized fork production release preparation.
+Windows output completion/playback and Intel QSV hardware acceptance remain open.
 No broader camera/firmware or Mac GPU certification is claimed. Original media,
 GPS parser and archive schema remain unchanged.
 
