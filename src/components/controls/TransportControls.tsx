@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { SyncEngine } from "../../engine/SyncEngine";
 import type { PlaybackSlice } from "../../state/store";
 import { useStore } from "../../state/store";
@@ -75,6 +75,8 @@ export function TransportControls({ engine, onSourceChange }: Props) {
   const sourceMode = useStore((s) => s.sourceMode);
   const activeSpeedCurve = useStore((s) => s.activeSpeedCurve);
   const timelapseJobs = useStore((s) => s.timelapseJobs);
+  const gpsPreparation = useStore((s) => loadedTripId ? s.gpsPreparationByTrip[loadedTripId] : undefined);
+  const gpsProgress = useStore((s) => loadedTripId ? s.gpsProgressByTrip[loadedTripId] : undefined);
   const disabled = !engine;
 
   const trip = trips.find((t) => t.id === loadedTripId);
@@ -114,9 +116,31 @@ export function TransportControls({ engine, onSourceChange }: Props) {
 
   const onToggle = () => {
     if (!engine) return;
-    if (isPlaying) engine.pause();
-    else void engine.play();
+    engine.togglePlayback();
   };
+
+  // Dashboard/fullscreen controls live inside the fullscreen element while
+  // this transport bar lives outside it. Route those controls back through
+  // the same SyncEngine instead of manipulating individual <video> elements.
+  useEffect(() => {
+    const onDashboardToggle = () => {
+      engine?.togglePlayback();
+    };
+    const onPlaybackResync = () => {
+      engine?.resyncToMaster();
+    };
+    const onPlaybackPause = () => {
+      engine?.pause();
+    };
+    window.addEventListener("tripviewer:toggle-playback", onDashboardToggle);
+    window.addEventListener("tripviewer:resync-playback", onPlaybackResync);
+    window.addEventListener("tripviewer:pause-playback", onPlaybackPause);
+    return () => {
+      window.removeEventListener("tripviewer:toggle-playback", onDashboardToggle);
+      window.removeEventListener("tripviewer:resync-playback", onPlaybackResync);
+      window.removeEventListener("tripviewer:pause-playback", onPlaybackPause);
+    };
+  }, [engine]);
 
   // Effective playback rate = source-tier × speed. Always shown so
   // the user can see the composition every time, including 1× ×1 in
@@ -149,6 +173,27 @@ export function TransportControls({ engine, onSourceChange }: Props) {
         →{" "}
         <span className="text-neutral-300">{effectiveRate}×</span> effective
       </span>
+
+      {trip && !engine && (
+        <span role="status" className="text-xs text-neutral-400">Waiting for a playable camera…</span>
+      )}
+      {gpsPreparation === "loading" && (
+        <span role="status" className="flex items-center gap-2 text-xs text-blue-300">
+          <span aria-hidden className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+          {gpsProgress
+            ? `GPS: ${gpsProgress.completed} / ${gpsProgress.total} segments`
+            : "Preparing GPS in the background…"}
+          {gpsProgress && gpsProgress.total > 0 && (
+            <progress aria-label="GPS segments prepared" className="h-1.5 w-20 accent-blue-400"
+              value={gpsProgress.completed} max={gpsProgress.total} />
+          )}
+        </span>
+      )}
+      {gpsPreparation === "error" && (
+        <span role="status" className="text-xs text-amber-300">
+          GPS preparation failed. Select the trip again to retry.
+        </span>
+      )}
 
       <div className="ml-auto shrink-0 font-mono text-xs tabular-nums text-neutral-400">
         {formatTime(tripTime)} / {formatTime(totalDuration)}

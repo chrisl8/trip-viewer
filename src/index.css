@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+:root {
+  /* Trip Viewer has a dark application chrome. Tell WebKitGTK and the other
+   * platform webviews to render native form controls (selects, checkboxes,
+   * option popups) for a dark surface as well. Without this, Ubuntu can draw
+   * a light native <select> while our text color stays light, producing the
+   * very low-contrast controls seen in the Settings dialog. */
+  color-scheme: dark;
+}
+
 @theme {
   --animate-pulse-sky: pulse-glow-sky 1.6s ease-in-out infinite;
   --animate-pulse-violet: pulse-glow-violet 1.6s ease-in-out infinite;
@@ -49,4 +58,17 @@ body {
   user-select: none;
   -webkit-user-select: none;
   cursor: default;
+}
+
+/* User preference: hide the player map and immediately reclaim its grid
+ * column without remounting the player. The selector is intentionally scoped
+ * to the player grid that directly owns the Leaflet panel. */
+html[data-tripviewer-map="off"] .grid:has(> div > .leaflet-container) {
+  grid-template-columns: 3fr 1fr !important;
+}
+
+html[data-tripviewer-map="off"]
+  .grid:has(> div > .leaflet-container)
+  > div:has(> .leaflet-container) {
+  display: none;
 }

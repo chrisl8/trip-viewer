@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::app_settings::AppSettingsHandle;
+use crate::app_settings::{AppSettings, AppSettingsHandle};
 use crate::archive::{require_db, ArchiveSlot};
 use crate::db;
 use crate::error::AppError;
@@ -28,17 +28,57 @@ pub async fn get_timelapse_settings(
     settings: State<'_, AppSettingsHandle>,
 ) -> Result<TimelapseSettings, AppError> {
     let s = settings.read();
-    let capabilities = match (s.ffmpeg_version, s.nvenc_hevc) {
-        (Some(v), Some(n)) => Some(FfmpegCapabilities {
-            version: v,
-            nvenc_hevc: n,
-        }),
-        _ => None,
-    };
+    let capabilities = cached_capabilities(&s);
     Ok(TimelapseSettings {
         ffmpeg_path: s.ffmpeg_path,
         capabilities,
     })
+}
+
+fn cached_capabilities(s: &AppSettings) -> Option<FfmpegCapabilities> {
+    match (s.ffmpeg_probe_revision, s.ffmpeg_version.as_ref(), s.nvenc_hevc) {
+        (Some(ffmpeg::FFMPEG_PROBE_REVISION), Some(v), Some(n)) => Some(FfmpegCapabilities {
+            version: v.clone(),
+            nvenc_hevc: n,
+            amf_hevc: s.ffmpeg_amf_hevc.unwrap_or(false),
+            qsv_hevc: s.ffmpeg_qsv_hevc.unwrap_or(false),
+            vaapi_device: s.ffmpeg_vaapi_device.clone(),
+            software_processing: s.ffmpeg_software_processing.unwrap_or(false),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn older_probe_results_are_invalidated_without_losing_the_ffmpeg_path() {
+        let mut settings: AppSettings = serde_json::from_str(r#"{
+            "ffmpeg_path":"ffmpeg", "ffmpeg_version":"old", "nvenc_hevc":false,
+            "ffmpeg_probe_revision":2
+        }"#).unwrap();
+        for revision in [None, Some(1), Some(2), Some(3)] {
+            settings.ffmpeg_probe_revision = revision;
+            assert!(cached_capabilities(&settings).is_none());
+        }
+        assert_eq!(settings.ffmpeg_path.as_deref(), Some("ffmpeg"));
+        settings.ffmpeg_probe_revision = Some(ffmpeg::FFMPEG_PROBE_REVISION);
+        settings.ffmpeg_vaapi_device = Some("/dev/dri/renderD129".into());
+        let roundtrip: AppSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        let caps = cached_capabilities(&roundtrip).unwrap();
+        assert_eq!(caps.vaapi_device.as_deref(), Some("/dev/dri/renderD129"));
+        assert!(!caps.amf_hevc);
+        assert!(!caps.qsv_hevc);
+        settings.ffmpeg_amf_hevc = Some(true);
+        assert!(cached_capabilities(&settings).unwrap().amf_hevc);
+        settings.ffmpeg_qsv_hevc = Some(true);
+        settings.ffmpeg_software_processing = Some(true);
+        let roundtrip: AppSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(cached_capabilities(&roundtrip).unwrap().qsv_hevc);
+        assert!(cached_capabilities(&roundtrip).unwrap().software_processing);
+    }
 }
 
 /// Erase the cached ffmpeg path and capability flags. Used by the
@@ -53,6 +93,11 @@ pub async fn clear_timelapse_settings(
         s.ffmpeg_path = None;
         s.ffmpeg_version = None;
         s.nvenc_hevc = None;
+        s.ffmpeg_probe_revision = None;
+        s.ffmpeg_amf_hevc = None;
+        s.ffmpeg_qsv_hevc = None;
+        s.ffmpeg_vaapi_device = None;
+        s.ffmpeg_software_processing = None;
     })
 }
 
@@ -108,12 +153,19 @@ pub async fn test_ffmpeg(
     path: String,
     settings: State<'_, AppSettingsHandle>,
 ) -> Result<FfmpegCapabilities, AppError> {
-    let caps = ffmpeg::probe_ffmpeg(&path)?;
+    let probe_path = path.clone();
+    let caps = tauri::async_runtime::spawn_blocking(move || ffmpeg::probe_ffmpeg(&probe_path))
+        .await.map_err(|error| AppError::Internal(format!("FFmpeg test task failed: {error}")))??;
     let caps_for_save = caps.clone();
     settings.update(move |s| {
         s.ffmpeg_path = Some(path);
         s.ffmpeg_version = Some(caps_for_save.version);
         s.nvenc_hevc = Some(caps_for_save.nvenc_hevc);
+        s.ffmpeg_amf_hevc = Some(caps_for_save.amf_hevc);
+        s.ffmpeg_qsv_hevc = Some(caps_for_save.qsv_hevc);
+        s.ffmpeg_vaapi_device = caps_for_save.vaapi_device;
+        s.ffmpeg_software_processing = Some(caps_for_save.software_processing);
+        s.ffmpeg_probe_revision = Some(ffmpeg::FFMPEG_PROBE_REVISION);
     })?;
     Ok(caps)
 }
@@ -144,17 +196,21 @@ pub async fn start_timelapse(
     let ffmpeg_path = s.ffmpeg_path.ok_or_else(|| {
         AppError::Internal("ffmpeg not configured — set path in settings first".into())
     })?;
-    let caps = match (s.ffmpeg_version, s.nvenc_hevc) {
-        (Some(v), Some(n)) => FfmpegCapabilities {
-            version: v,
-            nvenc_hevc: n,
-        },
-        _ => {
-            return Err(AppError::Internal(
-                "ffmpeg capabilities not cached — run the Test button first".into(),
-            ))
-        }
-    };
+    // Old caches only proved that NVENC was compiled in. Revalidate before
+    // each batch so changed drivers/devices never silently select that path.
+    let probe_path = ffmpeg_path.clone();
+    let caps = tauri::async_runtime::spawn_blocking(move || ffmpeg::probe_ffmpeg(&probe_path))
+        .await.map_err(|error| AppError::Internal(format!("FFmpeg test task failed: {error}")))??;
+    let checked = caps.clone();
+    settings.update(move |s| {
+        s.ffmpeg_version = Some(checked.version);
+        s.nvenc_hevc = Some(checked.nvenc_hevc);
+        s.ffmpeg_amf_hevc = Some(checked.amf_hevc);
+        s.ffmpeg_qsv_hevc = Some(checked.qsv_hevc);
+        s.ffmpeg_vaapi_device = checked.vaapi_device;
+        s.ffmpeg_software_processing = Some(checked.software_processing);
+        s.ffmpeg_probe_revision = Some(ffmpeg::FFMPEG_PROBE_REVISION);
+    })?;
     let concurrency_override = s.timelapse_max_concurrent_jobs.map(|n| n as usize);
 
     // Concurrency: explicit override wins, otherwise auto-detect from

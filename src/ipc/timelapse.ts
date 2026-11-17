@@ -10,6 +10,10 @@ export type TimelapseJobScope = "newOnly" | "failedOnly" | "rebuildAll";
 export interface FfmpegCapabilities {
   version: string;
   nvencHevc: boolean;
+  amfHevc?: boolean;
+  qsvHevc?: boolean;
+  vaapiDevice?: string | null;
+  softwareProcessing?: boolean;
 }
 
 export interface TimelapseSettings {
@@ -64,6 +68,21 @@ export interface TimelapseDoneEvent {
   done: number;
   failed: number;
   cancelled: boolean;
+}
+
+export interface TimelapseEncodingProgress {
+  tripId: string;
+  tier: string;
+  channel: string;
+  phase: "preparing" | "encoding" | "finalizing";
+  encoder: string;
+  processedSeconds: number;
+  totalSeconds: number;
+  elapsedSeconds: number;
+}
+
+export function onTimelapseEncodingProgress(cb: (progress: TimelapseEncodingProgress) => void): Promise<() => void> {
+  return listen<TimelapseEncodingProgress>("timelapse:encoding-progress", (event) => cb(event.payload));
 }
 
 export interface StartTimelapseArgs {

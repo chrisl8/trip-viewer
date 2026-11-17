@@ -72,6 +72,11 @@ trait FilenameParser: Send + Sync {
 /// Try each parser in order. The first one to match wins.
 /// Returns `Err(InvalidFilename)` if no parser matches.
 pub fn parse(filename: &str) -> Result<ParsedName, AppError> {
+    // Keep all filename consumers (including timelapse sibling lookup) on
+    // the same auto-detection path, rather than recognizing VIOFO only in scans.
+    if let Some(parsed) = crate::scan::viofo::parse(filename) {
+        return Ok(parsed);
+    }
     for parser in parsers() {
         if let Some(p) = parser.parse(filename) {
             return Ok(p);

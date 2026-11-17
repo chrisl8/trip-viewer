@@ -94,9 +94,9 @@ export function seekTripTime(
   sourceMode: SourceMode,
   curve: CurveSegment[] | null,
 ): SeekTarget | null {
-  if (!trip || trip.segments.length === 0) return null;
+  if (!trip || (sourceMode === "original" && trip.segments.length === 0)) return null;
 
-  const total = trip.segments.reduce((sum, s) => sum + s.durationS, 0);
+  const total = tripTotalDuration(trip, curve);
   const clamped = Math.max(0, Math.min(total, tripTime));
 
   if (sourceMode === "original") {

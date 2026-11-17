@@ -12,6 +12,71 @@ import { computeTripTime } from "../../utils/tripTime";
 import "leaflet/dist/leaflet.css";
 
 /**
+ * Parse a camera-local NaiveDateTime without applying the computer's timezone.
+ * We only need arithmetic between segment timestamps recorded by the same
+ * camera, so treating the numeric fields as a timezone-free UTC tuple avoids
+ * introducing host timezone/DST behaviour into the calculation.
+ */
+function naiveDateTimeMs(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?/.exec(
+    value,
+  );
+  if (!match) return null;
+
+  const fractionMs = Number(`0.${match[7] ?? "0"}`) * 1000;
+  return Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6]),
+    Math.round(fractionMs),
+  );
+}
+
+/**
+ * Rebase GPS samples from the preceding segment onto the current segment's
+ * local time axis and keep only samples whose actual timestamp reaches into
+ * the current segment. No grace period is assumed: continuity exists only
+ * when the recorded timestamps themselves overlap the boundary.
+ */
+function precedingGpsOverlap(
+  previousSegment: Segment,
+  currentSegment: Segment,
+  previousPoints: GpsPoint[],
+): GpsPoint[] {
+  const previousStartMs = naiveDateTimeMs(previousSegment.startTime);
+  const currentStartMs = naiveDateTimeMs(currentSegment.startTime);
+  if (previousStartMs === null || currentStartMs === null) return [];
+
+  const startDeltaS = (previousStartMs - currentStartMs) / 1000;
+  return previousPoints
+    .map((point) => ({
+      ...point,
+      tOffsetS: startDeltaS + point.tOffsetS,
+    }))
+    .filter((point) => point.tOffsetS >= 0);
+}
+
+/**
+ * Merge overlapping GPS samples by their exact segment-relative timestamp.
+ * When both files contain the same timestamp, prefer the current segment's
+ * sample because it belongs to the video that is now active.
+ */
+function mergeGpsAtBoundary(
+  precedingOverlap: GpsPoint[],
+  currentPoints: GpsPoint[],
+): GpsPoint[] {
+  if (precedingOverlap.length === 0) return currentPoints;
+
+  const byTimestamp = new Map<number, GpsPoint>();
+  for (const point of precedingOverlap) byTimestamp.set(point.tOffsetS, point);
+  for (const point of currentPoints) byTimestamp.set(point.tOffsetS, point);
+  return Array.from(byTimestamp.values()).sort((a, b) => a.tOffsetS - b.tOffsetS);
+}
+
+/**
  * Keeps Leaflet's cached container size in sync with the actual DOM
  * size. Without this, fitBounds called shortly after mount can land on
  * the wrong center+zoom because Leaflet computes the result against a
@@ -84,6 +149,7 @@ function MiltonaDebugButton({ segment }: { segment: Segment }) {
 
 interface Props {
   activeSegment: Segment | null;
+  onSeekTripTime: (time: number) => void;
 }
 
 function GpsMissingRibbon({
@@ -104,7 +170,9 @@ function GpsMissingRibbon({
   if (!activeSegment) return null;
 
   const noGps = gpsPoints.length === 0;
-  const stale = interp?.stale === true;
+  const beforeFirstFix =
+    gpsPoints.length > 0 && interpolationTime < gpsPoints[0].tOffsetS;
+  const stale = beforeFirstFix || interp?.stale === true;
 
   if (!noGps && !stale) return null;
 
@@ -115,7 +183,7 @@ function GpsMissingRibbon({
   );
 }
 
-export function MapPanel({ activeSegment }: Props) {
+export function MapPanel({ activeSegment, onSeekTripTime }: Props) {
   const gpsByFile = useStore((s) => s.gpsByFile);
   const tripGpsByTrip = useStore((s) => s.tripGpsByTrip);
   const loadedTripId = useStore((s) => s.loadedTripId);
@@ -145,14 +213,15 @@ export function MapPanel({ activeSegment }: Props) {
     // than per-file extraction even when originals exist.
     const archived = loadedTripId ? tripGpsByTrip[loadedTripId] : undefined;
     if (archived && archived.length > 0) return archived;
-    // Fallback: stitch on the fly from per-file GPS (untimelapsed trips).
+    // Legacy/in-memory fallback. Prefer whichever camera in the segment
+    // actually has GPS rather than assuming the canonical Front channel.
     const all: GpsPoint[] = [];
     let cumulativeOffset = 0;
     for (const seg of trip.segments) {
-      // Master channel (first in canonical order) carries GPS.
-      const front = seg.channels[0];
-      if (!front) continue;
-      const pts = gpsByFile[front.filePath];
+      const provider = seg.channels.find(
+        (channel) => (gpsByFile[channel.filePath]?.length ?? 0) > 0,
+      );
+      const pts = provider ? gpsByFile[provider.filePath] : undefined;
       if (pts) {
         for (const p of pts) {
           all.push({ ...p, tOffsetS: cumulativeOffset + p.tOffsetS });
@@ -165,10 +234,63 @@ export function MapPanel({ activeSegment }: Props) {
 
   const segmentGpsPoints: GpsPoint[] = useMemo(() => {
     if (!activeSegment) return [];
-    const front = activeSegment.channels[0];
-    if (!front) return [];
-    return gpsByFile[front.filePath] ?? [];
-  }, [activeSegment, gpsByFile]);
+    if (!trip) return [];
+
+    const segmentIndex = trip.segments.findIndex(
+      (segment) => segment.id === activeSegment.id,
+    );
+    if (segmentIndex < 0) return [];
+
+    // Prefer the persisted trip-wide cache even in Original mode. Convert the
+    // trip-time offsets back onto this segment's local axis. This removes the
+    // old need to re-parse every source MP4 whenever the app is restarted.
+    const archived = loadedTripId ? tripGpsByTrip[loadedTripId] : undefined;
+    if (archived) {
+      let segmentStart = 0;
+      for (let i = 0; i < segmentIndex; i++) {
+        segmentStart += trip.segments[i].durationS;
+      }
+      const segmentEnd = segmentStart + activeSegment.durationS;
+      return archived
+        .filter(
+          (point) =>
+            point.tOffsetS >= segmentStart && point.tOffsetS <= segmentEnd,
+        )
+        .map((point) => ({
+          ...point,
+          tOffsetS: point.tOffsetS - segmentStart,
+        }));
+    }
+
+    // Compatibility fallback for an extraction that has not yet reached the
+    // DB. Use the first camera with usable GPS, not necessarily Front.
+    const provider = activeSegment.channels.find(
+      (channel) => (gpsByFile[channel.filePath]?.length ?? 0) > 0,
+    );
+    const currentPoints = provider ? gpsByFile[provider.filePath] ?? [] : [];
+
+    if (segmentIndex <= 0) return currentPoints;
+
+    const previousSegment = trip.segments[segmentIndex - 1];
+    const previousProvider = previousSegment.channels.find(
+      (channel) => (gpsByFile[channel.filePath]?.length ?? 0) > 0,
+    );
+    if (!previousProvider) return currentPoints;
+
+    const previousPoints = gpsByFile[previousProvider.filePath] ?? [];
+    const overlap = precedingGpsOverlap(
+      previousSegment,
+      activeSegment,
+      previousPoints,
+    );
+    return mergeGpsAtBoundary(overlap, currentPoints);
+  }, [
+    activeSegment,
+    gpsByFile,
+    loadedTripId,
+    trip,
+    tripGpsByTrip,
+  ]);
 
   // Pick which pair feeds the marker + readouts: tiered mode uses the
   // full trip trace indexed by concat-time; Original uses per-segment
@@ -211,7 +333,7 @@ export function MapPanel({ activeSegment }: Props) {
       >
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <MapResizeObserver />
-        {hasTripGps && <TrackPolyline points={tripGpsPoints} />}
+        {hasTripGps && <TrackPolyline points={tripGpsPoints} currentTripTime={concatTime} onSeekTripTime={onSeekTripTime} />}
         {hasTripGps && (
           <VehicleMarker
             gpsPoints={consumerGpsPoints}
@@ -222,6 +344,7 @@ export function MapPanel({ activeSegment }: Props) {
         )}
       </MapContainer>
 
+      {hasTripGps && <div className="pointer-events-none absolute left-3 top-3 z-[1000] rounded bg-black/60 px-2 py-1 text-[10px] text-neutral-200">Click route to seek video</div>}
       {!hasTripGps && (
         <div className="pointer-events-none absolute inset-0 z-[1000] flex items-center justify-center bg-neutral-900/70 text-xs text-neutral-400">
           Loading GPS…

@@ -107,7 +107,6 @@ pub async fn open_archive(
     }
 
     let info = build_current_info(&archive_root);
-    replace_slot(&slot, Some(handle))?;
 
     let now_ms = chrono::Utc::now().timestamp_millis();
     let root_str = archive_root.to_string_lossy().into_owned();
@@ -127,6 +126,9 @@ pub async fn open_archive(
             s.recent_archives.truncate(RECENT_ARCHIVES_MAX);
         }
     })?;
+    // Commit the active archive only after its remembered path was saved.
+    // A settings write failure must leave the previous archive active.
+    replace_slot(&slot, Some(handle))?;
 
     Ok(info)
 }

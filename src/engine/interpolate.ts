@@ -15,17 +15,10 @@ export function interpolateGps(
 ): InterpolatedGps | null {
   if (points.length === 0) return null;
 
-  if (tOffsetS <= points[0].tOffsetS) {
-    const p = points[0];
-    return {
-      lat: p.lat,
-      lon: p.lon,
-      speedMps: p.speedMps,
-      headingDeg: p.headingDeg,
-      altitudeM: p.altitudeM,
-      stale: tOffsetS < points[0].tOffsetS - 1,
-    };
-  }
+  // Before the first recorded fix there is no GPS position to display.
+  // Returning the future first point here would make the marker, speed and
+  // heading appear before the receiver actually acquired a fix.
+  if (tOffsetS < points[0].tOffsetS) return null;
 
   const last = points[points.length - 1];
   if (tOffsetS >= last.tOffsetS) {

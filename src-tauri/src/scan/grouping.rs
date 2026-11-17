@@ -306,6 +306,16 @@ pub fn find_sibling_in_listing(
     // false-negative placeholder. For different-channel lookups
     // the channel-label filter below excludes the anchor anyway.
     for entry in listing {
+        // VIOFO parking and normal recordings may share a timestamp but are
+        // separate recordings. Their group keys end in P/N (not the sequence
+        // number, which differs between F/I/R).
+        if anchor.group_key.starts_with("vf:")
+            && (!entry.parsed.group_key.starts_with("vf:")
+                || entry.parsed.group_key.rsplit('_').next()
+                    != anchor.group_key.rsplit('_').next())
+        {
+            continue;
+        }
         if entry.parsed.camera_kind != anchor.camera_kind {
             continue;
         }
@@ -356,6 +366,31 @@ mod tests {
         assert_eq!(out.trips[0].segments[0].channels[0].label, LABEL_FRONT);
         assert_eq!(out.trips[0].segments[0].channels[1].label, LABEL_INTERIOR);
         assert_eq!(out.trips[0].segments[0].channels[2].label, LABEL_REAR);
+    }
+
+    #[test]
+    fn mixed_viofo_filename_generations_group_and_find_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["2025_0706_201953_F.MP4", "2025_0706_201953_000002I.MP4",
+            "2025_0706_201953_R.MP4", "2025_0706_201953_PF.MP4",
+            "2025_0706_201953_000005PI.MP4"];
+        let inputs = names.iter().map(|name| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"").unwrap();
+            GroupingInput { path, parsed: naming::parse(name).unwrap() }
+        }).collect();
+        let grouped = group(inputs, DEFAULT_TRIP_GAP_SECONDS, dir.path());
+        let segments: Vec<_> = grouped.trips.iter().flat_map(|trip| &trip.segments).collect();
+        assert_eq!(segments.len(), 2, "normal and parking recordings must stay separate");
+        assert!(segments.iter().any(|segment| segment.channels.len() == 3));
+        assert!(segments.iter().any(|segment| segment.channels.len() == 2));
+        let front = dir.path().join(names[0]);
+        assert_eq!(find_sibling_file(&front, LABEL_FRONT).unwrap(), Some(front.clone()));
+        assert_eq!(find_sibling_file(&front, LABEL_INTERIOR).unwrap(), Some(dir.path().join(names[1])));
+        assert_eq!(find_sibling_file(&front, LABEL_REAR).unwrap(), Some(dir.path().join(names[2])));
+        let parking_front = dir.path().join(names[3]);
+        assert_eq!(find_sibling_file(&parking_front, LABEL_INTERIOR).unwrap(), Some(dir.path().join(names[4])));
+        assert_eq!(find_sibling_file(&parking_front, LABEL_REAR).unwrap(), None);
     }
 
     #[test]

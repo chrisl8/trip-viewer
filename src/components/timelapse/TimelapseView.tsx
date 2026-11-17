@@ -11,6 +11,8 @@ import { formatBytes } from "../../utils/format";
 import { formatTripStart } from "../../utils/format";
 import { parseCurveJson } from "../../utils/speedCurve";
 import { fallbackCurveForTier } from "../../utils/tripTime";
+import { estimateEncodingStep } from "./encodingProgress";
+import { encoderLabel } from "./encoderLabel";
 import { TripActionsMenu } from "../trip/TripActionsMenu";
 import { FfmpegConfig } from "./FfmpegConfig";
 
@@ -192,7 +194,7 @@ export function TimelapseView() {
 
   const etaLabel = useMemo(() => {
     if (!running || !startMs || total === 0) return null;
-    if (processedCount < 2) return "calculating…";
+    if (processedCount < 1) return null;
     const elapsed = now - startMs;
     // Amortize over attempts: elapsed includes failure time, so dividing by successes alone inflates ETA.
     const avgPer = elapsed / processedCount;
@@ -200,6 +202,8 @@ export function TimelapseView() {
     if (remaining <= 0) return null;
     return formatDurationShort(avgPer * remaining);
   }, [running, startMs, total, processedCount, now]);
+  const encodingProgress = useStore((s) => s.timelapseEncodingProgress);
+  const encodingEstimate = encodingProgress ? estimateEncodingStep(encodingProgress, now) : null;
 
   const jobsByTrip = useMemo(() => {
     const m: Record<string, typeof jobs> = {};
@@ -515,22 +519,51 @@ export function TimelapseView() {
                   </div>
                   <div className="flex items-center justify-between text-xs text-neutral-400">
                     <span>
-                      {doneCount} / {total} ({pct}%)
+                      {doneCount} / {total} jobs completed ({pct}%)
                     </span>
                     <div className="flex items-center gap-3">
                       {etaLabel && (
                         <span>
-                          ETA{" "}
+                          Batch ETA ≈{" "}
                           <span className="text-neutral-200">{etaLabel}</span>
                         </span>
                       )}
                       <span>{progress?.failed ?? 0} failed</span>
+                      {running && startMs && <span>Elapsed {formatDurationShort(Math.max(0, now - startMs))}</span>}
                     </div>
                   </div>
                   {progress?.currentTripId && (
                     <div className="mt-1 truncate text-xs text-neutral-500">
                       trip {progress.currentTripId.slice(0, 8)}… · tier{" "}
                       {progress.currentTier} · channel {progress.currentChannel}
+                    </div>
+                  )}
+                  {running && encodingProgress && (
+                    <div className="mt-3 text-xs text-neutral-400">
+                      <div className="flex flex-wrap justify-between gap-2">
+                        <span>
+                          {{ preparing: "Preparing source", encoding: "Encoding", finalizing: "Finalizing file" }[encodingProgress.phase]}
+                          {" · "}{encoderLabel(encodingProgress.encoder)}
+                          {" · "}{encodingProgress.tier} / {encodingProgress.channel}
+                          {" · trip "}{encodingProgress.tripId.slice(0, 8)}…
+                        </span>
+                        {encodingEstimate?.remainingSeconds != null && (
+                          <span>Current step ETA ≈ {formatDurationShort(encodingEstimate.remainingSeconds * 1000)}</span>
+                        )}
+                      </div>
+                      {encodingEstimate && (
+                        <>
+                          <div className="my-2 h-2 overflow-hidden rounded-full bg-neutral-800">
+                            <div className="h-full bg-sky-500 transition-all" style={{ width: `${encodingEstimate.percent}%` }} />
+                          </div>
+                          <span>{encodingEstimate.percent.toFixed(1)}% · video {formatDurationShort(encodingEstimate.processed * 1000)} / {formatDurationShort(encodingEstimate.total * 1000)}</span>
+                          {encodingEstimate.stale && <span className="ml-2 text-amber-400">No recent FFmpeg progress update; it may still be busy.</span>}
+                          {!encodingEstimate.stale && encodingEstimate.remainingSeconds == null && (
+                            <span className="ml-2">{encodingEstimate.percent >= 100 ? "Finishing this step…" : "Waiting for measurable video progress…"}</span>
+                          )}
+                        </>
+                      )}
+                      <p className="mt-1">Step ETA covers the current phase of this channel. Batch ETA is approximate; CPU encoding can take longer than the original video.</p>
                     </div>
                   )}
                 </>
@@ -728,6 +761,16 @@ export function TimelapseView() {
                                 </span>
                               )}
                             </span>
+                          )}
+                          {failedCount > 0 && (
+                            <details className="mt-2 max-w-lg text-neutral-400">
+                              <summary className="cursor-pointer">Encoding error details</summary>
+                              {tripJobs.filter((job) => job.status === "failed").map((job) => (
+                                <p key={`${job.tier}-${job.channel}`} className="mt-1 whitespace-pre-wrap break-words">
+                                  {job.tier} · {job.channel}: {job.errorMessage || "No diagnostic was recorded. Retry this job for details."}
+                                </p>
+                              ))}
+                            </details>
                           )}
                         </td>
                         <td className="px-3 py-2">

@@ -1,7 +1,9 @@
+import { useState } from "react";
 import clsx from "clsx";
 import { useStore } from "../state/store";
 import { KIND_META, kindCounts } from "../utils/issueKinds";
 import type { MainView } from "../state/store";
+import { SettingsDialog } from "./settings/SettingsDialog";
 
 interface TabSpec {
   view: MainView;
@@ -41,9 +43,7 @@ const MAIN_TABS: TabSpec[] = [
 
 // Utility tabs (right cluster). Configuration / setup screens, not
 // workflow phases — separated by a flex spacer so the tab bar reads
-// "main views on the left, settings on the right." Currently just
-// Places (POI setup for the gps_place scan); future Settings or Help
-// tabs would join here.
+// "main views on the left, settings on the right."
 const UTILITY_TABS: TabSpec[] = [
   {
     view: "places",
@@ -71,6 +71,7 @@ export function MainNavTabs() {
   const timelapseRunning = useStore((s) => s.timelapseRunning);
   const timelapseProgress = useStore((s) => s.timelapseProgress);
   const scanErrors = useStore((s) => s.scanErrors);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const issueCount = scanErrors.length;
   const issueBreakdown = kindCounts(scanErrors);
@@ -122,40 +123,51 @@ export function MainNavTabs() {
   }
 
   return (
-    <nav
-      role="tablist"
-      className="flex shrink-0 items-end gap-1 border-b border-neutral-800 bg-neutral-950 px-3 pt-1"
-    >
-      {MAIN_TABS.map(renderTab)}
-      {issueCount > 0 && (
+    <>
+      <nav
+        role="tablist"
+        className="flex min-w-0 shrink-0 items-end gap-1 overflow-x-auto border-b border-neutral-800 bg-neutral-950 px-3 pt-1"
+      >
+        {MAIN_TABS.map(renderTab)}
+        {issueCount > 0 && (
+          <button
+            role="tab"
+            aria-selected={mainView === "issues"}
+            onClick={() => setMainView("issues")}
+            className={clsx(
+              "border-b-2 px-3 py-1.5 text-sm font-medium transition-colors",
+              mainView === "issues"
+                ? "border-yellow-500 text-yellow-300"
+                : "border-transparent text-yellow-500 hover:text-yellow-300",
+            )}
+            title={
+              issueBreakdown.length > 0
+                ? issueBreakdown
+                    .slice(0, 3)
+                    .map(
+                      (b) =>
+                        `${b.count} ${KIND_META[b.kind].label.toLowerCase()}`,
+                    )
+                    .join(" · ")
+                : undefined
+            }
+          >
+            {issueCount} {issueCount === 1 ? "issue" : "issues"}
+          </button>
+        )}
+        {/* Spacer pushes the utility cluster to the right edge. */}
+        <div className="flex-1" aria-hidden="true" />
+        {UTILITY_TABS.map(renderTab)}
         <button
-          role="tab"
-          aria-selected={mainView === "issues"}
-          onClick={() => setMainView("issues")}
-          className={clsx(
-            "border-b-2 px-3 py-1.5 text-sm font-medium transition-colors",
-            mainView === "issues"
-              ? "border-yellow-500 text-yellow-300"
-              : "border-transparent text-yellow-500 hover:text-yellow-300",
-          )}
-          title={
-            issueBreakdown.length > 0
-              ? issueBreakdown
-                  .slice(0, 3)
-                  .map(
-                    (b) =>
-                      `${b.count} ${KIND_META[b.kind].label.toLowerCase()}`,
-                  )
-                  .join(" · ")
-              : undefined
-          }
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className="border-b-2 border-transparent px-3 py-1.5 text-sm font-medium text-neutral-400 transition-colors hover:text-neutral-200"
+          title="Application settings"
         >
-          {issueCount} {issueCount === 1 ? "issue" : "issues"}
+          ⚙ Settings
         </button>
-      )}
-      {/* Spacer pushes the utility cluster to the right edge. */}
-      <div className="flex-1" aria-hidden="true" />
-      {UTILITY_TABS.map(renderTab)}
-    </nav>
+      </nav>
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </>
   );
 }
