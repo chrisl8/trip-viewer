@@ -7,7 +7,7 @@
 //! dispatch with — bounded by three independent caps and the smallest
 //! one wins:
 //!
-//! 1. **Encoder/GPU cap.** NVENC session count + VRAM headroom; AMF and
+//! 1. **Encoder/GPU cap.** NVENC session count + VRAM headroom; AMF, QSV and
 //!    VA-API default to one job for integrated/shared-memory GPUs. libx265
 //!    saturates ~4 cores so logical_cores/4 is the natural cap.
 //! 2. **System-RAM cap.** Each parallel ffmpeg's filter graph + decoder
@@ -39,9 +39,9 @@ pub fn detect_recommended_concurrency(encoder: Encoder) -> usize {
         Encoder::HevcNvenc => detect_nvenc_concurrency(),
         // Integrated GPUs share memory with decoding and the OS. Keep their
         // automatic queue conservative until real-machine capacity is known.
-        Encoder::HevcAmf | Encoder::HevcVaapi => 1,
+        Encoder::HevcAmf | Encoder::HevcQsv | Encoder::HevcVaapi => 1,
         Encoder::LibX265 => detect_libx265_concurrency(),
-        // TODO when VideoToolbox/QSV land — each has its own
+        // TODO when VideoToolbox lands — each has its own
         // session/queue characteristics worth modeling here.
     };
     let encoder_capped = raw.clamp(1, MAX_CONCURRENCY);
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn shared_memory_hardware_encoders_default_to_one_job() {
-        for encoder in [Encoder::HevcAmf, Encoder::HevcVaapi] {
+        for encoder in [Encoder::HevcAmf, Encoder::HevcQsv, Encoder::HevcVaapi] {
             assert_eq!(detect_recommended_concurrency(encoder), 1);
         }
     }

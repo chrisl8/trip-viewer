@@ -7,6 +7,9 @@ test("verified encoder display agrees with native preference and old capability 
   expect(verifiedEncoderLabel({ ...base, amfHevc: true })).toBe("AMD / AMF");
   expect(verifiedEncoderLabel({ ...base, vaapiDevice: "/dev/dri/renderD129" })).toBe("GPU / VA-API");
   expect(verifiedEncoderLabel({ ...base, nvencHevc: true, amfHevc: true })).toBe("NVIDIA / NVENC");
+  expect(verifiedEncoderLabel({ ...base, qsvHevc: true })).toBe("Intel / QSV");
+  expect(verifiedEncoderLabel({ ...base, qsvHevc: true, amfHevc: true })).toBe("AMD / AMF");
+  expect(encoderLabel("hevc_qsv")).toBe("Intel / QSV");
   expect(encoderLabel("hevc_amf")).toBe("AMD / AMF");
   expect(encoderLabel("other_encoder")).toBe("other_encoder");
 });

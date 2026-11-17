@@ -43,6 +43,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub ffmpeg_amf_hevc: Option<bool>,
     #[serde(default)]
+    pub ffmpeg_qsv_hevc: Option<bool>,
+    #[serde(default)]
     pub ffmpeg_vaapi_device: Option<String>,
     /// Revision of the runtime encoder test. Invalidate older results when the
     /// supported GPU backends or pipeline verification change.

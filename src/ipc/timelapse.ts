@@ -11,6 +11,7 @@ export interface FfmpegCapabilities {
   version: string;
   nvencHevc: boolean;
   amfHevc?: boolean;
+  qsvHevc?: boolean;
   vaapiDevice?: string | null;
 }
 

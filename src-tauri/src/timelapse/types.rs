@@ -134,7 +134,7 @@ pub struct EventWindow {
 
 /// Capabilities reported by a configured ffmpeg binary. Populated by
 /// `ffmpeg::probe_ffmpeg` when the user runs the Test button in the
-/// settings dialog, and cached in the `settings` table so subsequent
+/// settings dialog, and cached in machine settings so subsequent
 /// settings can display the last result. Each encoding batch re-probes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,12 +143,15 @@ pub struct FfmpegCapabilities {
     /// Displayed in the settings dialog for sanity-check.
     pub version: String,
     /// Whether a bounded GPU HEVC encode/decode/scale test succeeded.
-    /// The worker prefers NVENC when available (15-40x realtime) and
-    /// falls back to `libx265` (0.5-2x realtime) when it isn't.
+    /// The worker prefers verified hardware; throughput depends on the source,
+    /// decode/filter work, driver and machine, not just the selected encoder.
     pub nvenc_hevc: bool,
     /// Runtime-verified AMD AMF encoder (Windows or supported Linux runtime).
     #[serde(default)]
     pub amf_hevc: bool,
+    /// Runtime-verified Intel Quick Sync hardware encoder on Windows.
+    #[serde(default)]
+    pub qsv_hevc: bool,
     /// First Linux render node whose VA-API HEVC pipeline passed the probe.
     #[serde(default)]
     pub vaapi_device: Option<String>,
