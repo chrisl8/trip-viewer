@@ -7,7 +7,12 @@ export const LABEL_REAR = "Rear";
  * Which dashcam produced a file/segment. Serialized as lowercase camelCase
  * to match the Rust `#[serde(rename_all = "camelCase")]` on `CameraKind`.
  */
-export type CameraKind = "wolfBox" | "thinkware" | "miltona" | "generic";
+export type CameraKind =
+  | "wolfBox"
+  | "thinkware"
+  | "miltona"
+  | "mai70"
+  | "generic";
 
 export interface Channel {
   /**
