@@ -82,7 +82,7 @@ The SD card import pipeline in `src-tauri/src/import/` has strict safety guarant
 
 ## Video layout rules
 
-1. Every channel reported by the active segment gets a `<ChannelPanel>` and stays mounted — hidden via CSS grid placement, not conditional rendering. Channel count is dashcam-dependent (1 for Miltona, 2 for Thinkware, 3 for Wolf Box, up to 4 for Generic).
+1. Every channel reported by the active segment gets a `<ChannelPanel>` and stays mounted — hidden via CSS grid placement, not conditional rendering. Channel count is dashcam-dependent (1 for Miltona, 2 for Thinkware, 3 for Wolf Box, 3 for 70mai, up to 4 for Generic).
 2. Refs are **stable per channel kind**, never swapped. The sync engine depends on this.
 3. Audio follows `isMaster` prop (which tracks `primaryChannel`); sync timing is always driven by the master ref (front when the dashcam has one, otherwise the first channel).
 4. On trip/segment change, `primaryChannel` resets to `null` in the store action; `VideoGrid` then sets it to the new segment's master channel.

@@ -78,7 +78,7 @@ On Windows the app renders front, interior, and rear simultaneously by default. 
 | Maps | Leaflet + react-leaflet + OpenStreetMap tiles |
 | Video sync | `requestVideoFrameCallback` API |
 | Container parsing | `mp4` crate (pure Rust) |
-| GPS decoding | Custom ShenShu MetaData binary parser (Wolf Box) + NovaTek `gps0` atom parser (Miltona) |
+| GPS decoding | Custom ShenShu MetaData binary parser (Wolf Box) + NovaTek `gps0` atom parser (Miltona) + per-frame telemetry-track parser (70mai) |
 | Audio analysis | `symphonia` (pure Rust decoder, AAC / MP3 / ISO-MP4) for silence detection |
 | File hashing | `sha2` crate (SHA-256, optimized in dev builds) |
 | Tag + Place store | SQLite via `rusqlite` (bundled) + `rusqlite_migration` |
@@ -141,11 +141,11 @@ File detection uses Wolf Box naming: `YYYY_MM_DD_HHMMSS_EE_C.MP4` where `EE` is 
 - **Interpolated vehicle marker** — smooth position updates between GPS samples
 - **Speed & heading HUD** — real-time readouts overlaid on the map panel; heading holds last moving direction when stopped, speed snaps to 0 at full stop
 - **Auto-pan with gesture release** — map follows the vehicle, but holds in place during user drag/zoom so you can inspect a moment without being yanked back
-- **Custom GPS parsers** — reverse-engineered ShenShu MetaData (Wolf Box) and NovaTek `gps0` atom (Miltona) binary formats
+- **Custom GPS parsers** — reverse-engineered ShenShu MetaData (Wolf Box), NovaTek `gps0` atom (Miltona), and 70mai per-frame telemetry-track binary formats
 
 ### Library & file management
 
-- **Multi-format dashcam support** — Wolf Box 3-channel, Thinkware 2-channel, Miltona MNCD60 single-channel, generic 4-channel. Modular parser architecture in `scan/naming.rs` for adding more.
+- **Multi-format dashcam support** — Wolf Box 3-channel, Thinkware 2-channel, Miltona MNCD60 single-channel, 70mai T800 3-channel, generic 4-channel. Modular parser architecture in `scan/naming.rs` for adding more.
 - **Folder scanner** — recursive MP4 discovery, per-format filename parsing, fuzzy triplet matching, trip grouping. Skips `Timelapses/` and dot-directories on rescan.
 - **SD card import** — full pipeline: discover removable drives → stage with SHA-256 verification → wipe source → distribute to Videos/Photos. Duplicate detection, collision handling, unknown file prompts, cancel support, interrupt safety, lock file with PID recovery, logging with 30-day rotation
 - **Import from a folder** — non-destructive variant of the same pipeline for files already on disk; no source wipe
@@ -192,7 +192,7 @@ File detection uses Wolf Box naming: `YYYY_MM_DD_HHMMSS_EE_C.MP4` where `EE` is 
 
 ### Medium-term (polish and generalize)
 
-- **More dashcam parsers** — Viofo, BlackVue, GoPro on top of the existing Wolf Box / Thinkware / Miltona / Generic 4-channel set. Modular naming-parser architecture is already in place; each addition is small.
+- **More dashcam parsers** — Viofo, BlackVue, GoPro on top of the existing Wolf Box / Thinkware / Miltona / 70mai / Generic 4-channel set. Modular naming-parser architecture is already in place; each addition is small.
 - **Speed/altitude/g-force graphs** — if accelerometer data is available in the GPS stream
 - **Clip export** — select a time range, export to a new MP4
 - **Snapshot capture** — save a frame as an image
