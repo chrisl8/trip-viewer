@@ -4,6 +4,8 @@
 pub mod mai70;
 pub mod miltona;
 pub mod shenshu;
+pub mod viofo;
+mod viofo_timing;
 
 use crate::archive::{require_db, ArchiveSlot};
 use crate::error::AppError;
@@ -44,21 +46,52 @@ pub async fn extract_gps(path: String, camera_kind: CameraKind) -> Result<Vec<Gp
 }
 
 #[tauri::command]
-pub async fn extract_gps_batch(
-    requests: Vec<GpsRequest>,
-) -> Result<Vec<GpsBatchItem>, AppError> {
-    let results: Vec<GpsBatchItem> = requests
+pub async fn extract_gps_batch(requests: Vec<GpsRequest>) -> Result<Vec<GpsBatchItem>, AppError> {
+    Ok(extract_batch(&requests))
+}
+
+enum Decoded {
+    Other(Vec<GpsPoint>),
+    Viofo(Vec<viofo::TimedGpsPoint>),
+}
+
+/// Keep input/descriptor order and validate adjacent VIOFO boundaries before
+/// discarding UTC evidence. Used by live extraction and archived GPS stitching.
+pub(crate) fn extract_batch(requests: &[GpsRequest]) -> Vec<GpsBatchItem> {
+    let mut decoded: Vec<Decoded> = requests
         .par_iter()
         .map(|req| {
-            let points =
-                extract_for_kind(Path::new(&req.path), req.camera_kind).unwrap_or_default();
-            GpsBatchItem {
-                file_path: req.path.clone(),
-                points,
+            if req.camera_kind == CameraKind::Viofo {
+                Decoded::Viofo(viofo::extract_video_timed(Path::new(&req.path)).unwrap_or_default())
+            } else {
+                Decoded::Other(
+                    extract_for_kind(Path::new(&req.path), req.camera_kind).unwrap_or_default(),
+                )
             }
         })
         .collect();
-    Ok(results)
+    for index in 0..decoded.len().saturating_sub(1) {
+        let (left, right) = decoded.split_at_mut(index + 1);
+        if let (Decoded::Viofo(left), Decoded::Viofo(right)) = (&mut left[index], &mut right[0]) {
+            viofo::validate_boundary(
+                &requests[index].path,
+                left,
+                &requests[index + 1].path,
+                right,
+            );
+        }
+    }
+    requests
+        .iter()
+        .zip(decoded)
+        .map(|(req, decoded)| GpsBatchItem {
+            file_path: req.path.clone(),
+            points: match decoded {
+                Decoded::Other(points) => points,
+                Decoded::Viofo(points) => points.into_iter().map(|p| p.point).collect(),
+            },
+        })
+        .collect()
 }
 
 /// Load archived trip-stitched GPS from the DB. Returns an empty vec
@@ -95,6 +128,7 @@ pub fn extract_for_kind(path: &Path, kind: CameraKind) -> Result<Vec<GpsPoint>, 
         // decoder and flip `CameraKind::gps_supported` for that variant.
         CameraKind::Thinkware => Ok(vec![]),
         CameraKind::Mai70 => mai70::extract(path),
+        CameraKind::Viofo => viofo::extract_video(path),
         // Generic fallback: try Wolf Box's decoder as a best-guess since
         // the ShenShu meta-track layout is the only one we know, but log
         // that we're guessing. Often this will just return an empty vec.

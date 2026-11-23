@@ -1,6 +1,6 @@
 //! Filename parsing with auto-detection across multiple dashcam formats.
 //!
-//! We try each parser in order (Wolf Box → Thinkware → Miltona → 70mai → Generic4Channel)
+//! We try each parser in order (Wolf Box → Thinkware → Miltona → 70mai → VIOFO → Generic4Channel)
 //! and use the first one that recognizes the filename. This lets the app
 //! accept footage from any supported dashcam without the user having to
 //! configure anything or rename files.
@@ -30,6 +30,8 @@ pub enum CameraKind {
     /// 70mai (4K T800 and likely other models using the same `NO…`/`EV…`
     /// naming). Serialized as `"mai70"`.
     Mai70,
+    /// VIOFO / Novatek files, serialized as `"viofo"`.
+    Viofo,
     Generic,
 }
 
@@ -48,6 +50,7 @@ impl CameraKind {
             // 70mai: GPS decoded from the per-frame telemetry track
             // (see `gps/mai70.rs`).
             CameraKind::Mai70 => true,
+            CameraKind::Viofo => true,
             // Unknown cameras: optimistically try — we'll get empty points
             // if there's nothing to extract and the UI will show "No GPS data"
             // (which correctly reflects our uncertainty).
@@ -96,6 +99,7 @@ fn parsers() -> Vec<Box<dyn FilenameParser>> {
         Box::new(ThinkwareParser),
         Box::new(MiltonaParser),
         Box::new(Mai70Parser),
+        Box::new(ViofoParser),
         Box::new(Generic4ChannelParser),
     ]
 }
@@ -791,5 +795,34 @@ mod tests {
         // Invalid month — Wolf Box parser rejects, generic parser also fails
         // because no timestamp substring parses.
         assert!(parse("2026_13_40_994634_00_F.MP4").is_err());
+    }
+}
+
+
+struct ViofoParser;
+impl FilenameParser for ViofoParser {
+    fn parse(&self, filename: &str) -> Option<ParsedName> { super::viofo::parse(filename) }
+}
+
+#[cfg(test)]
+mod viofo_integration_tests {
+    use super::*;
+
+    #[test]
+    fn dispatcher_selects_viofo_and_groups_channels_across_firmware_naming() {
+        for names in [
+            ["2025_0706_201953_F.MP4", "2025_0706_201953_I.MP4"],
+            ["2026_0831_065229_000646F.MP4", "2026_0831_065229_000647I.MP4"],
+            ["2023_0821_180010_062PF.MP4", "2023_0821_180010_063PI.MP4"],
+        ] {
+            let front = parse(names[0]).unwrap();
+            let interior = parse(names[1]).unwrap();
+            assert_eq!(front.camera_kind, CameraKind::Viofo);
+            assert_eq!(interior.camera_kind, CameraKind::Viofo);
+            assert_eq!(front.group_key, interior.group_key);
+            assert_eq!(front.channel_label, LABEL_FRONT);
+            assert_eq!(interior.channel_label, LABEL_INTERIOR);
+            assert_eq!(serde_json::to_string(&front.camera_kind).unwrap(), "\"viofo\"");
+        }
     }
 }

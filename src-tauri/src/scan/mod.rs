@@ -1,6 +1,7 @@
 pub mod errors;
 pub mod grouping;
 pub mod naming;
+pub mod viofo;
 pub mod walker;
 
 use crate::error::AppError;
