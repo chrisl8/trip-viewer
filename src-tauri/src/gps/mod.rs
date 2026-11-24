@@ -4,6 +4,7 @@
 pub mod mai70;
 pub mod miltona;
 pub mod shenshu;
+pub mod novatek;
 
 use crate::archive::{require_db, ArchiveSlot};
 use crate::error::AppError;
@@ -90,14 +91,14 @@ pub fn extract_for_kind(path: &Path, kind: CameraKind) -> Result<Vec<GpsPoint>, 
     match kind {
         CameraKind::WolfBox => shenshu::extract(path),
         CameraKind::Miltona => miltona::extract(path),
+        CameraKind::Viofo => novatek::extract(path),
         // Thinkware: no GPS decoder (the sample we have contains no GPS
         // data at all). If a GPS-equipped Thinkware model turns up, add a
         // decoder and flip `CameraKind::gps_supported` for that variant.
         CameraKind::Thinkware => Ok(vec![]),
         CameraKind::Mai70 => mai70::extract(path),
-        // Generic fallback: try Wolf Box's decoder as a best-guess since
-        // the ShenShu meta-track layout is the only one we know, but log
-        // that we're guessing. Often this will just return an empty vec.
-        CameraKind::Generic => shenshu::extract(path),
+        // Generic fallback: try NovaTek family's decoder as a best-guess.
+        // This will just return an empty vec if decoding fails.
+        CameraKind::Generic => novatek::extract(path),
     }
 }
