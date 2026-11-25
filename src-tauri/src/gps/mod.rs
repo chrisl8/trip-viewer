@@ -7,7 +7,7 @@ pub mod shenshu;
 pub mod viofo;
 pub mod viofo_timing;
 
-use crate::archive::{ArchiveSlot, require_db};
+use crate::archive::{require_db, ArchiveSlot};
 use crate::error::AppError;
 use crate::model::{GpsBatchItem, GpsPoint};
 use crate::scan::naming::CameraKind;
@@ -1563,11 +1563,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 0);
-        assert!(
-            crate::db::gps_cache::trip_gps::load(&conn, "trip")
-                .unwrap()
-                .is_none()
-        );
+        assert!(crate::db::gps_cache::trip_gps::load(&conn, "trip")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1595,15 +1593,13 @@ mod tests {
             camera_kind: CameraKind::Generic,
             paths: vec!["no-gps".into()],
         };
-        assert!(
-            select_segment_gps_checked(&source, |path, _| {
-                Ok(BatchGps::Plain(GpsBatchItem {
-                    file_path: path.into(),
-                    points: vec![],
-                }))
-            })
-            .is_ok()
-        );
+        assert!(select_segment_gps_checked(&source, |path, _| {
+            Ok(BatchGps::Plain(GpsBatchItem {
+                file_path: path.into(),
+                points: vec![],
+            }))
+        })
+        .is_ok());
     }
 
     #[test]

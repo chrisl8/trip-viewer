@@ -570,11 +570,9 @@ mod tests {
     fn invalid_box_bounds_are_rejected_before_reading() {
         let mut file = tempfile::tempfile().unwrap();
         for (file_len, offset, size) in [(8192, 0, 8193), (8192, u64::MAX - 2, 12), (8192, 0, 11)] {
-            assert!(
-                read_gps_free_box(&mut file, file_len, offset, size)
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(read_gps_free_box(&mut file, file_len, offset, size)
+                .unwrap()
+                .is_none());
         }
     }
 
