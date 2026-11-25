@@ -58,15 +58,22 @@ enum Decoded {
 /// Keep input/descriptor order and validate adjacent VIOFO boundaries before
 /// discarding UTC evidence. Used by live extraction and archived GPS stitching.
 pub(crate) fn extract_batch(requests: &[GpsRequest]) -> Vec<GpsBatchItem> {
+    extract_batch_with_other(requests, |path, kind| {
+        extract_for_kind(path, kind).unwrap_or_default()
+    })
+}
+
+fn extract_batch_with_other<F>(requests: &[GpsRequest], decode_other: F) -> Vec<GpsBatchItem>
+where
+    F: Fn(&Path, CameraKind) -> Vec<GpsPoint> + Sync,
+{
     let mut decoded: Vec<Decoded> = requests
         .par_iter()
         .map(|req| {
             if req.camera_kind == CameraKind::Viofo {
                 Decoded::Viofo(viofo::extract_video_timed(Path::new(&req.path)).unwrap_or_default())
             } else {
-                Decoded::Other(
-                    extract_for_kind(Path::new(&req.path), req.camera_kind).unwrap_or_default(),
-                )
+                Decoded::Other(decode_other(Path::new(&req.path), req.camera_kind))
             }
         })
         .collect();
@@ -133,5 +140,47 @@ pub fn extract_for_kind(path: &Path, kind: CameraKind) -> Result<Vec<GpsPoint>, 
         // the ShenShu meta-track layout is the only one we know, but log
         // that we're guessing. Often this will just return an empty vec.
         CameraKind::Generic => shenshu::extract(path),
+    }
+}
+
+#[cfg(test)]
+mod batch_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn non_viofo_points_and_request_order_pass_through_unchanged() {
+        let requests = [
+            GpsRequest {
+                path: "rear.mp4".into(),
+                camera_kind: CameraKind::Mai70,
+            },
+            GpsRequest {
+                path: "front.mp4".into(),
+                camera_kind: CameraKind::WolfBox,
+            },
+            GpsRequest {
+                path: "generic.mp4".into(),
+                camera_kind: CameraKind::Generic,
+            },
+        ];
+        let points = |kind| {
+            vec![GpsPoint {
+                t_offset_s: 1.25,
+                lat: if kind == CameraKind::Mai70 { 1.0 } else { 2.0 },
+                lon: 3.0,
+                speed_mps: 4.0,
+                heading_deg: 5.0,
+                altitude_m: 6.0,
+                fix_ok: true,
+            }]
+        };
+        let batch = extract_batch_with_other(&requests, |_, kind| points(kind));
+        for (request, result) in requests.iter().zip(&batch) {
+            assert_eq!(result.file_path, request.path);
+            assert_eq!(
+                serde_json::to_value(&result.points).unwrap(),
+                serde_json::to_value(points(request.camera_kind)).unwrap()
+            );
+        }
     }
 }

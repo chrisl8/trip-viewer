@@ -125,7 +125,7 @@ pub(crate) fn extract_timed(
     }
 
     let mut trusted = Vec::new();
-    for (record, validation) in decoded.into_iter().zip(validated.into_iter()) {
+    for (record, validation) in decoded.into_iter().zip(validated) {
         if !validation.usable_timed_position() {
             continue;
         }
@@ -265,7 +265,12 @@ fn read_gps_free_box(
     offset: u64,
     descriptor_size: u64,
 ) -> Result<Option<RawGpsRecord>, AppError> {
-    if offset.saturating_add(descriptor_size) > file_len || descriptor_size < 12 {
+    // Records are about 48 bytes; tolerate vendor headers without allocating
+    // arbitrary file-sized payloads for a corrupt descriptor.
+    const MAX_GPS_PAYLOAD_BYTES: u64 = 4096;
+    if offset.saturating_add(descriptor_size) > file_len
+        || !(12..=12 + MAX_GPS_PAYLOAD_BYTES).contains(&descriptor_size)
+    {
         return Ok(None);
     }
 
@@ -304,7 +309,7 @@ fn decode_packet(data: &[u8]) -> Option<RawGpsRecord> {
     let bearing = read_f32_le(data, offset + 40)? as f64;
 
     let utc = i32::try_from(year).ok().and_then(|year| {
-        NaiveDate::from_ymd_opt(2000 + year, month, day)
+        NaiveDate::from_ymd_opt(year.checked_add(2000)?, month, day)
             .and_then(|date| date.and_hms_opt(hour, minute, second))
     });
 
@@ -452,6 +457,58 @@ mod tests {
     fn converts_south_and_west() {
         assert!((nmea_coord_to_degrees(5332.5, b'S').unwrap() + 53.5416667).abs() < 0.00001);
         assert!((nmea_coord_to_degrees(1001.5, b'W').unwrap() + 10.025).abs() < 0.00001);
+    }
+
+    #[test]
+    fn corrupt_years_do_not_overflow_or_invent_a_timestamp() {
+        for year in [i32::MAX as u32 - 1, i32::MAX as u32, u32::MAX] {
+            let mut packet = sample_packet();
+            packet[12..16].copy_from_slice(&year.to_le_bytes());
+            let record = decode_packet(&packet).unwrap();
+            assert!(record.utc.is_none());
+            assert!(
+                record.latitude.is_some(),
+                "other fields remain available for validation"
+            );
+        }
+    }
+
+    // Layout adapted from @alinnastac's published A129 record test in PR #12,
+    // commit 919abfd, gps/novatek.rs::decodes_record_3_end_to_end. All telemetry
+    // values below are synthetic; the source's recording time/location are not
+    // copied into this fixture. A129's exact 44-byte size is the regression.
+    #[test]
+    fn a129_record_layout_decodes_without_trailing_padding() {
+        let mut packet = [0u8; 44];
+        for (offset, value) in [(0, 0u32), (4, 0), (8, 0), (12, 20), (16, 1), (20, 1)] {
+            packet[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        packet[24..27].copy_from_slice(b"ANE");
+        for (offset, value) in [(28, 100.0f32), (32, 100.0), (36, 10.0), (40, 90.0)] {
+            packet[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let record = decode_packet(&packet).unwrap();
+        assert_eq!(
+            record.utc.unwrap(),
+            NaiveDate::from_ymd_opt(2020, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+        );
+        assert_eq!(record.latitude, Some(1.0));
+        assert_eq!(record.longitude, Some(1.0));
+        assert_eq!(record.heading_deg, Some(90.0));
+        assert!((record.speed_mps.unwrap() - 10.0 * KNOT_TO_MPS).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn oversized_gps_payload_is_rejected_before_reading_or_allocating() {
+        let mut file = tempfile::tempfile().unwrap();
+        // An empty file suffices: acceptance would attempt a header read and
+        // error. The claimed descriptor lies inside the supplied file bound.
+        assert!(read_gps_free_box(&mut file, 8192, 0, 8192)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
