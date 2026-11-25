@@ -42,8 +42,7 @@ export function KeyboardShortcuts({ engine }: { engine: SyncEngine | null }) {
       switch (e.code) {
         case "Space":
           e.preventDefault();
-          if (store.isPlaying) engine.pause();
-          else void engine.play();
+          engine.togglePlayback();
           break;
 
         case "ArrowLeft":

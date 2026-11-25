@@ -265,11 +265,10 @@ fn read_gps_free_box(
     offset: u64,
     descriptor_size: u64,
 ) -> Result<Option<RawGpsRecord>, AppError> {
-    // Records are about 48 bytes; tolerate vendor headers without allocating
-    // arbitrary file-sized payloads for a corrupt descriptor.
-    const MAX_GPS_PAYLOAD_BYTES: u64 = 4096;
-    if offset.saturating_add(descriptor_size) > file_len
-        || !(12..=12 + MAX_GPS_PAYLOAD_BYTES).contains(&descriptor_size)
+    if descriptor_size < 12
+        || offset
+            .checked_add(descriptor_size)
+            .is_none_or(|end| end > file_len)
     {
         return Ok(None);
     }
@@ -282,10 +281,29 @@ fn read_gps_free_box(
         return Ok(None);
     }
 
-    let payload_len = descriptor_size.saturating_sub(12) as usize;
-    let mut payload = vec![0u8; payload_len];
-    file.read_exact(&mut payload)?;
-    Ok(decode_packet(&payload))
+    // The enclosing vendor box can be much larger than its 44-byte record.
+    // Preserve the original decoder's last-marker rule without allocating a
+    // buffer proportional to the declared box size. Adjacent reverse windows
+    // overlap by record_size - 1, so a record crossing a boundary is retained.
+    const RECORD_SIZE: u64 = 44;
+    const WINDOW_SIZE: u64 = 4096;
+    let mut buffer = [0u8; WINDOW_SIZE as usize];
+    let payload_start = offset + 12;
+    let mut end = descriptor_size - 12;
+    while end > 0 {
+        let start = end.saturating_sub(WINDOW_SIZE);
+        let len = (end - start) as usize;
+        file.seek(SeekFrom::Start(payload_start + start))?;
+        file.read_exact(&mut buffer[..len])?;
+        if find_record_offset(&buffer[..len]).is_some() {
+            return Ok(decode_packet(&buffer[..len]));
+        }
+        if start == 0 {
+            break;
+        }
+        end = start + RECORD_SIZE - 1;
+    }
+    Ok(None)
 }
 
 fn decode_packet(data: &[u8]) -> Option<RawGpsRecord> {
@@ -502,13 +520,62 @@ mod tests {
     }
 
     #[test]
-    fn oversized_gps_payload_is_rejected_before_reading_or_allocating() {
+    fn padded_gps_boxes_preserve_records_across_read_windows() {
+        // Former 4-KB rejection dropped all of these valid records. Cover the
+        // reverse window seam, including every byte of a record straddling it.
+        for record_start in (0..48)
+            .chain(4140..4226)
+            .chain(8190..8279)
+            .chain(12240..12335)
+            .chain([8150, 16300])
+        {
+            let mut payload = vec![0u8; 16384];
+            let record = sample_packet();
+            payload[record_start..record_start + record.len()].copy_from_slice(&record);
+            let size = (payload.len() + 12) as u32;
+            let mut file = tempfile::tempfile().unwrap();
+            file.write_all(&size.to_be_bytes()).unwrap();
+            file.write_all(b"freeGPS ").unwrap();
+            file.write_all(&payload).unwrap();
+            let streamed = read_gps_free_box(&mut file, u64::from(size), 0, u64::from(size))
+                .unwrap()
+                .unwrap();
+            let original = decode_packet(&payload).unwrap();
+            assert_eq!(streamed.utc, original.utc, "record start {record_start}");
+            assert_eq!(streamed.latitude, original.latitude);
+            assert_eq!(streamed.longitude, original.longitude);
+        }
+    }
+
+    #[test]
+    fn padded_box_preserves_the_original_last_marker_selection() {
+        let mut payload = vec![0u8; 16384];
+        let first = sample_packet();
+        let mut last = first.clone();
+        last[8..12].copy_from_slice(&30u32.to_le_bytes());
+        payload[1..1 + first.len()].copy_from_slice(&first);
+        payload[8000..8000 + last.len()].copy_from_slice(&last);
+        let size = (payload.len() + 12) as u32;
         let mut file = tempfile::tempfile().unwrap();
-        // An empty file suffices: acceptance would attempt a header read and
-        // error. The claimed descriptor lies inside the supplied file bound.
-        assert!(read_gps_free_box(&mut file, 8192, 0, 8192)
+        file.write_all(&size.to_be_bytes()).unwrap();
+        file.write_all(b"freeGPS ").unwrap();
+        file.write_all(&payload).unwrap();
+        let streamed = read_gps_free_box(&mut file, u64::from(size), 0, u64::from(size))
             .unwrap()
-            .is_none());
+            .unwrap();
+        assert_eq!(streamed.utc, decode_packet(&payload).unwrap().utc);
+    }
+
+    #[test]
+    fn invalid_box_bounds_are_rejected_before_reading() {
+        let mut file = tempfile::tempfile().unwrap();
+        for (file_len, offset, size) in [(8192, 0, 8193), (8192, u64::MAX - 2, 12), (8192, 0, 11)] {
+            assert!(
+                read_gps_free_box(&mut file, file_len, offset, size)
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]
@@ -651,7 +718,7 @@ fn boundary_has_local_utc_continuity(left: &[TimedGpsPoint], right: &[TimedGpsPo
     boundary_times_are_locally_continuous(&left_times, &right_times)
 }
 
-fn boundary_times_are_locally_continuous(left: &[i64], right: &[i64]) -> bool {
+pub(super) fn boundary_times_are_locally_continuous(left: &[i64], right: &[i64]) -> bool {
     if left.len() < 2 || right.len() < 2 {
         return false;
     }

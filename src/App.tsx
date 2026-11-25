@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { TripLoader } from "./components/loader/TripLoader";
+import { TripLoader, useArchiveAutoScan } from "./components/loader/TripLoader";
 import { TripList } from "./components/loader/TripList";
 import { HevcSupportGate } from "./components/video/HevcSupportGate";
 import { MainNavTabs } from "./components/MainNavTabs";
@@ -20,6 +20,7 @@ import { ReviewView } from "./components/review/ReviewView";
 import { PlacesView } from "./components/places/PlacesView";
 import { TimelapseView } from "./components/timelapse/TimelapseView";
 import { useStore } from "./state/store";
+import { restoreArchive } from "./state/archiveNavigation";
 import { formatBytes } from "./utils/format";
 import { KIND_META, kindCounts } from "./utils/issueKinds";
 import {
@@ -42,6 +43,7 @@ import {
 import { StartupSplash } from "./components/StartupSplash";
 
 function App() {
+  useArchiveAutoScan();
   const trips = useStore((s) => s.trips);
   const scanErrors = useStore((s) => s.scanErrors);
   const status = useStore((s) => s.status);
@@ -71,18 +73,7 @@ function App() {
     // there's no archive open we mark the library "first load done"
     // immediately — there's nothing to load and the sidebar would
     // otherwise spin forever.
-    void import("./ipc/archive")
-      .then(({ currentArchive }) => currentArchive())
-      .then((info) => {
-        useStore.getState().setCurrentArchive(info);
-        if (!info) {
-          useStore.setState({ libraryFirstLoadDone: true });
-        }
-      })
-      .catch((e) => {
-        console.error("currentArchive hydration failed", e);
-        useStore.setState({ libraryFirstLoadDone: true });
-      });
+    void restoreArchive();
     void useStore.getState().loadUserApplicableTags();
     void useStore.getState().refreshPlaces();
     // Load ffmpeg path + capabilities eagerly so that by the time the
@@ -250,6 +241,17 @@ function App() {
   }, []);
 
   const issueCount = scanErrors.length;
+  // Keep PlayerShell mounted while the user visits Scan/Review/Timelapse.
+  // Unmounting it tears down three WebKitGTK/GStreamer pipelines and returning
+  // immediately recreates them; repeated cycles are what preceded the
+  // WebLoaderStrategy internal errors seen in the runtime log. Pause playback
+  // when leaving the Player, but retain all media elements and their buffers.
+  useEffect(() => {
+    if (mainView !== "player") {
+      window.dispatchEvent(new Event("tripviewer:pause-playback"));
+    }
+  }, [mainView]);
+
   const issuesOpen = mainView === "issues";
   const issueBreakdown = kindCounts(scanErrors);
 
@@ -368,6 +370,17 @@ function App() {
       <main className="flex flex-1 flex-col overflow-hidden">
         <MainNavTabs />
         <div className="flex flex-1 flex-col overflow-hidden">
+          <div
+            className={
+              mainView === "player"
+                ? "flex min-h-0 flex-1 flex-col"
+                : "hidden"
+            }
+            aria-hidden={mainView !== "player"}
+          >
+            <PlayerShell />
+          </div>
+
           {mainView === "issues" ? (
             <IssuesView />
           ) : mainView === "scan" ? (
@@ -378,9 +391,7 @@ function App() {
             <PlacesView />
           ) : mainView === "timelapse" ? (
             <TimelapseView />
-          ) : (
-            <PlayerShell />
-          )}
+          ) : null}
         </div>
       </main>
     </div>

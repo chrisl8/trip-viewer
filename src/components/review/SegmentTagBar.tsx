@@ -69,7 +69,16 @@ export function SegmentTagBar({ segment }: Props) {
 
   function onSaveAsPlace() {
     const path = segment.channels[0]?.filePath;
-    const points = path ? gpsByFile[path] ?? [] : [];
+    const state = useStore.getState();
+    const trip = state.trips.find((candidate) => candidate.id === selectedTripId);
+    const cached = trip ? state.tripGpsByTrip[trip.id] : undefined;
+    const index = trip?.segments.findIndex((item) => item.id === segment.id) ?? -1;
+    const offset = trip && index >= 0
+      ? trip.segments.slice(0, index).reduce((sum, item) => sum + item.durationS, 0)
+      : 0;
+    const points = cached && index >= 0
+      ? cached.filter((point) => point.tOffsetS >= offset && point.tOffsetS <= offset + segment.durationS)
+      : path ? gpsByFile[path] ?? [] : [];
     const locked = points.filter((p) => p.fixOk);
     if (locked.length === 0) {
       // Open the dialog empty so the user can type lat/lon manually.
