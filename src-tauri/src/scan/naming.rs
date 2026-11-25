@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub enum EventMode {
     Normal,
     Event,
+    Parking,
+    ParkingEvent,
     Other(u8),
 }
 
@@ -136,8 +138,7 @@ impl FilenameParser for WolfBoxParser {
             (parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]);
 
         let dt_str = format!("{year}_{month}_{day}_{hms}");
-        let start_time =
-            NaiveDateTime::parse_from_str(&dt_str, "%Y_%m_%d_%H%M%S").ok()?;
+        let start_time = NaiveDateTime::parse_from_str(&dt_str, "%Y_%m_%d_%H%M%S").ok()?;
 
         let event_mode = match event_code {
             "00" => EventMode::Normal,
@@ -189,8 +190,9 @@ impl FilenameParser for ThinkwareParser {
             return None;
         }
 
-        let (prefix, year, month, day, hh, mm, ss, chan) =
-            (parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]);
+        let (prefix, year, month, day, hh, mm, ss, chan) = (
+            parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7],
+        );
 
         // Prefix must be 3 uppercase ASCII letters. This keeps us from
         // eagerly matching unrelated formats that happen to have 8 parts.
@@ -206,8 +208,7 @@ impl FilenameParser for ThinkwareParser {
         };
 
         let dt_str = format!("{year}-{month}-{day}T{hh}:{mm}:{ss}");
-        let start_time =
-            NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%dT%H:%M:%S").ok()?;
+        let start_time = NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%dT%H:%M:%S").ok()?;
 
         let channel_label = match chan {
             "F" => LABEL_FRONT.to_string(),
@@ -290,8 +291,7 @@ impl FilenameParser for MiltonaParser {
             mi,
             se
         );
-        let start_time =
-            NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%dT%H:%M:%S").ok()?;
+        let start_time = NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%dT%H:%M:%S").ok()?;
 
         let channel_label = match chan {
             "F" => LABEL_FRONT.to_string(),
@@ -456,9 +456,7 @@ fn find_timestamp(parts: &[&str]) -> Option<(NaiveDateTime, String)> {
     for i in 0..parts.len().saturating_sub(3) {
         let window = &parts[i..i + 4];
         let dt_str = format!("{}_{}_{}_{}", window[0], window[1], window[2], window[3]);
-        if let Ok(dt) =
-            NaiveDateTime::parse_from_str(&dt_str, "%Y_%m_%d_%H%M%S")
-        {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&dt_str, "%Y_%m_%d_%H%M%S") {
             return Some((dt, dt_str));
         }
     }
@@ -474,6 +472,70 @@ fn find_timestamp(parts: &[&str]) -> Option<(NaiveDateTime, String)> {
         }
     }
     None
+}
+
+struct ViofoParser;
+impl FilenameParser for ViofoParser {
+    fn parse(&self, filename: &str) -> Option<ParsedName> {
+        super::viofo::parse(filename)
+    }
+}
+
+/// Folder context is evidence for VIOFO protected clips; filename parsing alone
+/// deliberately stays independent of where the file happens to be opened.
+pub fn parse_path(path: &std::path::Path) -> Result<ParsedName, AppError> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let parsed = parse(name)?;
+    Ok(super::viofo::apply_path_context(parsed, path))
+}
+
+#[cfg(test)]
+mod viofo_integration_tests {
+    use super::*;
+
+    #[test]
+    fn viofo_does_not_collide_with_other_parsers() {
+        for (name, kind) in [
+            ("2020_01_01_120000_00_F.MP4", CameraKind::WolfBox),
+            ("REC_2020_01_01_12_00_00_F.MP4", CameraKind::Thinkware),
+            ("FILE200101-120000-000001F.MOV", CameraKind::Miltona),
+            ("NO20200101-120000-000001F.MP4", CameraKind::Mai70),
+            ("sample_2020_01_01_120000_1.MP4", CameraKind::Generic),
+        ] {
+            assert!(
+                super::super::viofo::parse(name).is_none(),
+                "VIOFO must reject {name}"
+            );
+            assert_eq!(parse(name).unwrap().camera_kind, kind);
+        }
+    }
+
+    #[test]
+    fn dispatcher_selects_viofo_and_groups_channels_across_firmware_naming() {
+        for names in [
+            ["2025_0706_201953_F.MP4", "2025_0706_201953_I.MP4"],
+            [
+                "2026_0831_065229_000646F.MP4",
+                "2026_0831_065229_000647I.MP4",
+            ],
+            ["2023_0821_180010_062PF.MP4", "2023_0821_180010_063PI.MP4"],
+        ] {
+            let front = parse(names[0]).unwrap();
+            let interior = parse(names[1]).unwrap();
+            assert_eq!(front.camera_kind, CameraKind::Viofo);
+            assert_eq!(interior.camera_kind, CameraKind::Viofo);
+            assert_eq!(front.group_key, interior.group_key);
+            assert_eq!(front.channel_label, LABEL_FRONT);
+            assert_eq!(interior.channel_label, LABEL_INTERIOR);
+            assert_eq!(
+                serde_json::to_string(&front.camera_kind).unwrap(),
+                "\"viofo\""
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -641,8 +703,10 @@ mod tests {
         // not a realistic concern for this brand. The test documents the
         // decision so it shows up if someone greps for "2100".
         let p = parse("FILE991202-151504-000406F.MOV").unwrap();
-        assert_eq!(p.start_time.date(),
-            NaiveDate::from_ymd_opt(2099, 12, 2).unwrap());
+        assert_eq!(
+            p.start_time.date(),
+            NaiveDate::from_ymd_opt(2099, 12, 2).unwrap()
+        );
     }
 
     #[test]
@@ -665,9 +729,7 @@ mod tests {
         assert!(ThinkwareParser
             .parse("FILE211202-151504-000406F.MOV")
             .is_none());
-        assert!(MiltonaParser
-            .parse("2026_03_15_173951_02_F.MP4")
-            .is_none());
+        assert!(MiltonaParser.parse("2026_03_15_173951_02_F.MP4").is_none());
         assert!(MiltonaParser
             .parse("REC_2026_03_06_07_25_52_F.MP4")
             .is_none());
@@ -795,34 +857,5 @@ mod tests {
         // Invalid month — Wolf Box parser rejects, generic parser also fails
         // because no timestamp substring parses.
         assert!(parse("2026_13_40_994634_00_F.MP4").is_err());
-    }
-}
-
-
-struct ViofoParser;
-impl FilenameParser for ViofoParser {
-    fn parse(&self, filename: &str) -> Option<ParsedName> { super::viofo::parse(filename) }
-}
-
-#[cfg(test)]
-mod viofo_integration_tests {
-    use super::*;
-
-    #[test]
-    fn dispatcher_selects_viofo_and_groups_channels_across_firmware_naming() {
-        for names in [
-            ["2025_0706_201953_F.MP4", "2025_0706_201953_I.MP4"],
-            ["2026_0831_065229_000646F.MP4", "2026_0831_065229_000647I.MP4"],
-            ["2023_0821_180010_062PF.MP4", "2023_0821_180010_063PI.MP4"],
-        ] {
-            let front = parse(names[0]).unwrap();
-            let interior = parse(names[1]).unwrap();
-            assert_eq!(front.camera_kind, CameraKind::Viofo);
-            assert_eq!(interior.camera_kind, CameraKind::Viofo);
-            assert_eq!(front.group_key, interior.group_key);
-            assert_eq!(front.channel_label, LABEL_FRONT);
-            assert_eq!(interior.channel_label, LABEL_INTERIOR);
-            assert_eq!(serde_json::to_string(&front.camera_kind).unwrap(), "\"viofo\"");
-        }
     }
 }

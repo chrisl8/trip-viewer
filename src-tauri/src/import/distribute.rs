@@ -34,11 +34,14 @@ pub(crate) fn distribute_files(
     }
 
     logger.info("Phase 4: Distributing files");
-    let _ = app.emit("import:phase", super::types::ImportPhaseChange {
-        phase: ImportPhase::Distributing,
-        source_label: String::new(),
-        message: "Distributing files".to_string(),
-    });
+    let _ = app.emit(
+        "import:phase",
+        super::types::ImportPhaseChange {
+            phase: ImportPhase::Distributing,
+            source_label: String::new(),
+            message: "Distributing files".to_string(),
+        },
+    );
 
     let videos_dir = root_path.join("Videos");
     let photos_dir = root_path.join("Photos");
@@ -70,16 +73,19 @@ pub(crate) fn distribute_files(
             .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
             .unwrap_or_default();
 
-        let _ = app.emit("import:progress", ImportProgress {
-            phase: ImportPhase::Distributing,
-            source_label: String::new(),
-            files_done: (i + 1) as u32,
-            files_total: total,
-            bytes_done: 0,
-            bytes_total: 0,
-            current_file: filename.clone(),
-            speed_bps: 0.0,
-        });
+        let _ = app.emit(
+            "import:progress",
+            ImportProgress {
+                phase: ImportPhase::Distributing,
+                source_label: String::new(),
+                files_done: (i + 1) as u32,
+                files_total: total,
+                bytes_done: 0,
+                bytes_total: 0,
+                current_file: filename.clone(),
+                speed_bps: 0.0,
+            },
+        );
 
         // PreAllocFile — delete
         if filename.starts_with(".PreAllocFile_") {
@@ -96,15 +102,16 @@ pub(crate) fn distribute_files(
         }
 
         // Classify by extension
+        let video_dir = video_destination(&videos_dir, Path::new(&entry.rel_path));
         let dest_dir = match ext.as_str() {
-            ".mp4" => Some(&videos_dir),
-            ".jpg" | ".jpeg" | ".png" => Some(&photos_dir),
+            ".mp4" => Some(video_dir.as_path()),
+            ".jpg" | ".jpeg" | ".png" => Some(photos_dir.as_path()),
             _ => None,
         };
 
         if let Some(dest_dir) = dest_dir {
-            let (moved, is_dup) =
-                move_to_destination(entry, dest_dir, app, logger)?;
+            fs::create_dir_all(dest_dir)?;
+            let (moved, is_dup) = move_to_destination(entry, dest_dir, app, logger)?;
             if is_dup {
                 result.dups_skipped += 1;
             } else if moved {
@@ -146,6 +153,21 @@ pub(crate) fn distribute_files(
     ));
 
     Ok((result, unknowns))
+}
+
+/// Keep VIOFO's protected-recording evidence when otherwise flattening imports.
+/// This also prevents a normal and protected same-name file overwriting or
+/// deduplicating each other solely because their source directories differed.
+fn video_destination(videos: &Path, source_relative: &Path) -> std::path::PathBuf {
+    let viofo = source_relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(crate::scan::viofo::is_viofo_filename);
+    if viofo && crate::scan::viofo::is_read_only_path(source_relative) {
+        videos.join("RO")
+    } else {
+        videos.to_path_buf()
+    }
 }
 
 /// Move a file to the destination directory, handling collisions and duplicates.
@@ -211,14 +233,16 @@ fn move_to_destination(
 
     move_file(&entry.staged_path, &renamed_path)?;
 
-    let msg = format!(
-        "Name collision with different content: {filename} — saved as {renamed_name}"
-    );
+    let msg =
+        format!("Name collision with different content: {filename} — saved as {renamed_name}");
     logger.warn(&msg);
-    let _ = app.emit("import:warning", ImportWarning {
-        message: msg,
-        source_label: String::new(),
-    });
+    let _ = app.emit(
+        "import:warning",
+        ImportWarning {
+            message: msg,
+            source_label: String::new(),
+        },
+    );
 
     Ok((true, false))
 }
@@ -304,9 +328,7 @@ pub(crate) fn apply_unknown_decisions(
 /// Extract a date string from a Wolf Box filename like `2026_04_08_163201_00_F.MP4`.
 /// Returns `"2026-04-08"` format for easy sorting and display.
 fn extract_date_from_filename(filename: &str) -> Option<String> {
-    let stem = Path::new(filename)
-        .file_stem()?
-        .to_string_lossy();
+    let stem = Path::new(filename).file_stem()?.to_string_lossy();
     let parts: Vec<&str> = stem.split('_').collect();
     if parts.len() < 3 {
         return None;
@@ -325,5 +347,36 @@ fn extract_date_from_filename(filename: &str) -> Option<String> {
         Some(format!("{year}-{month}-{day}"))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod viofo_destination_tests {
+    use super::*;
+
+    #[test]
+    fn protected_viofo_import_preserves_context_without_changing_other_cameras() {
+        let videos = Path::new("Videos");
+        for path in [
+            "RO/2020_0101_120000_F.MP4",
+            "DCIM/ro/2020_0101_120000_R.MP4",
+        ] {
+            let destination = video_destination(videos, Path::new(path));
+            assert_eq!(destination, videos.join("RO"));
+            let imported = destination.join(Path::new(path).file_name().unwrap());
+            assert_eq!(
+                crate::scan::naming::parse_path(&imported)
+                    .unwrap()
+                    .event_mode,
+                crate::scan::naming::EventMode::Event
+            );
+        }
+        for path in [
+            "DCIM/2020_0101_120000_F.MP4",
+            "ROAD/2020_0101_120000_F.MP4",
+            "RO/2020_01_01_120000_00_F.MP4",
+        ] {
+            assert_eq!(video_destination(videos, Path::new(path)), videos);
+        }
     }
 }

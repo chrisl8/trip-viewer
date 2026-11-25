@@ -81,7 +81,11 @@ pub fn parse(filename: &str) -> Option<ParsedName> {
 
     Some(ParsedName {
         start_time,
-        event_mode: EventMode::Normal,
+        event_mode: if parking {
+            EventMode::Parking
+        } else {
+            EventMode::Normal
+        },
         channel_label,
         group_key,
         camera_kind: CameraKind::Viofo,
@@ -90,6 +94,36 @@ pub fn parse(filename: &str) -> Option<ParsedName> {
 
 pub fn is_viofo_filename(filename: &str) -> bool {
     parse(filename).is_some()
+}
+
+/// VIOFO stores protected/event recordings under RO, including nested imports.
+/// Match a complete directory component, never unrelated names such as ROAD.
+pub(crate) fn is_read_only_path(path: &std::path::Path) -> bool {
+    path.parent().is_some_and(|parent| {
+        parent.components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case("RO"))
+        })
+    })
+}
+
+pub(crate) fn apply_path_context(mut parsed: ParsedName, path: &std::path::Path) -> ParsedName {
+    if parsed.camera_kind == CameraKind::Viofo && is_read_only_path(path) {
+        match parsed.event_mode {
+            EventMode::Normal => {
+                parsed.event_mode = EventMode::Event;
+                parsed.group_key.push_str("_RO");
+            }
+            EventMode::Parking => {
+                parsed.event_mode = EventMode::ParkingEvent;
+                parsed.group_key.push_str("_RO");
+            }
+            _ => {} // Idempotent when scanner and grouping both apply context.
+        }
+    }
+    parsed
 }
 
 fn strip_mp4_ext(filename: &str) -> Option<&str> {
