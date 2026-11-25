@@ -3,8 +3,15 @@ import { healthyLineup } from "./channelHealth";
 
 describe("channel-local failover", () => {
   const labels = ["Front", "Interior", "Rear"];
-  const orders = labels.flatMap((first) => labels.filter((second) => second !== first)
-    .map((second) => [first, second, labels.find((last) => last !== first && last !== second)!]));
+  const orders = labels.flatMap((first) =>
+    labels
+      .filter((second) => second !== first)
+      .map((second) => [
+        first,
+        second,
+        labels.find((last) => last !== first && last !== second)!,
+      ]),
+  );
   for (const order of orders) {
     it(`isolates independent failures and preserves the promoted master: ${order}`, () => {
       const failed = new Set<string>();
@@ -27,6 +34,10 @@ describe("channel-local failover", () => {
     });
   }
   it("does not switch back when the canonical master recovers", () => {
-    expect(healthyLineup(labels, new Set(), "Interior")).toEqual(["Interior", "Front", "Rear"]);
+    expect(healthyLineup(labels, new Set(), "Interior")).toEqual([
+      "Interior",
+      "Front",
+      "Rear",
+    ]);
   });
 });

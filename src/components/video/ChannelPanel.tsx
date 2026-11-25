@@ -90,18 +90,21 @@ interface Props {
 }
 
 export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
-  function ChannelPanel({
-    label,
-    src,
-    filePath,
-    isMaster,
-    audioEnabled,
-    onClick,
-    onDoubleClick,
-    onContextMenu,
-    onMediaError,
-    onMediaRecovered,
-  }, ref) {
+  function ChannelPanel(
+    {
+      label,
+      src,
+      filePath,
+      isMaster,
+      audioEnabled,
+      onClick,
+      onDoubleClick,
+      onContextMenu,
+      onMediaError,
+      onMediaRecovered,
+    },
+    ref,
+  ) {
     const [error, setError] = useState<string | null>(null);
     const [ready, setReady] = useState(false);
     // True while this channel is in a coverage gap (camera was off for
@@ -165,7 +168,10 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           if (!cancelled) {
             setHealthRanges(ranges);
             const t = useStore.getState().currentTime;
-            const known = ranges.find((range) => t >= range.startS && (range.endS === null || t < range.endS));
+            const known = ranges.find(
+              (range) =>
+                t >= range.startS && (range.endS === null || t < range.endS),
+            );
             if (known) {
               failureRangeRef.current = known;
               failedRef.current = true;
@@ -177,7 +183,10 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           }
         })
         .catch((healthError) => {
-          console.warn(`[media/${label}] health cache load failed:`, healthError);
+          console.warn(
+            `[media/${label}] health cache load failed:`,
+            healthError,
+          );
           if (!cancelled && localRef.current) localRef.current.src = src;
         });
       return () => {
@@ -295,18 +304,28 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
       probe.src = src;
       probe.muted = true;
       probe.playsInline = true;
-      probe.style.cssText = "position:fixed;top:0;left:0;z-index:2147483647;width:1px;height:1px;opacity:0.01;pointer-events:none";
+      probe.style.cssText =
+        "position:fixed;top:0;left:0;z-index:2147483647;width:1px;height:1px;opacity:0.01;pointer-events:none";
       probe.setAttribute("aria-hidden", "true");
       document.body.appendChild(probe);
 
       const run = async () => {
         let attempt = 0;
-        while (!cancelled && failedRef.current && epoch === sourceEpochRef.current) {
+        while (
+          !cancelled &&
+          failedRef.current &&
+          epoch === sourceEpochRef.current
+        ) {
           const nowT = useStore.getState().currentTime;
           const known = failureRangeRef.current;
           await delay(recoveryDelayMs(attempt, nowT, known));
           const currentT = useStore.getState().currentTime;
-          if (known?.endS != null && currentT >= known.startS && currentT < known.endS) continue;
+          if (
+            known?.endS != null &&
+            currentT >= known.startS &&
+            currentT < known.endS
+          )
+            continue;
           if (
             cancelled ||
             !failedRef.current ||
@@ -322,7 +341,11 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           if (ok && !cancelled && epoch === sourceEpochRef.current) {
             probingRef.current = true;
             if (video.getAttribute("src") !== src) video.src = src;
-            ok = await probeVideoAt(video, useStore.getState().currentTime, abort.signal);
+            ok = await probeVideoAt(
+              video,
+              useStore.getState().currentTime,
+              abort.signal,
+            );
             probingRef.current = false;
           }
 
@@ -339,16 +362,22 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
             setError(null);
             setReady(true);
             const recoveredAt = video.currentTime;
-            setHealthRanges((ranges) => ranges.map((range) =>
-              range.endS === null && range.startS <= recoveredAt
-                ? { ...range, endS: recoveredAt } : range));
+            setHealthRanges((ranges) =>
+              ranges.map((range) =>
+                range.endS === null && range.startS <= recoveredAt
+                  ? { ...range, endS: recoveredAt }
+                  : range,
+              ),
+            );
             failureRangeRef.current = undefined;
-            void recordMediaRecovery(filePath, recoveredAt).catch((healthError) => {
-              console.warn(
-                `[media/${label}] health cache recovery write failed:`,
-                healthError,
-              );
-            });
+            void recordMediaRecovery(filePath, recoveredAt).catch(
+              (healthError) => {
+                console.warn(
+                  `[media/${label}] health cache recovery write failed:`,
+                  healthError,
+                );
+              },
+            );
             onMediaRecovered?.(label);
             return;
           }
@@ -358,13 +387,21 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
           // the next session rediscover the continuation again.
           if (known?.endS != null) {
             const continued: MediaHealthRange = {
-              path: filePath, startS: target, endS: null, errorKind: known.errorKind,
+              path: filePath,
+              startS: target,
+              endS: null,
+              errorKind: known.errorKind,
             };
             failureRangeRef.current = continued;
             setHealthRanges((ranges) => [...ranges, continued]);
-            void recordMediaFailure(filePath, target, known.errorKind).catch((healthError) => {
-              console.warn(`[media/${label}] continued failure write failed:`, healthError);
-            });
+            void recordMediaFailure(filePath, target, known.errorKind).catch(
+              (healthError) => {
+                console.warn(
+                  `[media/${label}] continued failure write failed:`,
+                  healthError,
+                );
+              },
+            );
           }
 
           attempt += 1;
@@ -524,7 +561,7 @@ export const ChannelPanel = forwardRef<HTMLVideoElement, Props>(
             };
             const displayMessage = message
               ? `${map[code] ?? `playback error ${code}`}: ${message}`
-              : map[code] ?? `playback error ${code}`;
+              : (map[code] ?? `playback error ${code}`);
 
             // Probe failures are expected while a channel is isolated. The
             // recovery loop owns their backoff and must not repeatedly rebuild

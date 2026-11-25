@@ -63,27 +63,37 @@ export function PlayerShell() {
   const resyncViewer = useCallback(() => {
     window.dispatchEvent(new Event("tripviewer:resync-playback"));
   }, []);
-  const onToggleFullscreen = useCallback(async (label: string) => {
-    if (fullscreenTransition.current) return;
-    fullscreenTransition.current = true;
-    try {
-      await toggleViewerFullscreen(viewerRef.current, label,
-        fullscreenLabelRef.current, commitFullscreen, resyncViewer);
-    } catch (error) {
-      console.warn("[viewer] fullscreen request failed", error);
-    } finally {
-      fullscreenTransition.current = false;
-    }
-  }, [commitFullscreen, resyncViewer]);
+  const onToggleFullscreen = useCallback(
+    async (label: string) => {
+      if (fullscreenTransition.current) return;
+      fullscreenTransition.current = true;
+      try {
+        await toggleViewerFullscreen(
+          viewerRef.current,
+          label,
+          fullscreenLabelRef.current,
+          commitFullscreen,
+          resyncViewer,
+        );
+      } catch (error) {
+        console.warn("[viewer] fullscreen request failed", error);
+      } finally {
+        fullscreenTransition.current = false;
+      }
+    },
+    [commitFullscreen, resyncViewer],
+  );
   useEffect(() => {
     const onFullscreenChange = () => {
-      if (viewerRef.current && document.fullscreenElement === viewerRef.current) return;
+      if (viewerRef.current && document.fullscreenElement === viewerRef.current)
+        return;
       if (fullscreenLabelRef.current === null) return;
       commitFullscreen(null);
       resyncViewer();
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, [commitFullscreen, resyncViewer]);
   const shouldAutoPlay = useRef(false);
   const pendingSeekRef = useRef<number | null>(null);
@@ -200,8 +210,11 @@ export function PlayerShell() {
 
   useEffect(() => {
     const label = fullscreenLabelRef.current;
-    if (label && activeSegmentForVideo &&
-        !activeSegmentForVideo.channels.some(channel => channel.label === label)) {
+    if (
+      label &&
+      activeSegmentForVideo &&
+      !activeSegmentForVideo.channels.some((channel) => channel.label === label)
+    ) {
       commitFullscreen(null);
       resyncViewer();
     }
@@ -239,7 +252,11 @@ export function PlayerShell() {
   }, [sourceMode, trip, timelapseJobs]);
 
   const syncChannelLabels = useMemo(() => {
-    return healthyLineup(channelLabels, failedChannelLabels, stickySyncMasterLabel);
+    return healthyLineup(
+      channelLabels,
+      failedChannelLabels,
+      stickySyncMasterLabel,
+    );
   }, [channelLabels, failedChannelLabels, stickySyncMasterLabel]);
   const syncMasterLabel = syncChannelLabels[0] ?? null;
 
@@ -268,7 +285,11 @@ export function PlayerShell() {
       failed.add(label);
       failedChannelLabelsRef.current = failed;
 
-      const healthy = healthyLineup(channelLabels, failed, stickyMasterRef.current);
+      const healthy = healthyLineup(
+        channelLabels,
+        failed,
+        stickyMasterRef.current,
+      );
 
       // Preserve logical position and play intent while the engine rebuilds
       // without this camera. If the failed channel owned the clock, promote
@@ -314,23 +335,30 @@ export function PlayerShell() {
     [channelLabels],
   );
 
-  const handleChannelMediaRecovered = useCallback((label: string) => {
-    const failed = new Set(failedChannelLabelsRef.current);
-    if (!failed.delete(label)) return;
-    failedChannelLabelsRef.current = failed;
-    const healthy = healthyLineup(channelLabels, failed, stickyMasterRef.current);
-    stickyMasterRef.current = healthy[0] ?? null;
-    setStickySyncMasterLabel(stickyMasterRef.current);
+  const handleChannelMediaRecovered = useCallback(
+    (label: string) => {
+      const failed = new Set(failedChannelLabelsRef.current);
+      if (!failed.delete(label)) return;
+      failedChannelLabelsRef.current = failed;
+      const healthy = healthyLineup(
+        channelLabels,
+        failed,
+        stickyMasterRef.current,
+      );
+      stickyMasterRef.current = healthy[0] ?? null;
+      setStickySyncMasterLabel(stickyMasterRef.current);
 
-    const state = useStore.getState();
-    pendingSeekRef.current = state.currentTime;
-    if (state.isPlaying) shouldAutoPlay.current = true;
-    setFailedChannelLabels(new Set(failed));
+      const state = useStore.getState();
+      pendingSeekRef.current = state.currentTime;
+      if (state.isPlaying) shouldAutoPlay.current = true;
+      setFailedChannelLabels(new Set(failed));
 
-    console.info(
-      `[player] ${label} recovered and will rejoin sync at ${state.currentTime.toFixed(2)}s`,
-    );
-  }, [channelLabels]);
+      console.info(
+        `[player] ${label} recovered and will rejoin sync at ${state.currentTime.toFixed(2)}s`,
+      );
+    },
+    [channelLabels],
+  );
 
   /**
    * Swap playback source. Preserves trip-time and play state: we
@@ -758,7 +786,11 @@ export function PlayerShell() {
     archiveOnly,
     archivedGpsPointCount: tripGpsByTrip[trip.id]?.length ?? 0,
   });
-  const gridCols = fullscreenLabel ? "grid-cols-1" : showMap ? "grid-cols-[2fr_1fr_1fr]" : "grid-cols-[3fr_1fr]";
+  const gridCols = fullscreenLabel
+    ? "grid-cols-1"
+    : showMap
+      ? "grid-cols-[2fr_1fr_1fr]"
+      : "grid-cols-[3fr_1fr]";
 
   return (
     <div ref={viewerRef} className="flex h-full w-full flex-col bg-neutral-950">

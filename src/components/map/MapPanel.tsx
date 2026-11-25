@@ -138,7 +138,9 @@ function mergeGpsAtBoundary(
   const byTimestamp = new Map<number, GpsPoint>();
   for (const point of precedingOverlap) byTimestamp.set(point.tOffsetS, point);
   for (const point of currentPoints) byTimestamp.set(point.tOffsetS, point);
-  return Array.from(byTimestamp.values()).sort((a, b) => a.tOffsetS - b.tOffsetS);
+  return Array.from(byTimestamp.values()).sort(
+    (a, b) => a.tOffsetS - b.tOffsetS,
+  );
 }
 
 
@@ -260,7 +262,7 @@ export function MapPanel({ activeSegment }: Props) {
     const provider = activeSegment.channels.find(
       (channel) => (gpsByFile[channel.filePath]?.length ?? 0) > 0,
     );
-    const currentPoints = provider ? gpsByFile[provider.filePath] ?? [] : [];
+    const currentPoints = provider ? (gpsByFile[provider.filePath] ?? []) : [];
 
     if (segmentIndex <= 0) return currentPoints;
 

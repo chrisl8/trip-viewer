@@ -1,4 +1,6 @@
-export const RECOVERY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 30000] as const;
+export const RECOVERY_DELAYS_MS = [
+  1000, 2000, 4000, 8000, 16000, 30000,
+] as const;
 const RECOVERY_PROBE_TIMEOUT_MS = 5000;
 
 /**
@@ -49,7 +51,9 @@ export function probeVideoAt(
 
     const presentedFrames = () => {
       const quality = video.getVideoPlaybackQuality?.();
-      return quality ? quality.totalVideoFrames - quality.droppedVideoFrames : 0;
+      return quality
+        ? quality.totalVideoFrames - quality.droppedVideoFrames
+        : 0;
     };
 
     const waitForFrame = () => {
@@ -61,7 +65,11 @@ export function probeVideoAt(
       // readyState/seeked or an advancing audio clock alone do not.
       const checkFrames = () => {
         if (settled) return;
-        if (!video.error && video.readyState >= 2 && presentedFrames() > initialFrames) {
+        if (
+          !video.error &&
+          video.readyState >= 2 &&
+          presentedFrames() > initialFrames
+        ) {
           finish(true);
         } else {
           fallbackTimer = window.setTimeout(checkFrames, 50);
@@ -76,7 +84,9 @@ export function probeVideoAt(
       initialFrames = presentedFrames();
       video
         .play()
-        .then(() => { if (!settled) waitForFrame(); })
+        .then(() => {
+          if (!settled) waitForFrame();
+        })
         .catch(() => finish(false));
     };
 
@@ -84,7 +94,10 @@ export function probeVideoAt(
       const duration = Number.isFinite(video.duration)
         ? video.duration
         : Infinity;
-      if (targetTime >= duration) { finish(false); return; }
+      if (targetTime >= duration) {
+        finish(false);
+        return;
+      }
       const clamped = Math.max(0, targetTime);
       try {
         video.currentTime = clamped;
@@ -108,7 +121,10 @@ export function probeVideoAt(
     // new probe; the previous resource's abort is not evidence of corruption.
 
     signal?.addEventListener("abort", onFailure, { once: true });
-    if (signal?.aborted) { finish(false); return; }
+    if (signal?.aborted) {
+      finish(false);
+      return;
+    }
     try {
       video.load();
     } catch {
@@ -119,7 +135,12 @@ export function probeVideoAt(
 
 
 /** Poll closed intervals, then apply backoff after every actual failed probe. */
-export function recoveryDelayMs(attempt: number, time: number, range?: { startS?: number; endS: number | null }): number {
-  if (range?.endS != null && time >= (range.startS ?? 0) && time < range.endS) return 250;
+export function recoveryDelayMs(
+  attempt: number,
+  time: number,
+  range?: { startS?: number; endS: number | null },
+): number {
+  if (range?.endS != null && time >= (range.startS ?? 0) && time < range.endS)
+    return 250;
   return RECOVERY_DELAYS_MS[Math.min(attempt, RECOVERY_DELAYS_MS.length - 1)];
 }

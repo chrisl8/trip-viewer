@@ -5,16 +5,24 @@ function fixture() {
   const root = { requestFullscreen: vi.fn() };
   const host = {
     fullscreenElement: null as unknown as Element | null,
-    exitFullscreen: vi.fn(async () => { host.fullscreenElement = null; }),
+    exitFullscreen: vi.fn(async () => {
+      host.fullscreenElement = null;
+    }),
   };
   root.requestFullscreen.mockImplementation(async () => {
     host.fullscreenElement = root as unknown as Element;
   });
   const commit = vi.fn();
   const resync = vi.fn();
-  const toggle = (label: string, current: string | null) => toggleViewerFullscreen(
-    root as unknown as HTMLElement, label, current, commit, resync, host,
-  );
+  const toggle = (label: string, current: string | null) =>
+    toggleViewerFullscreen(
+      root as unknown as HTMLElement,
+      label,
+      current,
+      commit,
+      resync,
+      host,
+    );
   return { root, host, commit, resync, toggle };
 }
 
@@ -22,7 +30,12 @@ describe("shared viewer fullscreen", () => {
   it("opens the viewer root and reanchors only after browser entry completes", async () => {
     const f = fixture();
     let entered!: () => void;
-    f.root.requestFullscreen.mockImplementation(() => new Promise<void>(resolve => { entered = resolve; }));
+    f.root.requestFullscreen.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          entered = resolve;
+        }),
+    );
     const pending = f.toggle("Front", null);
     expect(f.commit).toHaveBeenCalledWith("Front");
     expect(f.resync).not.toHaveBeenCalled();

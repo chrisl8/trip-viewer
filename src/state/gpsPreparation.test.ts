@@ -8,7 +8,12 @@ const trip = { id: "trip", segments: [] } as unknown as Trip;
 const points = [{ tOffsetS: 1, lat: 1 }] as unknown as GpsPoint[];
 beforeEach(() => {
   vi.mocked(ensureTripGps).mockReset();
-  useStore.setState({ gpsPreparationByTrip: {}, gpsProgressByTrip: {}, tripGpsByTrip: {}, isPlaying: true });
+  useStore.setState({
+    gpsPreparationByTrip: {},
+    gpsProgressByTrip: {},
+    tripGpsByTrip: {},
+    isPlaying: true,
+  });
 });
 it("does not rejoin or publish a previous archive's GPS for an identical trip ID", async () => {
   useStore.getState().setCurrentArchive({ root: "/archive/A", label: "A" });
@@ -27,7 +32,12 @@ it("does not rejoin or publish a previous archive's GPS for an identical trip ID
 });
 it("shows background work without pausing transport, then publishes the cached GPS", async () => {
   let complete!: (points: GpsPoint[]) => void;
-  vi.mocked(ensureTripGps).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+  vi.mocked(ensureTripGps).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
   const request = prepareTripGps(trip);
   expect(useStore.getState().gpsPreparationByTrip.trip).toBe("loading");
   expect(useStore.getState().isPlaying).toBe(true);
@@ -46,7 +56,12 @@ it("retains previous GPS and reports a failed refresh without disabling playback
 });
 it("keeps the busy state and ignores an older result when another refresh is queued", async () => {
   const complete: ((points: GpsPoint[]) => void)[] = [];
-  vi.mocked(ensureTripGps).mockImplementation(() => new Promise(resolve => { complete.push(resolve); }));
+  vi.mocked(ensureTripGps).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        complete.push(resolve);
+      }),
+  );
   const first = prepareTripGps(trip);
   const second = prepareTripGps(trip, { segment: ["Front"] }, true);
   complete[0](points);
@@ -59,29 +74,53 @@ it("keeps the busy state and ignores an older result when another refresh is que
   expect(useStore.getState().tripGpsByTrip.trip).toEqual([]);
 });
 
-const segmented = { id: "trip", segments: [{ durationS: 10 }, { durationS: 20 }] } as unknown as Trip;
+const segmented = {
+  id: "trip",
+  segments: [{ durationS: 10 }, { durationS: 20 }],
+} as unknown as Trip;
 function pendingProgress(force = false) {
   let progress!: NonNullable<Parameters<typeof ensureTripGps>[3]>;
   let complete!: (points: GpsPoint[]) => void;
   let fail!: (reason: Error) => void;
-  vi.mocked(ensureTripGps).mockImplementationOnce((_trip, _excluded, _force, callback) => {
-    progress = callback!;
-    return new Promise((resolve, reject) => { complete = resolve; fail = reject; });
-  });
+  vi.mocked(ensureTripGps).mockImplementationOnce(
+    (_trip, _excluded, _force, callback) => {
+      progress = callback!;
+      return new Promise((resolve, reject) => {
+        complete = resolve;
+        fail = reject;
+      });
+    },
+  );
   const request = prepareTripGps(segmented, {}, force);
   return { progress, complete, fail, request };
 }
 it("publishes each completed segment before the whole trip finishes and applies boundary corrections", async () => {
   const job = pendingProgress();
   job.progress({ kind: "started", attempt: 1, total: 2 });
-  job.progress({ kind: "segment", attempt: 1, completed: 1, total: 2, updates: [{ index: 0, points }] });
+  job.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 1,
+    total: 2,
+    updates: [{ index: 0, points }],
+  });
   expect(useStore.getState().tripGpsByTrip.trip).toEqual(points);
-  expect(useStore.getState().gpsProgressByTrip.trip).toEqual({ completed: 1, total: 2 });
+  expect(useStore.getState().gpsProgressByTrip.trip).toEqual({
+    completed: 1,
+    total: 2,
+  });
   expect(useStore.getState().gpsPreparationByTrip.trip).toBe("loading");
   const next = [{ ...points[0], tOffsetS: 11 }];
-  job.progress({ kind: "segment", attempt: 1, completed: 2, total: 2, updates: [
-    { index: 0, points: [] }, { index: 1, points: next },
-  ] });
+  job.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 2,
+    total: 2,
+    updates: [
+      { index: 0, points: [] },
+      { index: 1, points: next },
+    ],
+  });
   expect(useStore.getState().tripGpsByTrip.trip).toEqual(next);
   job.complete(next);
   await job.request;
@@ -91,7 +130,13 @@ it("retains unprocessed cached segments and rolls back previews if extraction fa
   useStore.setState({ tripGpsByTrip: { trip: cached } });
   const job = pendingProgress();
   job.progress({ kind: "started", attempt: 1, total: 2 });
-  job.progress({ kind: "segment", attempt: 1, completed: 1, total: 2, updates: [{ index: 0, points: [] }] });
+  job.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 1,
+    total: 2,
+    updates: [{ index: 0, points: [] }],
+  });
   expect(useStore.getState().tripGpsByTrip.trip).toEqual([cached[1]]);
   job.fail(new Error("offline"));
   await expect(job.request).rejects.toThrow("offline");
@@ -100,23 +145,56 @@ it("retains unprocessed cached segments and rolls back previews if extraction fa
 it("resets a retried extraction and ignores events from the discarded attempt", async () => {
   const job = pendingProgress();
   job.progress({ kind: "started", attempt: 1, total: 2 });
-  job.progress({ kind: "segment", attempt: 1, completed: 1, total: 2, updates: [{ index: 0, points }] });
+  job.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 1,
+    total: 2,
+    updates: [{ index: 0, points }],
+  });
   job.progress({ kind: "started", attempt: 2, total: 2 });
   expect(useStore.getState().tripGpsByTrip.trip).toBeUndefined();
-  job.progress({ kind: "segment", attempt: 1, completed: 2, total: 2, updates: [{ index: 0, points }] });
-  expect(useStore.getState().gpsProgressByTrip.trip).toEqual({ completed: 0, total: 2 });
+  job.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 2,
+    total: 2,
+    updates: [{ index: 0, points }],
+  });
+  expect(useStore.getState().gpsProgressByTrip.trip).toEqual({
+    completed: 0,
+    total: 2,
+  });
   job.complete([]);
   await job.request;
-  job.progress({ kind: "segment", attempt: 2, completed: 2, total: 2, updates: [{ index: 0, points }] });
+  job.progress({
+    kind: "segment",
+    attempt: 2,
+    completed: 2,
+    total: 2,
+    updates: [{ index: 0, points }],
+  });
   expect(useStore.getState().tripGpsByTrip.trip).toEqual([]);
 });
 it("ignores superseded previews and does not retain them as a new request's baseline", async () => {
   const first = pendingProgress();
   first.progress({ kind: "started", attempt: 1, total: 2 });
-  first.progress({ kind: "segment", attempt: 1, completed: 1, total: 2, updates: [{ index: 0, points }] });
+  first.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 1,
+    total: 2,
+    updates: [{ index: 0, points }],
+  });
   const second = pendingProgress(true);
   expect(useStore.getState().tripGpsByTrip.trip).toBeUndefined();
-  first.progress({ kind: "segment", attempt: 1, completed: 2, total: 2, updates: [{ index: 0, points }] });
+  first.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 2,
+    total: 2,
+    updates: [{ index: 0, points }],
+  });
   expect(useStore.getState().tripGpsByTrip.trip).toBeUndefined();
   first.complete(points);
   await first.request;
@@ -128,7 +206,13 @@ it("ignores superseded previews and does not retain them as a new request's base
 it("rejoins the same analysis after switching A to B and back without losing progress", async () => {
   const first = pendingProgress();
   first.progress({ kind: "started", attempt: 1, total: 2 });
-  first.progress({ kind: "segment", attempt: 1, completed: 1, total: 2, updates: [{ index: 0, points }] });
+  first.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 1,
+    total: 2,
+    updates: [{ index: 0, points }],
+  });
   useStore.getState().selectTrip("other");
   vi.mocked(ensureTripGps).mockResolvedValueOnce([]);
   await prepareTripGps({ id: "other", segments: [] } as unknown as Trip);
@@ -137,9 +221,18 @@ it("rejoins the same analysis after switching A to B and back without losing pro
   expect(returning).toBe(first.request);
   expect(ensureTripGps).toHaveBeenCalledTimes(2);
   expect(useStore.getState().tripGpsByTrip.trip).toEqual(points);
-  expect(useStore.getState().gpsProgressByTrip.trip).toEqual({ completed: 1, total: 2 });
+  expect(useStore.getState().gpsProgressByTrip.trip).toEqual({
+    completed: 1,
+    total: 2,
+  });
   const next = [{ ...points[0], tOffsetS: 11 }];
-  first.progress({ kind: "segment", attempt: 1, completed: 2, total: 2, updates: [{ index: 1, points: next }] });
+  first.progress({
+    kind: "segment",
+    attempt: 1,
+    completed: 2,
+    total: 2,
+    updates: [{ index: 1, points: next }],
+  });
   expect(useStore.getState().tripGpsByTrip.trip).toEqual([...points, ...next]);
   first.complete([...points, ...next]);
   await returning;

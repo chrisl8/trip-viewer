@@ -9,20 +9,35 @@ class Probe extends EventTarget {
   error: object | null = null;
   frame: (() => void) | null = null;
   frames = 0;
-  getVideoPlaybackQuality() { return { totalVideoFrames: this.frames, droppedVideoFrames: 0 }; }
+  getVideoPlaybackQuality() {
+    return { totalVideoFrames: this.frames, droppedVideoFrames: 0 };
+  }
   load = vi.fn();
   pause = vi.fn();
   play = vi.fn(async () => {});
-  requestVideoFrameCallback = vi.fn((callback: () => void) => { this.frame = callback; return 1; });
+  requestVideoFrameCallback = vi.fn((callback: () => void) => {
+    this.frame = callback;
+    return 1;
+  });
   cancelVideoFrameCallback = vi.fn();
-  video() { return this as unknown as HTMLVideoElement; }
+  video() {
+    return this as unknown as HTMLVideoElement;
+  }
 }
 
-beforeEach(() => { vi.useFakeTimers(); vi.stubGlobal("window", globalThis); });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.stubGlobal("window", globalThis);
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 it("caps backoff even after a cached closed interval has ended", () => {
-  expect(Array.from({ length: 8 }, (_, i) => recoveryDelayMs(i, 90))).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  expect(Array.from({ length: 8 }, (_, i) => recoveryDelayMs(i, 90))).toEqual([
+    1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000,
+  ]);
   expect(recoveryDelayMs(5, 89, { endS: 90 })).toBe(250);
   expect(recoveryDelayMs(5, 90, { endS: 90 })).toBe(30000);
   expect(recoveryDelayMs(1, 10, { startS: 89, endS: 100 })).toBe(2000);

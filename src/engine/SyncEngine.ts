@@ -1,5 +1,9 @@
 import { useStore, type PlaybackSlice } from "../state/store";
-import { type CurveSegment, coverageAt, fileToConcat } from "../utils/speedCurve";
+import {
+  type CurveSegment,
+  coverageAt,
+  fileToConcat,
+} from "../utils/speedCurve";
 
 // How often to re-evaluate coverage gaps. Gaps are seconds-to-minutes
 // long, so a coarse cadence is plenty — and crucially this runs on a
@@ -380,13 +384,15 @@ export class SyncEngine {
     const onPause = () => {
       if (this.disposed || this.pauseIntentional) return;
       if (this.playIntent && m.paused && !m.ended) {
-        m.play().then(() => {
-          this.slaves.forEach((s, i) => {
-            // Leave gap-held slaves paused — see play().
-            if (this.slaveInGap[i]) return;
-            if (s.paused && !s.ended) s.play().catch(() => {});
-          });
-        }).catch(() => {});
+        m.play()
+          .then(() => {
+            this.slaves.forEach((s, i) => {
+              // Leave gap-held slaves paused — see play().
+              if (this.slaveInGap[i]) return;
+              if (s.paused && !s.ended) s.play().catch(() => {});
+            });
+          })
+          .catch(() => {});
       }
     };
     m.addEventListener("pause", onPause);
@@ -505,7 +511,10 @@ export class SyncEngine {
     if (!isMaster) {
       const i = this.slaves.indexOf(v);
       if (i >= 0 && !this.slaveInGap[i]) {
-        const targetRaw = this.slaveTargetAtMasterTime(i, this.master.currentTime);
+        const targetRaw = this.slaveTargetAtMasterTime(
+          i,
+          this.master.currentTime,
+        );
         if (targetRaw !== null && v.readyState >= 1) {
           const duration = Number.isFinite(v.duration) ? v.duration : Infinity;
           v.currentTime = Math.min(Math.max(0, targetRaw), duration);
@@ -831,9 +840,11 @@ export class SyncEngine {
       this.stopAllAfterFailure();
       if (e instanceof DOMException && e.name === "AbortError") return;
       console.error("SyncEngine.seek restart failed:", e);
-      useStore.getState().setError(
-        e instanceof Error ? e.message : "playback failed after seek",
-      );
+      useStore
+        .getState()
+        .setError(
+          e instanceof Error ? e.message : "playback failed after seek",
+        );
     }
   }
 
@@ -1013,9 +1024,11 @@ export class SyncEngine {
       this.stopAllAfterFailure();
       if (e instanceof DOMException && e.name === "AbortError") return;
       console.error("SyncEngine.setSpeed restart failed:", e);
-      useStore.getState().setError(
-        e instanceof Error ? e.message : "playback failed after speed change",
-      );
+      useStore
+        .getState()
+        .setError(
+          e instanceof Error ? e.message : "playback failed after speed change",
+        );
     }
   }
 }

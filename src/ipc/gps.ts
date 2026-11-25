@@ -51,8 +51,13 @@ export interface TripGpsSegmentRequest {
 
 export type TripGpsProgress =
   | { kind: "started"; attempt: number; total: number }
-  | { kind: "segment"; attempt: number; completed: number; total: number;
-      updates: { index: number; points: GpsPoint[] }[] };
+  | {
+      kind: "segment";
+      attempt: number;
+      completed: number;
+      total: number;
+      updates: { index: number; points: GpsPoint[] }[];
+    };
 
 // Serialize refreshes for the same trip. Several cameras can fail in the same
 // turn; an older response must not overwrite a later, more complete exclusion.
@@ -73,36 +78,49 @@ export function ensureTripGps(
   force = false,
   onProgress?: (progress: TripGpsProgress) => void,
 ): Promise<GpsPoint[]> {
-  const segments: TripGpsSegmentRequest[] = trip.segments
-    .map((segment) => {
-      const excluded = new Set(excludedLabelsBySegment[segment.id] ?? []);
-      return {
-        segmentId: segment.id,
-        durationS: segment.durationS,
-        cameraKind: segment.cameraKind,
-        channels: segment.channels
-          .filter((channel) => !segment.isTombstone && segment.gpsSupported && !excluded.has(channel.label))
-          .map((channel) => ({
-            label: channel.label,
-            path: channel.filePath,
-          })),
-      };
-    });
+  const segments: TripGpsSegmentRequest[] = trip.segments.map((segment) => {
+    const excluded = new Set(excludedLabelsBySegment[segment.id] ?? []);
+    return {
+      segmentId: segment.id,
+      durationS: segment.durationS,
+      cameraKind: segment.cameraKind,
+      channels: segment.channels
+        .filter(
+          (channel) =>
+            !segment.isTombstone &&
+            segment.gpsSupported &&
+            !excluded.has(channel.label),
+        )
+        .map((channel) => ({
+          label: channel.label,
+          path: channel.filePath,
+        })),
+    };
+  });
 
   const previous = tripGpsPending.get(trip.id) ?? Promise.resolve([]);
-  const pending = previous.catch(() => []).then(() => {
-    const args: Record<string, unknown> = { tripId: trip.id, segments, force };
-    if (onProgress) {
-      const channel = new Channel<TripGpsProgress>();
-      channel.onmessage = onProgress;
-      args.onProgress = channel;
-    }
-    return invoke<GpsPoint[]>("ensure_trip_gps", args);
-  });
+  const pending = previous
+    .catch(() => [])
+    .then(() => {
+      const args: Record<string, unknown> = {
+        tripId: trip.id,
+        segments,
+        force,
+      };
+      if (onProgress) {
+        const channel = new Channel<TripGpsProgress>();
+        channel.onmessage = onProgress;
+        args.onProgress = channel;
+      }
+      return invoke<GpsPoint[]>("ensure_trip_gps", args);
+    });
   tripGpsPending.set(trip.id, pending);
-  void pending.finally(() => {
-    if (tripGpsPending.get(trip.id) === pending) tripGpsPending.delete(trip.id);
-  }).catch(() => {});
+  void pending
+    .finally(() => {
+      if (tripGpsPending.get(trip.id) === pending)
+        tripGpsPending.delete(trip.id);
+    })
+    .catch(() => {});
   return pending;
 }
 

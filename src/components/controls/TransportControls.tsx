@@ -75,8 +75,12 @@ export function TransportControls({ engine, onSourceChange }: Props) {
   const sourceMode = useStore((s) => s.sourceMode);
   const activeSpeedCurve = useStore((s) => s.activeSpeedCurve);
   const timelapseJobs = useStore((s) => s.timelapseJobs);
-  const gpsPreparation = useStore((s) => loadedTripId ? s.gpsPreparationByTrip[loadedTripId] : undefined);
-  const gpsProgress = useStore((s) => loadedTripId ? s.gpsProgressByTrip[loadedTripId] : undefined);
+  const gpsPreparation = useStore((s) =>
+    loadedTripId ? s.gpsPreparationByTrip[loadedTripId] : undefined,
+  );
+  const gpsProgress = useStore((s) =>
+    loadedTripId ? s.gpsProgressByTrip[loadedTripId] : undefined,
+  );
   const disabled = !engine;
 
   const trip = trips.find((t) => t.id === loadedTripId);
@@ -133,8 +137,14 @@ export function TransportControls({ engine, onSourceChange }: Props) {
     window.addEventListener("tripviewer:resync-playback", onPlaybackResync);
     window.addEventListener("tripviewer:pause-playback", onPlaybackPause);
     return () => {
-      window.removeEventListener("tripviewer:toggle-playback", onDashboardToggle);
-      window.removeEventListener("tripviewer:resync-playback", onPlaybackResync);
+      window.removeEventListener(
+        "tripviewer:toggle-playback",
+        onDashboardToggle,
+      );
+      window.removeEventListener(
+        "tripviewer:resync-playback",
+        onPlaybackResync,
+      );
       window.removeEventListener("tripviewer:pause-playback", onPlaybackPause);
     };
   }, [engine]);
@@ -172,17 +182,29 @@ export function TransportControls({ engine, onSourceChange }: Props) {
       </span>
 
       {trip && !engine && (
-        <span role="status" className="text-xs text-neutral-400">Waiting for a playable camera…</span>
+        <span role="status" className="text-xs text-neutral-400">
+          Waiting for a playable camera…
+        </span>
       )}
       {gpsPreparation === "loading" && (
-        <span role="status" className="flex items-center gap-2 text-xs text-blue-300">
-          <span aria-hidden className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+        <span
+          role="status"
+          className="flex items-center gap-2 text-xs text-blue-300"
+        >
+          <span
+            aria-hidden
+            className="h-2 w-2 animate-pulse rounded-full bg-blue-400"
+          />
           {gpsProgress
             ? `GPS: ${gpsProgress.completed} / ${gpsProgress.total} segments`
             : "Preparing GPS in the background…"}
           {gpsProgress && gpsProgress.total > 0 && (
-            <progress aria-label="GPS segments prepared" className="h-1.5 w-20 accent-blue-400"
-              value={gpsProgress.completed} max={gpsProgress.total} />
+            <progress
+              aria-label="GPS segments prepared"
+              className="h-1.5 w-20 accent-blue-400"
+              value={gpsProgress.completed}
+              max={gpsProgress.total}
+            />
           )}
         </span>
       )}
