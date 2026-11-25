@@ -799,7 +799,7 @@ fn run_ffmpeg_with_cancel(mut cmd: Command, cancel: &CancelFlag) -> Result<(), A
 /// buffer grows past 2× the cap, it drains the front half. The
 /// amortized cost is O(total bytes read) and the steady-state memory
 /// footprint is `2 * max_bytes` regardless of how chatty the child is.
-fn drain_to_tail<R: std::io::Read>(mut reader: R, max_bytes: usize) -> Vec<u8> {
+pub(crate) fn drain_to_tail<R: std::io::Read>(mut reader: R, max_bytes: usize) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::with_capacity(max_bytes.saturating_mul(2));
     let high_water = max_bytes.saturating_mul(2).max(8192);
     let mut chunk = [0u8; 4096];
@@ -822,7 +822,7 @@ fn drain_to_tail<R: std::io::Read>(mut reader: R, max_bytes: usize) -> Vec<u8> {
     buf
 }
 
-fn tail_lines(s: &str, n: usize) -> String {
+pub(crate) fn tail_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let start = lines.len().saturating_sub(n);
     lines[start..].join(" | ")

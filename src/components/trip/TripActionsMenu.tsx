@@ -4,6 +4,7 @@ import { useStore } from "../../state/store";
 import type { Trip } from "../../types/model";
 import { DeleteOriginalsDialog } from "../review/DeleteOriginalsDialog";
 import { DeleteTripDialog } from "../review/DeleteTripDialog";
+import { ExportClipDialog } from "./ExportClipDialog";
 
 interface Props {
   trip: Trip;
@@ -13,15 +14,17 @@ interface Props {
 }
 
 /**
- * Per-trip kebab menu surfacing the two trip-level delete actions:
- * "Delete originals…" (trash sources, keep timelapse archive) and
- * "Delete trip…" (trash everything). Hides "Delete originals…" when
- * the trip is already archive-only since there's nothing to delete.
+ * Per-trip kebab menu: "Export clip…" (all channels in one video) and
+ * the two trip-level delete actions, "Delete originals…" (trash
+ * sources, keep timelapse archive) and "Delete trip…" (trash
+ * everything). Hides "Export clip…" and "Delete originals…" when the
+ * trip is already archive-only since there are no source files.
  */
 export function TripActionsMenu({ trip, variant = "kebab" }: Props) {
   const [open, setOpen] = useState(false);
   const [showDeleteOriginals, setShowDeleteOriginals] = useState(false);
   const [showDeleteTrip, setShowDeleteTrip] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // When the trip row sits near the bottom of the viewport, dropping the
@@ -141,6 +144,20 @@ export function TripActionsMenu({ trip, variant = "kebab" }: Props) {
               <button
                 onClick={() => {
                   setOpen(false);
+                  setShowExport(true);
+                }}
+                className="block w-full px-3 py-1.5 text-left text-sm text-neutral-200 hover:bg-neutral-800"
+              >
+                Export clip…
+                <div className="text-[11px] text-neutral-500">
+                  All channels in one video
+                </div>
+              </button>
+            )}
+            {!archive && (
+              <button
+                onClick={() => {
+                  setOpen(false);
                   setErrorMessage(null);
                   setShowDeleteOriginals(true);
                 }}
@@ -169,6 +186,9 @@ export function TripActionsMenu({ trip, variant = "kebab" }: Props) {
         )}
       </div>
 
+      {showExport && (
+        <ExportClipDialog trip={trip} onClose={() => setShowExport(false)} />
+      )}
       {showDeleteOriginals && (
         <DeleteOriginalsDialog
           trip={trip}
