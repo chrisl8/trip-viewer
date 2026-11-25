@@ -85,9 +85,7 @@ pub async fn clear_ffmpeg_quarantine(path: String) -> Result<(), AppError> {
         let metadata = std::fs::metadata(&path)
             .map_err(|e| AppError::Internal(format!("cannot stat {path}: {e}")))?;
         if !metadata.is_file() {
-            return Err(AppError::Internal(format!(
-                "{path} is not a regular file"
-            )));
+            return Err(AppError::Internal(format!("{path} is not a regular file")));
         }
         ffmpeg::clear_quarantine_attr(&path)
     }
@@ -108,7 +106,10 @@ pub async fn test_ffmpeg(
     path: String,
     settings: State<'_, AppSettingsHandle>,
 ) -> Result<FfmpegCapabilities, AppError> {
-    let caps = ffmpeg::probe_ffmpeg(&path)?;
+    let probe_path = path.clone();
+    let caps = tauri::async_runtime::spawn_blocking(move || ffmpeg::probe_ffmpeg(&probe_path))
+        .await
+        .map_err(|error| AppError::Internal(format!("FFmpeg probe failed: {error}")))??;
     let caps_for_save = caps.clone();
     settings.update(move |s| {
         s.ffmpeg_path = Some(path);
@@ -144,17 +145,17 @@ pub async fn start_timelapse(
     let ffmpeg_path = s.ffmpeg_path.ok_or_else(|| {
         AppError::Internal("ffmpeg not configured — set path in settings first".into())
     })?;
-    let caps = match (s.ffmpeg_version, s.nvenc_hevc) {
-        (Some(v), Some(n)) => FfmpegCapabilities {
-            version: v,
-            nvenc_hevc: n,
-        },
-        _ => {
-            return Err(AppError::Internal(
-                "ffmpeg capabilities not cached — run the Test button first".into(),
-            ))
-        }
-    };
+    // Revalidate here too: old settings may say "NVENC available" merely
+    // because the binary listed it, or the GPU/driver may have changed.
+    let probe_path = ffmpeg_path.clone();
+    let caps = tauri::async_runtime::spawn_blocking(move || ffmpeg::probe_ffmpeg(&probe_path))
+        .await
+        .map_err(|error| AppError::Internal(format!("FFmpeg probe failed: {error}")))??;
+    let refreshed = caps.clone();
+    settings.update(move |s| {
+        s.ffmpeg_version = Some(refreshed.version);
+        s.nvenc_hevc = Some(refreshed.nvenc_hevc);
+    })?;
     let concurrency_override = s.timelapse_max_concurrent_jobs.map(|n| n as usize);
 
     // Concurrency: explicit override wins, otherwise auto-detect from
@@ -239,9 +240,7 @@ pub async fn start_timelapse(
 }
 
 #[tauri::command]
-pub async fn cancel_timelapse(
-    worker_state: State<'_, SharedWorkerState>,
-) -> Result<(), AppError> {
+pub async fn cancel_timelapse(worker_state: State<'_, SharedWorkerState>) -> Result<(), AppError> {
     let state = worker_state
         .lock()
         .map_err(|_| AppError::Internal("timelapse worker state poisoned".into()))?;
@@ -268,9 +267,7 @@ pub async fn prune_orphan_timelapse_files(
 /// surface the Prune button with a "needs attention" badge — without
 /// this hint, users had no signal that orphans were sitting on disk.
 #[tauri::command]
-pub async fn count_orphan_timelapse_files(
-    slot: State<'_, ArchiveSlot>,
-) -> Result<u64, AppError> {
+pub async fn count_orphan_timelapse_files(slot: State<'_, ArchiveSlot>) -> Result<u64, AppError> {
     let db = require_db(&slot)?;
     crate::timelapse::cleanup::count_orphan_timelapse_files(&db)
 }

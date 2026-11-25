@@ -110,6 +110,28 @@ isolated Ubuntu GPS candidate. That earlier test still had playback stutter and
 fullscreen/synchronization failures; it is not playback acceptance of subsequent
 revisions. The A129 result must be reported separately by its tester.
 
+## Existing timelapse generation
+
+Timelapse uses a separately installed FFmpeg. Configure its executable in this
+isolated instance and press Test (typically `/usr/bin/ffmpeg` on Ubuntu).
+The test now exercises NVENC encode/decode/scaling rather than trusting its
+presence in `ffmpeg -encoders`. The same check runs before a batch so an old
+incorrectly cached NVENC flag cannot make all camera jobs fail. Unsupported
+NVENC falls back to the existing CPU/libx265 path, without an archive migration.
+The full fork's additional AMD/Intel/VA-API encoders and calibration remain
+separate; CPU generation can therefore be slower than the full fork.
+
+A synthetic integration check creates two small HEVC clips, generates an 8x
+output through the actual encoder and decodes the finished output. It uses no
+owner media or archive. To run it explicitly on Ubuntu with FFmpeg installed:
+
+```sh
+TRIPVIEWER_TEST_FFMPEG=/usr/bin/ffmpeg cargo test --manifest-path src-tauri/Cargo.toml --lib real_ffmpeg_renders_two_hevc_segments_at_8x -- --ignored
+```
+
+This proves that synthetic CPU case, not real-camera batch success or NVIDIA
+hardware support. A physical camera test remains separate evidence.
+
 ## Automated checks
 
 ```sh
