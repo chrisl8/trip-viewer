@@ -7,6 +7,7 @@
 //! - `tiles`: optional OpenStreetMap backdrop for the map (a few tiles,
 //!   fetched once per export, attribution burned in).
 //! - `plan`: turns a request into the concrete segments/channels/audio.
+//! - `sync`: measures the delay between channels from their sound.
 //! - `runner`: spawns ffmpeg with progress and cancel.
 //! - `pipeline`: ties them together with a scratch directory.
 //! - `commands`: the Tauri commands and events.
@@ -17,4 +18,5 @@ pub mod minimap;
 pub mod pipeline;
 pub mod plan;
 pub mod runner;
+pub mod sync;
 pub mod tiles;

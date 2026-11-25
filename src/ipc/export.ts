@@ -21,6 +21,12 @@ export interface ExportAudioArg {
   volume: number;
 }
 
+export interface ExportDelayArg {
+  label: string;
+  /** Positive = show that channel later, negative = earlier. */
+  ms: number;
+}
+
 export interface StartExportArgs {
   outputPath: string;
   segments: ExportSegmentArg[];
@@ -40,6 +46,16 @@ export interface StartExportArgs {
   mapStyle: ExportMapStyle;
   /** Empty = silent. */
   audio: ExportAudioArg[];
+  /** Time shift per channel; channels not listed are not shifted. */
+  delays: ExportDelayArg[];
+}
+
+export interface ChannelSync {
+  label: string;
+  /** Delay that lines this channel up with the main one; null = unsure. */
+  delayMs: number | null;
+  /** 0..1 */
+  confidence: number;
 }
 
 export interface ExportProgressEvent {
@@ -56,6 +72,15 @@ export interface ExportDoneEvent {
 
 export function startExport(args: StartExportArgs): Promise<void> {
   return invoke<void>("start_export", { args });
+}
+
+/** Measure, from the sound, how far the other channels are out of step. */
+export function detectExportSync(args: {
+  segments: ExportSegmentArg[];
+  startS: number;
+  mainLabel: string;
+}): Promise<ChannelSync[]> {
+  return invoke<ChannelSync[]>("detect_export_sync", { args });
 }
 
 export function cancelExport(): Promise<void> {

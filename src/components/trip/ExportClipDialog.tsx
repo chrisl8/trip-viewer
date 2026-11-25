@@ -4,6 +4,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useStore } from "../../state/store";
 import {
   cancelExport,
+  detectExportSync,
   onExportDone,
   onExportProgress,
   pickExportPath,
@@ -21,6 +22,8 @@ import { computeTripTime } from "../../utils/tripTime";
 import {
   audioArgsFromPercent,
   defaultClipFileName,
+  delayArgsFromMs,
+  MAX_DELAY_MS,
   formatClock,
   parseClockInput,
   tripChannelLabels,
@@ -88,6 +91,11 @@ export function ExportClipDialog({ trip, onClose }: Props) {
     initialMain ? { [initialMain]: 100 } : {},
   );
 
+  // Time shift per channel in ms (positive = show it later).
+  const [delays, setDelays] = useState<Record<string, number>>({});
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+
   const [phase, setPhase] = useState<Phase>("form");
   const [fraction, setFraction] = useState(0);
   const [result, setResult] = useState<ExportDoneEvent | null>(null);
@@ -122,6 +130,39 @@ export function ExportClipDialog({ trip, onClose }: Props) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose, phase]);
 
+  async function onSync() {
+    if (!range) return;
+    setSyncing(true);
+    setSyncNote(null);
+    try {
+      const found = await detectExportSync({
+        segments: tripSegmentsForExport(trip),
+        startS: range.startS,
+        mainLabel,
+      });
+      const next: Record<string, number> = {};
+      const unsure: string[] = [];
+      for (const c of found) {
+        if (c.delayMs == null) unsure.push(c.label);
+        else
+          next[c.label] = Math.max(
+            -MAX_DELAY_MS,
+            Math.min(MAX_DELAY_MS, Math.round(c.delayMs)),
+          );
+      }
+      setDelays((all) => ({ ...all, ...next }));
+      setSyncNote(
+        unsure.length === 0
+          ? "Measured from the sound at the start of the clip."
+          : `Measured from the sound; could not match ${unsure.join(", ")} (left as it was).`,
+      );
+    } catch (e) {
+      setSyncNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function onExport() {
     if (!range) return;
     setErrorMessage(null);
@@ -149,6 +190,7 @@ export function ExportClipDialog({ trip, onClose }: Props) {
         showMap: showMap && trip.gpsSupported,
         mapStyle,
         audio: audioArgsFromPercent(volumes),
+        delays: delayArgsFromMs(delays),
       });
     } catch (e) {
       setPhase("form");
@@ -245,7 +287,12 @@ export function ExportClipDialog({ trip, onClose }: Props) {
                 <select
                   className={inputCls}
                   value={mainLabel}
-                  onChange={(e) => setMainLabel(e.target.value)}
+                  onChange={(e) => {
+                    setMainLabel(e.target.value);
+                    // Delays are measured against the main channel.
+                    setDelays({});
+                    setSyncNote(null);
+                  }}
                 >
                   {labels.map((l) => (
                     <option key={l} value={l}>
@@ -396,6 +443,59 @@ export function ExportClipDialog({ trip, onClose }: Props) {
                 channel, so use just one. Several are mixed.
               </span>
             </div>
+
+            {others.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className={labelCls}>
+                    Sync (delay per camera, ms)
+                  </span>
+                  <button
+                    type="button"
+                    disabled={!canExport || syncing}
+                    onClick={() => void onSync()}
+                    className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-800 disabled:opacity-40"
+                  >
+                    {syncing ? "Measuring…" : "Sync from sound"}
+                  </button>
+                </div>
+                {others.map((l) => (
+                  <label key={l} className="flex items-center gap-3 text-sm">
+                    <span className="w-20">{l}</span>
+                    <input
+                      type="number"
+                      step={10}
+                      min={-MAX_DELAY_MS}
+                      max={MAX_DELAY_MS}
+                      value={delays[l] ?? 0}
+                      onChange={(e) =>
+                        setDelays((all) => ({
+                          ...all,
+                          [l]: Number(e.target.value) || 0,
+                        }))
+                      }
+                      className={clsx(inputCls, "w-24")}
+                    />
+                    <span className="text-xs text-neutral-500">
+                      {(delays[l] ?? 0) > 0
+                        ? "shown later"
+                        : (delays[l] ?? 0) < 0
+                          ? "shown earlier"
+                          : "as recorded"}
+                    </span>
+                  </label>
+                ))}
+                <span className="text-xs text-neutral-500">
+                  The cameras' own clocks can be a little apart. Positive
+                  delays a camera that runs ahead; {mainLabel} is the
+                  reference. Sync measures it from the sound, which needs
+                  the cameras to have recorded audio.
+                </span>
+                {syncNote && (
+                  <span className="text-xs text-neutral-400">{syncNote}</span>
+                )}
+              </div>
+            )}
 
             {errorMessage && (
               <p className="rounded-md bg-red-950 px-2 py-1 text-xs text-red-300">

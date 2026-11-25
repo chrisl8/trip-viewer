@@ -202,7 +202,29 @@ pub struct ExportSpec<'a> {
     pub map: Option<(&'a Path, u32, u32)>,
     /// (channel index, volume multiplier). Empty = no audio track.
     pub audio: &'a [(usize, f64)],
+    /// Time shift in seconds per channel (same order as `channel_lists`;
+    /// missing entries mean none). Positive = show that channel later.
+    pub delays_s: &'a [f64],
     pub output: &'a Path,
+}
+
+impl ExportSpec<'_> {
+    fn delay_of(&self, channel: usize) -> f64 {
+        self.delays_s.get(channel).copied().unwrap_or(0.0)
+    }
+
+    /// Where to start reading a channel, and how long to hold its first
+    /// frame / stay silent first. A delayed channel is read earlier; if
+    /// that would be before the start of the recording, the missing part
+    /// becomes the lead-in.
+    fn seek_and_lead(&self, channel: usize) -> (f64, f64) {
+        let want = self.trim_start_s - self.delay_of(channel);
+        if want >= 0.0 {
+            (want, 0.0)
+        } else {
+            (0.0, -want)
+        }
+    }
 }
 
 /// Number of small slots including the map, which is what drives layout.
@@ -247,8 +269,14 @@ pub fn build_filter_graph(spec: &ExportSpec<'_>) -> (String, bool) {
     // `build_args`) so ffmpeg seeks instead of decoding everything before
     // the clip; the graph only has to reset timestamps.
     let trimmed = |idx: usize, w: u32, h: u32, label: &str| {
+        let (_, lead) = spec.seek_and_lead(idx);
+        let hold = if lead > 0.0 {
+            format!(",tpad=start_duration={lead:.3}:start_mode=clone")
+        } else {
+            String::new()
+        };
         format!(
-            "[{idx}:v]setpts=PTS-STARTPTS,fps={OUT_FPS},{}[{label}]",
+            "[{idx}:v]setpts=PTS-STARTPTS{hold},fps={OUT_FPS},{}[{label}]",
             fit(w, h)
         )
     };
@@ -279,8 +307,14 @@ pub fn build_filter_graph(spec: &ExportSpec<'_>) -> (String, bool) {
     let has_audio = !spec.audio.is_empty();
     if has_audio {
         for (k, &(ch, vol)) in spec.audio.iter().enumerate() {
+            let (_, lead) = spec.seek_and_lead(ch);
+            let silence = if lead > 0.0 {
+                format!(",adelay={}:all=1", (lead * 1000.0).round() as u64)
+            } else {
+                String::new()
+            };
             parts.push(format!(
-                "[{ch}:a]asetpts=PTS-STARTPTS,volume={vol:.3}[a{k}]"
+                "[{ch}:a]asetpts=PTS-STARTPTS{silence},volume={vol:.3}[a{k}]"
             ));
         }
         if spec.audio.len() == 1 {
@@ -305,12 +339,12 @@ pub fn build_filter_graph(spec: &ExportSpec<'_>) -> (String, bool) {
 /// adds).
 pub fn build_args(spec: &ExportSpec<'_>) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
-    for list in spec.channel_lists {
+    for (idx, list) in spec.channel_lists.iter().enumerate() {
         // Seek to the clip start inside the concatenated channel (the
         // lists carry per-file durations, which is what makes seeking
         // across files possible) and read only as much as the clip needs.
         a.push("-ss".into());
-        a.push(format!("{:.3}", spec.trim_start_s));
+        a.push(format!("{:.3}", spec.seek_and_lead(idx).0));
         a.push("-t".into());
         a.push(format!("{:.3}", spec.duration_s));
         a.extend(["-f", "concat", "-safe", "0", "-i"].map(String::from));
@@ -491,6 +525,7 @@ mod tests {
             slots,
             map,
             audio,
+            delays_s: &[],
             output: out,
         }
     }
@@ -604,6 +639,36 @@ mod tests {
         // The default stays H.264 with no tag.
         let d = build_args(&spec(&lists, &[1], None, &[], &out)).join(" ");
         assert!(d.contains("-c:v libx264") && !d.contains("hvc1"));
+    }
+
+    #[test]
+    fn a_delayed_channel_is_read_earlier() {
+        let lists = lists3();
+        let out = PathBuf::from("/t/out.mp4");
+        let delays = [0.0, 1.0, -2.0];
+        let mut s = spec(&lists, &[1, 2], None, &[], &out);
+        s.delays_s = &delays;
+        let joined = build_args(&s).join(" ");
+        assert!(joined.contains("-ss 12.500 -t 30.000 -f concat -safe 0 -i /t/f.txt"));
+        assert!(joined.contains("-ss 11.500 -t 30.000 -f concat -safe 0 -i /t/c.txt"));
+        assert!(joined.contains("-ss 14.500 -t 30.000 -f concat -safe 0 -i /t/r.txt"));
+        let (g, _) = build_filter_graph(&s);
+        assert!(!g.contains("tpad"));
+    }
+
+    #[test]
+    fn a_delay_before_the_recording_starts_holds_the_first_frame() {
+        let lists = lists3();
+        let out = PathBuf::from("/t/out.mp4");
+        let delays = [0.0, 1.0, 0.0];
+        let mut s = spec(&lists, &[1], None, &[(1, 1.0)], &out);
+        s.trim_start_s = 0.25;
+        s.delays_s = &delays;
+        let joined = build_args(&s).join(" ");
+        assert!(joined.contains("-ss 0.000 -t 30.000 -f concat -safe 0 -i /t/c.txt"));
+        let (g, _) = build_filter_graph(&s);
+        assert!(g.contains("[1:v]setpts=PTS-STARTPTS,tpad=start_duration=0.750:start_mode=clone,fps=30"));
+        assert!(g.contains("[1:a]asetpts=PTS-STARTPTS,adelay=750:all=1,volume=1.000[a0]"));
     }
 
     #[test]

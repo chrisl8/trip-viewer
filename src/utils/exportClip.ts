@@ -1,4 +1,8 @@
-import type { ExportAudioArg, ExportSegmentArg } from "../ipc/export";
+import type {
+  ExportAudioArg,
+  ExportDelayArg,
+  ExportSegmentArg,
+} from "../ipc/export";
 import type { Trip } from "../types/model";
 
 /** Canonical channel order, mirroring `label_rank` in the Rust model. */
@@ -114,4 +118,20 @@ export function audioArgsFromPercent(
     .filter((l) => percentByLabel[l] > 0)
     .sort(compareLabels)
     .map((label) => ({ label, volume: percentByLabel[label] / 100 }));
+}
+
+/** Largest time shift per channel the backend accepts, in ms. */
+export const MAX_DELAY_MS = 10000;
+
+/** Only the channels that are actually shifted, in canonical order. */
+export function delayArgsFromMs(
+  msByLabel: Record<string, number>,
+): ExportDelayArg[] {
+  return Object.keys(msByLabel)
+    .filter((l) => Number.isFinite(msByLabel[l]) && msByLabel[l] !== 0)
+    .sort(compareLabels)
+    .map((label) => ({
+      label,
+      ms: Math.max(-MAX_DELAY_MS, Math.min(MAX_DELAY_MS, msByLabel[label])),
+    }));
 }

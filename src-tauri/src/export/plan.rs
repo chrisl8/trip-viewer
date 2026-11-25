@@ -35,6 +35,18 @@ pub struct ExportAudio {
     pub volume: f64,
 }
 
+/// Shift one channel in time against the others. Positive = show that
+/// channel later (its camera's clock runs ahead), negative = earlier.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportDelay {
+    pub label: String,
+    pub ms: f64,
+}
+
+/// Largest shift accepted per channel, in milliseconds.
+pub const MAX_DELAY_MS: f64 = 10_000.0;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartExportArgs {
@@ -60,6 +72,9 @@ pub struct StartExportArgs {
     pub map_style: MapStyle,
     /// Empty = silent export.
     pub audio: Vec<ExportAudio>,
+    /// Per-channel time shifts; channels not listed are not shifted.
+    #[serde(default)]
+    pub delays: Vec<ExportDelay>,
 }
 
 /// What the GPS mini-map is drawn on.
@@ -89,10 +104,13 @@ pub struct Prepared {
     pub duration_s: f64,
     /// Channel labels in ffmpeg input order: main, small tiles, then any
     /// channel used only for its audio.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub labels: Vec<String>,
     pub main: usize,
     pub slots: Vec<usize>,
     pub audio: Vec<(usize, f64)>,
+    /// Time shift in seconds for each entry of `labels` (0 = none).
+    pub delays_s: Vec<f64>,
     /// Concat-demuxer list text, one per entry of `labels`.
     pub list_texts: Vec<String>,
     /// Files to read GPS from (the camera's master channel per segment).
@@ -243,6 +261,18 @@ pub fn prepare(args: &StartExportArgs) -> Result<Prepared, AppError> {
         }
     }
 
+    let mut delays_s = vec![0.0; labels.len()];
+    for d in &args.delays {
+        if !(d.ms.is_finite() && d.ms.abs() <= MAX_DELAY_MS) {
+            return Err(err(format!("invalid time shift for {}", d.label)));
+        }
+        if let Some(i) = labels.iter().position(|l| l == &d.label) {
+            delays_s[i] = d.ms / 1000.0;
+        }
+    }
+    // Shifting the main channel would just shift everything.
+    delays_s[0] = 0.0;
+
     let list_texts: Vec<String> = labels
         .iter()
         .map(|label| {
@@ -283,6 +313,7 @@ pub fn prepare(args: &StartExportArgs) -> Result<Prepared, AppError> {
         main: 0,
         slots,
         audio,
+        delays_s,
         list_texts,
         gps_sources,
         warnings,
@@ -341,6 +372,7 @@ mod tests {
                 label: "Front".into(),
                 volume: 1.0,
             }],
+            delays: vec![],
         }
     }
 
@@ -491,5 +523,43 @@ mod tests {
         let p = prepare(&a).unwrap();
         assert_eq!(p.labels, vec!["Front", "Rear"]);
         assert!(p.warnings.iter().any(|w| w.starts_with("Roof skipped")));
+    }
+
+    #[test]
+    fn delays_follow_the_channel_order_and_ignore_the_main_channel() {
+        let mut a = args(t800_segments(2));
+        a.delays = vec![
+            ExportDelay {
+                label: "Interior".into(),
+                ms: 1024.0,
+            },
+            ExportDelay {
+                label: "Front".into(),
+                ms: 500.0,
+            },
+            ExportDelay {
+                label: "Nowhere".into(),
+                ms: 5.0,
+            },
+        ];
+        let p = prepare(&a).unwrap();
+        for (label, d) in p.labels.iter().zip(&p.delays_s) {
+            match label.as_str() {
+                "Interior" => assert!((d - 1.024).abs() < 1e-9),
+                _ => assert_eq!(*d, 0.0),
+            }
+        }
+    }
+
+    #[test]
+    fn absurd_delays_are_rejected() {
+        let mut a = args(t800_segments(1));
+        a.delays = vec![ExportDelay {
+            label: "Interior".into(),
+            ms: 60_000.0,
+        }];
+        assert!(prepare(&a).is_err());
+        a.delays[0].ms = f64::NAN;
+        assert!(prepare(&a).is_err());
     }
 }

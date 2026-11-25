@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Segment, Trip } from "../types/model";
 import {
   audioArgsFromPercent,
+  delayArgsFromMs,
   compareLabels,
   defaultClipFileName,
   formatClock,
@@ -140,5 +141,19 @@ describe("audioArgsFromPercent", () => {
   });
   it("is silent when everything is 0%", () => {
     expect(audioArgsFromPercent({ Front: 0 })).toEqual([]);
+  });
+});
+
+describe("delayArgsFromMs", () => {
+  it("keeps only shifted channels, in canonical order", () => {
+    expect(delayArgsFromMs({ Rear: -200, Interior: 1024, Front: 0 })).toEqual([
+      { label: "Interior", ms: 1024 },
+      { label: "Rear", ms: -200 },
+    ]);
+  });
+  it("limits absurd values and ignores non-numbers", () => {
+    expect(delayArgsFromMs({ Rear: 99999, Interior: NaN })).toEqual([
+      { label: "Rear", ms: 10000 },
+    ]);
   });
 });

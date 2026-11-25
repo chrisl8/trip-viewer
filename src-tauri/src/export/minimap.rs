@@ -55,7 +55,7 @@ impl Canvas {
     fn new(w: u32, h: u32) -> Self {
         let (w, h) = (w as usize, h as usize);
         let mut px = vec![0u8; w * h * 3];
-        for chunk in px.chunks_exact_mut(3) {
+        for chunk in px.chunks_mut(3) {
             chunk.copy_from_slice(&BG);
         }
         let mut c = Canvas { w, h, px };
@@ -310,7 +310,7 @@ mod tests {
     }
 
     fn has_colour(frame: &[u8], rgb: [u8; 3]) -> bool {
-        frame.chunks_exact(3).any(|p| p == rgb)
+        frame.chunks(3).any(|p| p == rgb)
     }
 
     #[test]
@@ -389,6 +389,6 @@ mod tests {
             render_frames(&pts, 160, 90, 1.0, Some(&bd), &mut buf).unwrap(),
             1
         );
-        assert!(buf.chunks_exact(3).any(|p| p == BG));
+        assert!(buf.chunks(3).any(|p| p == BG));
     }
 }

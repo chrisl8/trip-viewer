@@ -40,7 +40,7 @@ pub struct View {
 }
 
 impl View {
-    pub fn to_px(&self, lat: f64, lon: f64) -> (i32, i32) {
+    pub fn to_px(self, lat: f64, lon: f64) -> (i32, i32) {
         let (wx, wy) = world_px(lat, lon, self.zoom);
         (
             (wx - self.origin_x).round() as i32,
@@ -148,6 +148,13 @@ pub fn decode_tile(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let mut dec = png::Decoder::new(Cursor::new(png_bytes));
     dec.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = dec.read_info().map_err(|e| e.to_string())?;
+    // Tiles are always 256x256; refuse anything else before allocating.
+    {
+        let i = reader.info();
+        if i.width != TILE_PX || i.height != TILE_PX {
+            return Err(format!("unexpected tile size {}x{}", i.width, i.height));
+        }
+    }
     let mut buf = vec![0u8; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
     let (w, h) = (info.width, info.height);
@@ -157,7 +164,7 @@ pub fn decode_tile(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     match info.color_type {
         png::ColorType::Rgb => rgb.extend_from_slice(data),
         png::ColorType::Rgba => {
-            for c in data.chunks_exact(4) {
+            for c in data.chunks(4) {
                 rgb.extend_from_slice(&c[..3]);
             }
         }
@@ -167,7 +174,7 @@ pub fn decode_tile(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
             }
         }
         png::ColorType::GrayscaleAlpha => {
-            for c in data.chunks_exact(2) {
+            for c in data.chunks(2) {
                 rgb.extend_from_slice(&[c[0], c[0], c[0]]);
             }
         }
@@ -447,6 +454,19 @@ mod tests {
         }
         let v = choose_view(&route(), 384, 216).unwrap();
         assert!(render_backdrop(&v, 384, 216, &Down).is_err());
+    }
+
+    #[test]
+    fn a_tile_of_the_wrong_size_is_rejected() {
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, 8, 8);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(&[0u8; 8 * 8 * 3]).unwrap();
+        }
+        assert!(decode_tile(&out).is_err());
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::app_settings::AppSettingsHandle;
 use crate::error::AppError;
 use crate::export::pipeline::run_export;
 use crate::export::plan::StartExportArgs;
+use crate::export::sync::{detect_sync, ChannelSync, DetectSyncArgs};
 use crate::timelapse::CancelFlag;
 
 /// `Some(flag)` while an export is running.
@@ -117,4 +118,19 @@ pub async fn cancel_export(state: State<'_, SharedExportState>) -> Result<(), Ap
         flag.store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// Measure how far the other channels are out of step with the main one
+/// at the start of the clip, from their sound.
+#[tauri::command]
+pub async fn detect_export_sync(
+    args: DetectSyncArgs,
+    settings: State<'_, AppSettingsHandle>,
+) -> Result<Vec<ChannelSync>, AppError> {
+    let ffmpeg_path = settings.read().ffmpeg_path.ok_or_else(|| {
+        AppError::Internal("ffmpeg not configured — set its path in the Timelapse tab first".into())
+    })?;
+    tauri::async_runtime::spawn_blocking(move || detect_sync(&args, &ffmpeg_path))
+        .await
+        .map_err(|e| AppError::Internal(format!("sync task failed: {e}")))?
 }

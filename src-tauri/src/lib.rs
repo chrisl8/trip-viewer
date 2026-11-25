@@ -287,6 +287,7 @@ pub fn run() {
             scans::commands::cancel_scan,
             export::commands::start_export,
             export::commands::cancel_export,
+            export::commands::detect_export_sync,
             timelapse::commands::get_timelapse_settings,
             timelapse::commands::clear_timelapse_settings,
             timelapse::commands::test_ffmpeg,

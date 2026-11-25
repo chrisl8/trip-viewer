@@ -216,6 +216,7 @@ fn run_inner(
         slots: &prepared.slots,
         map: map_raw.as_ref().map(|(p, w, h)| (p.as_path(), *w, *h)),
         audio: &prepared.audio,
+        delays_s: &prepared.delays_s,
         output: partial,
     };
     let ff_args = build_args(&spec);
