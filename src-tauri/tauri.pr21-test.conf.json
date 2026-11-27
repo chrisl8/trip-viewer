@@ -1,0 +1,26 @@
+{
+  "productName": "Trip Viewer PR21 Check",
+  "version": "0.3.4-rc.2026112505",
+  "identifier": "com.tripviewer.pr21check",
+  "app": {
+    "windows": [
+      {
+        "title": "Trip Viewer PR21 Check",
+        "width": 1280,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 600,
+        "visible": false,
+        "backgroundColor": "#0a0a0a"
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

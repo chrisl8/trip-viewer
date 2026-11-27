@@ -134,16 +134,16 @@ pub struct EventWindow {
 
 /// Capabilities reported by a configured ffmpeg binary. Populated by
 /// `ffmpeg::probe_ffmpeg` when the user runs the Test button in the
-/// settings dialog, and cached in the `settings` table so subsequent
-/// launches don't re-probe.
+/// settings dialog and cached in per-machine settings. Batch starts revalidate
+/// availability before selecting an encoder; no archive schema change is used.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FfmpegCapabilities {
     /// Full version string reported by `ffmpeg -version`'s first line.
     /// Displayed in the settings dialog for sanity-check.
     pub version: String,
-    /// Whether `hevc_nvenc` appeared in `ffmpeg -encoders` output.
-    /// The worker prefers NVENC when available (15-40x realtime) and
-    /// falls back to `libx265` (0.5-2x realtime) when it isn't.
+    /// Whether the NVENC encode/decode/scaling pipeline passed its finite
+    /// synthetic runtime test. A compiled-in encoder entry alone is insufficient.
+    /// The worker falls back to libx265 when this path is unavailable.
     pub nvenc_hevc: bool,
 }

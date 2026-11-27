@@ -34,6 +34,7 @@ fn camera_kind_from_str(s: &str) -> CameraKind {
         "thinkware" => CameraKind::Thinkware,
         "miltona" => CameraKind::Miltona,
         "mai70" => CameraKind::Mai70,
+        "viofo" => CameraKind::Viofo,
         _ => CameraKind::Generic,
     }
 }
@@ -44,6 +45,7 @@ fn camera_kind_to_str(kind: CameraKind) -> &'static str {
         CameraKind::Thinkware => "thinkware",
         CameraKind::Miltona => "miltona",
         CameraKind::Mai70 => "mai70",
+        CameraKind::Viofo => "viofo",
         CameraKind::Generic => "generic",
     }
 }

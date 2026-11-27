@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::AppError;
 use crate::timelapse::speed_curve::{self, CurveSegment};
@@ -111,12 +111,7 @@ pub fn probe_ffmpeg(path: &str) -> Result<FfmpegCapabilities, AppError> {
         )));
     }
     let stdout = String::from_utf8_lossy(&version_out.stdout);
-    let version_line = stdout
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let version_line = stdout.lines().next().unwrap_or("").trim().to_string();
     if !version_line.starts_with("ffmpeg") {
         return Err(AppError::Internal(format!(
             "expected 'ffmpeg version ...' but got: {version_line}"
@@ -130,12 +125,82 @@ pub fn probe_ffmpeg(path: &str) -> Result<FfmpegCapabilities, AppError> {
         .output()
         .map_err(|e| AppError::Internal(format!("could not list ffmpeg encoders: {e}")))?;
     let encoders_text = String::from_utf8_lossy(&encoders_out.stdout);
-    let nvenc_hevc = encoders_text.contains("hevc_nvenc");
+    if !encoders_out.status.success() {
+        return Err(AppError::Internal(
+            "ffmpeg could not list its encoders".into(),
+        ));
+    }
+    // Adapt the full fork's finite encode/decode/scale probe, keeping the
+    // existing upstream capability shape and CPU fallback. A compiled NVENC
+    // entry is not evidence that a usable NVIDIA device is installed.
+    let nvenc_hevc = if encoders_text.contains("hevc_nvenc") {
+        match verify_nvenc_pipeline(path) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("[timelapse] NVENC runtime probe unavailable; using CPU: {error}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if !nvenc_hevc && !encoders_text.contains("libx265") {
+        return Err(AppError::Internal(
+            "no usable HEVC encoder: NVENC unavailable and libx265 absent".into(),
+        ));
+    }
 
     Ok(FfmpegCapabilities {
         version: version_line,
         nvenc_hevc,
     })
+}
+
+fn verify_nvenc_pipeline(path: &str) -> Result<(), AppError> {
+    struct ProbeFile(PathBuf);
+    impl Drop for ProbeFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let source = ProbeFile(std::env::temp_dir().join(format!(
+        "tripviewer-nvenc-probe-{}.mp4",
+        uuid::Uuid::new_v4()
+    )));
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut encode = ffmpeg_command(path);
+    apply_loglevel_flags(&mut encode);
+    encode.args([
+        "-f",
+        "lavfi",
+        "-i",
+        "color=size=1920x1080:rate=30:duration=1",
+        "-an",
+        "-vf",
+        "format=nv12",
+    ]);
+    apply_encoder_flags(&mut encode, Encoder::HevcNvenc, Some(1));
+    encode.arg(&source.0);
+    run_ffmpeg_with_deadline(encode, &cancel, Some(Duration::from_secs(10)))?;
+    let mut pipeline = ffmpeg_command(path);
+    apply_loglevel_flags(&mut pipeline);
+    pipeline.args([
+        "-hwaccel",
+        "cuda",
+        "-hwaccel_output_format",
+        "cuda",
+        "-stream_loop",
+        "7",
+        "-i",
+    ]);
+    pipeline
+        .arg(&source.0)
+        .arg("-filter_complex")
+        .arg(speed_curve::compose_window_filter("scale_cuda", 8))
+        .args(["-map", "[out]", "-an"]);
+    apply_encoder_flags(&mut pipeline, Encoder::HevcNvenc, Some(1));
+    pipeline.args(["-f", "null", "-"]);
+    run_ffmpeg_with_deadline(pipeline, &cancel, Some(Duration::from_secs(10)))
 }
 
 /// What encoder the caller picked for this invocation. Decided once at
@@ -349,7 +414,11 @@ fn encode_single_shot(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Path
     // encodes in the multi-window path; the single-segment curve's
     // rate determines the speed factor.
     let rate = args.curve.first().map(|s| s.rate).unwrap_or(1);
-    let scale_filter = if args.software_input { "scale" } else { args.encoder.scale_filter() };
+    let scale_filter = if args.software_input {
+        "scale"
+    } else {
+        args.encoder.scale_filter()
+    };
     let filter = speed_curve::compose_window_filter(scale_filter, rate);
 
     let mut cmd = ffmpeg_command(args.ffmpeg_path);
@@ -394,17 +463,12 @@ fn encode_single_shot(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Path
 /// that's bounded by a single decoder pipeline (~1–2 GB) instead of
 /// the `split=N` fan-out's `~N × frame_buffer` cost.
 fn encode_multi_window(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<PathBuf, AppError> {
-    fs::create_dir_all(args.scratch_dir).map_err(|e| {
-        AppError::Internal(format!("scratch dir create failed: {e}"))
-    })?;
+    fs::create_dir_all(args.scratch_dir)
+        .map_err(|e| AppError::Internal(format!("scratch dir create failed: {e}")))?;
 
     let source_path = args.scratch_dir.join("__multi_source.mp4");
-    let prep_result = prepare_concat_source(
-        args.source_paths,
-        &source_path,
-        args.ffmpeg_path,
-        cancel,
-    );
+    let prep_result =
+        prepare_concat_source(args.source_paths, &source_path, args.ffmpeg_path, cancel);
     if let Err(e) = prep_result {
         if source_path.exists() {
             let _ = fs::remove_file(&source_path);
@@ -490,12 +554,7 @@ fn encode_multi_window(args: &EncodeArgs<'_>, cancel: &CancelFlag) -> Result<Pat
 
     // Phase 3: stream-copy concat the per-window outputs into the
     // final file. No re-encode, no decode — purely muxing.
-    let result = concat_window_outputs(
-        &window_paths,
-        args.output_path,
-        args.ffmpeg_path,
-        cancel,
-    );
+    let result = concat_window_outputs(&window_paths, args.output_path, args.ffmpeg_path, cancel);
     for w in &window_paths {
         let _ = fs::remove_file(w);
     }
@@ -520,9 +579,9 @@ fn prepare_concat_source(
     ffmpeg_path: &str,
     cancel: &CancelFlag,
 ) -> Result<(), AppError> {
-    let parent = output.parent().ok_or_else(|| {
-        AppError::Internal("multi-window source output has no parent dir".into())
-    })?;
+    let parent = output
+        .parent()
+        .ok_or_else(|| AppError::Internal("multi-window source output has no parent dir".into()))?;
     let list_path = parent.join("__multi_source_list.txt");
     write_concat_list(sources, &list_path)?;
 
@@ -568,7 +627,11 @@ fn encode_window(
         let _ = fs::remove_file(output);
     }
 
-    let scale_filter = if software_input { "scale" } else { encoder.scale_filter() };
+    let scale_filter = if software_input {
+        "scale"
+    } else {
+        encoder.scale_filter()
+    };
     let filter = speed_curve::compose_window_filter(scale_filter, rate);
 
     let mut cmd = ffmpeg_command(ffmpeg_path);
@@ -621,9 +684,9 @@ fn concat_window_outputs(
     ffmpeg_path: &str,
     cancel: &CancelFlag,
 ) -> Result<(), AppError> {
-    let parent = output.parent().ok_or_else(|| {
-        AppError::Internal("multi-window concat output has no parent dir".into())
-    })?;
+    let parent = output
+        .parent()
+        .ok_or_else(|| AppError::Internal("multi-window concat output has no parent dir".into()))?;
     let list_path = parent.join("__multi_windows_list.txt");
     let strs: Vec<String> = windows
         .iter()
@@ -737,7 +800,16 @@ fn apply_encoder_flags(cmd: &mut Command, encoder: Encoder, cpu_pool_threads: Op
 /// 64 KB regardless of how chatty the child gets, which is the fix
 /// for the parent-process OOM that hit when CUDA exhaustion made
 /// ffmpeg emit one error line per frame.
-fn run_ffmpeg_with_cancel(mut cmd: Command, cancel: &CancelFlag) -> Result<(), AppError> {
+fn run_ffmpeg_with_cancel(cmd: Command, cancel: &CancelFlag) -> Result<(), AppError> {
+    run_ffmpeg_with_deadline(cmd, cancel, None)
+}
+
+fn run_ffmpeg_with_deadline(
+    mut cmd: Command,
+    cancel: &CancelFlag,
+    timeout: Option<Duration>,
+) -> Result<(), AppError> {
+    let started = Instant::now();
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
     let mut child = cmd
@@ -754,19 +826,18 @@ fn run_ffmpeg_with_cancel(mut cmd: Command, cancel: &CancelFlag) -> Result<(), A
     // responsiveness and CPU wakeups — the worker-level progress
     // events already throttle at 250ms, so sub-second cancel is
     // plenty responsive for the user.
-    let cancelled = loop {
-        if cancel.load(Ordering::Relaxed) {
+    let (cancelled, timed_out) = loop {
+        let timed_out = timeout.is_some_and(|limit| started.elapsed() >= limit);
+        if cancel.load(Ordering::Relaxed) || timed_out {
             let _ = child.kill();
             let _ = child.wait();
-            break true;
+            break (true, timed_out);
         }
         match child.try_wait() {
-            Ok(Some(_status)) => break false,
+            Ok(Some(_status)) => break (false, false),
             Ok(None) => thread::sleep(Duration::from_millis(500)),
             Err(e) => {
-                return Err(AppError::Internal(format!(
-                    "error waiting on ffmpeg: {e}"
-                )));
+                return Err(AppError::Internal(format!("error waiting on ffmpeg: {e}")));
             }
         }
     };
@@ -779,6 +850,11 @@ fn run_ffmpeg_with_cancel(mut cmd: Command, cancel: &CancelFlag) -> Result<(), A
         .map(|h| h.join().unwrap_or_default())
         .unwrap_or_default();
 
+    if timed_out {
+        return Err(AppError::Internal(
+            "FFmpeg capability probe exceeded its deadline".into(),
+        ));
+    }
     if cancelled {
         return Err(AppError::Internal("cancelled".into()));
     }
@@ -833,6 +909,102 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
+    fn compiled_nvenc_without_a_usable_device_falls_back_to_cpu() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("synthetic-ffmpeg");
+        fs::write(&binary, "#!/bin/sh\nif [ \"$1\" = -version ]; then echo 'ffmpeg version synthetic'; exit 0; fi\nif [ \"$2\" = -encoders ]; then echo 'hevc_nvenc libx265'; exit 0; fi\nexit 1\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let caps = probe_ffmpeg(binary.to_str().unwrap()).unwrap();
+        assert!(!caps.nvenc_hevc);
+        assert!(matches!(Encoder::pick(&caps), Encoder::LibX265));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_hung_capability_probe_is_terminated_and_reported() {
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 60"]);
+        let started = Instant::now();
+        let error = run_ffmpeg_with_deadline(command, &cancel, Some(Duration::from_millis(20)))
+            .unwrap_err();
+        assert!(error.to_string().contains("deadline"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    #[ignore = "requires explicit TRIPVIEWER_TEST_FFMPEG; synthetic external encode/decode"]
+    fn real_ffmpeg_renders_two_hevc_segments_at_8x() {
+        let binary = std::env::var("TRIPVIEWER_TEST_FFMPEG").expect("set TRIPVIEWER_TEST_FFMPEG");
+        let dir = tempfile::tempdir().unwrap();
+        let mut sources = Vec::new();
+        for i in 0..2 {
+            let path = dir.path().join(format!("synthetic-{i}.mp4"));
+            let status = ffmpeg_command(&binary)
+                .args([
+                    "-y",
+                    "-hide_banner",
+                    "-nostdin",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=size=320x180:rate=30:duration=1",
+                    "-an",
+                    "-c:v",
+                    "libx265",
+                    "-preset",
+                    "ultrafast",
+                    "-x265-params",
+                    "pools=1:frame-threads=1:log-level=error",
+                ])
+                .arg(&path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            sources.push(path.to_string_lossy().into_owned());
+        }
+        let output = dir.path().join("synthetic-timelapse.mp4");
+        let curve = [CurveSegment {
+            concat_start: 0.0,
+            concat_end: 2.0,
+            rate: 8,
+        }];
+        let args = EncodeArgs {
+            ffmpeg_path: &binary,
+            source_paths: &sources,
+            output_path: &output,
+            tier: Tier::Tier8x,
+            channel: Channel::Front,
+            encoder: Encoder::LibX265,
+            curve: &curve,
+            scratch_dir: dir.path(),
+            cpu_pool_threads: Some(1),
+            software_input: true,
+        };
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        encode_trip_channel(&args, &cancel).unwrap();
+        let meta = crate::metadata::mp4_probe::probe(&output).unwrap();
+        assert!(meta.duration_s > 0.0 && meta.duration_s < 0.5);
+        let decoded = ffmpeg_command(&binary)
+            .args(["-nostdin", "-hide_banner", "-i"])
+            .arg(&output)
+            .args(["-f", "null", "-"])
+            .output()
+            .unwrap();
+        assert!(decoded.status.success(), "finished timelapse must decode");
+        assert!(String::from_utf8_lossy(&decoded.stderr).contains("Video: hevc"));
+        let caps = probe_ffmpeg(&binary).unwrap();
+        eprintln!(
+            "synthetic real FFmpeg probe: usable_nvenc={}",
+            caps.nvenc_hevc
+        );
+    }
+
+    #[test]
     fn encoder_picks_nvenc_when_available() {
         let caps = FfmpegCapabilities {
             version: "ffmpeg version 7.0".into(),
@@ -845,5 +1017,4 @@ mod tests {
         };
         assert!(matches!(Encoder::pick(&caps), Encoder::LibX265));
     }
-
 }

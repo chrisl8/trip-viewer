@@ -82,6 +82,68 @@ function MiltonaDebugButton({ segment }: { segment: Segment }) {
   );
 }
 
+function naiveDateTimeMs(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?/.exec(
+    value,
+  );
+  if (!match) return null;
+
+  const fractionMs = Number(`0.${match[7] ?? "0"}`) * 1000;
+  return Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6]),
+    Math.round(fractionMs),
+  );
+}
+
+/**
+ * Rebase GPS samples from the preceding segment onto the current segment's
+ * local time axis and keep only samples whose actual timestamp reaches into
+ * the current segment. No grace period is assumed: continuity exists only
+ * when the recorded timestamps themselves overlap the boundary.
+ */
+function precedingGpsOverlap(
+  previousSegment: Segment,
+  currentSegment: Segment,
+  previousPoints: GpsPoint[],
+): GpsPoint[] {
+  const previousStartMs = naiveDateTimeMs(previousSegment.startTime);
+  const currentStartMs = naiveDateTimeMs(currentSegment.startTime);
+  if (previousStartMs === null || currentStartMs === null) return [];
+
+  const startDeltaS = (previousStartMs - currentStartMs) / 1000;
+  return previousPoints
+    .map((point) => ({
+      ...point,
+      tOffsetS: startDeltaS + point.tOffsetS,
+    }))
+    .filter((point) => point.tOffsetS >= 0);
+}
+
+/**
+ * Merge overlapping GPS samples by their exact segment-relative timestamp.
+ * When both files contain the same timestamp, prefer the current segment's
+ * sample because it belongs to the video that is now active.
+ */
+function mergeGpsAtBoundary(
+  precedingOverlap: GpsPoint[],
+  currentPoints: GpsPoint[],
+): GpsPoint[] {
+  if (precedingOverlap.length === 0) return currentPoints;
+
+  const byTimestamp = new Map<number, GpsPoint>();
+  for (const point of precedingOverlap) byTimestamp.set(point.tOffsetS, point);
+  for (const point of currentPoints) byTimestamp.set(point.tOffsetS, point);
+  return Array.from(byTimestamp.values()).sort(
+    (a, b) => a.tOffsetS - b.tOffsetS,
+  );
+}
+
+
 interface Props {
   activeSegment: Segment | null;
 }
@@ -118,6 +180,8 @@ function GpsMissingRibbon({
 export function MapPanel({ activeSegment }: Props) {
   const gpsByFile = useStore((s) => s.gpsByFile);
   const tripGpsByTrip = useStore((s) => s.tripGpsByTrip);
+  const gpsPreparation = useStore((s) => s.gpsPreparationByTrip);
+  const gpsProgress = useStore((s) => s.gpsProgressByTrip);
   const loadedTripId = useStore((s) => s.loadedTripId);
   const trips = useStore((s) => s.trips);
   const currentTime = useStore((s) => s.currentTime);
@@ -165,10 +229,63 @@ export function MapPanel({ activeSegment }: Props) {
 
   const segmentGpsPoints: GpsPoint[] = useMemo(() => {
     if (!activeSegment) return [];
-    const front = activeSegment.channels[0];
-    if (!front) return [];
-    return gpsByFile[front.filePath] ?? [];
-  }, [activeSegment, gpsByFile]);
+    if (!trip) return [];
+
+    const segmentIndex = trip.segments.findIndex(
+      (segment) => segment.id === activeSegment.id,
+    );
+    if (segmentIndex < 0) return [];
+
+    // Prefer the persisted trip-wide cache even in Original mode. Convert the
+    // trip-time offsets back onto this segment's local axis. This removes the
+    // old need to re-parse every source MP4 whenever the app is restarted.
+    const archived = loadedTripId ? tripGpsByTrip[loadedTripId] : undefined;
+    if (archived) {
+      let segmentStart = 0;
+      for (let i = 0; i < segmentIndex; i++) {
+        segmentStart += trip.segments[i].durationS;
+      }
+      const segmentEnd = segmentStart + activeSegment.durationS;
+      return archived
+        .filter(
+          (point) =>
+            point.tOffsetS >= segmentStart && point.tOffsetS <= segmentEnd,
+        )
+        .map((point) => ({
+          ...point,
+          tOffsetS: point.tOffsetS - segmentStart,
+        }));
+    }
+
+    // Compatibility fallback for an extraction that has not yet reached the
+    // DB. Use the first camera with usable GPS, not necessarily Front.
+    const provider = activeSegment.channels.find(
+      (channel) => (gpsByFile[channel.filePath]?.length ?? 0) > 0,
+    );
+    const currentPoints = provider ? (gpsByFile[provider.filePath] ?? []) : [];
+
+    if (segmentIndex <= 0) return currentPoints;
+
+    const previousSegment = trip.segments[segmentIndex - 1];
+    const previousProvider = previousSegment.channels.find(
+      (channel) => (gpsByFile[channel.filePath]?.length ?? 0) > 0,
+    );
+    if (!previousProvider) return currentPoints;
+
+    const previousPoints = gpsByFile[previousProvider.filePath] ?? [];
+    const overlap = precedingGpsOverlap(
+      previousSegment,
+      activeSegment,
+      previousPoints,
+    );
+    return mergeGpsAtBoundary(overlap, currentPoints);
+  }, [
+    activeSegment,
+    gpsByFile,
+    loadedTripId,
+    trip,
+    tripGpsByTrip,
+  ]);
 
   // Pick which pair feeds the marker + readouts: tiered mode uses the
   // full trip trace indexed by concat-time; Original uses per-segment
@@ -224,7 +341,15 @@ export function MapPanel({ activeSegment }: Props) {
 
       {!hasTripGps && (
         <div className="pointer-events-none absolute inset-0 z-[1000] flex items-center justify-center bg-neutral-900/70 text-xs text-neutral-400">
-          Loading GPS…
+          {loadedTripId && gpsPreparation[loadedTripId] === "error"
+            ? "GPS loading failed. Select the trip again to retry."
+            : loadedTripId && gpsPreparation[loadedTripId] === "ready"
+              ? "No usable GPS points found."
+              : loadedTripId && gpsPreparation[loadedTripId] === "loading"
+                ? gpsProgress[loadedTripId]
+                  ? `Loading GPS… ${gpsProgress[loadedTripId].completed}/${gpsProgress[loadedTripId].total} segments`
+                  : "Loading GPS…"
+                : "GPS has not been loaded."}
         </div>
       )}
 

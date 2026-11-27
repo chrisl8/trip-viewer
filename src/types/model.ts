@@ -12,6 +12,7 @@ export type CameraKind =
   | "thinkware"
   | "miltona"
   | "mai70"
+  | "viofo"
   | "generic";
 
 export interface Channel {

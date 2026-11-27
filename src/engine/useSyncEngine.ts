@@ -67,8 +67,13 @@ export function useSyncEngine(
       e.start();
       engineRef.current = e;
       setEngine(e);
+      window.clearInterval(readinessPoll);
     };
 
+    // WebKit can reach HAVE_CURRENT_DATA without delivering loadeddata after
+    // a source reset. Readiness must not leave Play disabled forever merely
+    // because that event was lost. Polling only reads state; it never seeks.
+    const readinessPoll = window.setInterval(tryInit, 250);
     tryInit();
 
     // Re-try every time any channel fires `loadeddata`. We listen on all
@@ -85,6 +90,7 @@ export function useSyncEngine(
     }
 
     return () => {
+      window.clearInterval(readinessPoll);
       for (const [el, h] of listeners) el.removeEventListener("loadeddata", h);
       engineRef.current?.pause();
       engineRef.current?.dispose();

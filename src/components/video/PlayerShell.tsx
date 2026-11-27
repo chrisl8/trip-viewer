@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSyncEngine } from "../../engine/useSyncEngine";
 import { useStore } from "../../state/store";
 import type { Channel, Segment } from "../../types/model";
@@ -27,6 +27,9 @@ import { Timeline } from "../timeline/Timeline";
 import { WelcomePanel } from "../welcome/WelcomePanel";
 import { decideShowMap } from "./decideShowMap";
 import { VideoGrid } from "./VideoGrid";
+import { healthyLineup } from "./channelHealth";
+import { toggleViewerFullscreen } from "./viewerFullscreen";
+import { prepareTripGps } from "../../state/gpsPreparation";
 
 /** Map the backend's F/I/R channel code to the frontend's canonical
  *  label. Tier synthesis uses this to build Channel objects whose
@@ -49,8 +52,66 @@ export function PlayerShell() {
   // VideoGrid. Stable across renders so useSyncEngine's deps array doesn't
   // churn. Keyed by channel label so it works for any channel count.
   const channelRefs = useRef<Map<string, HTMLVideoElement | null>>(new Map());
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+  const [fullscreenLabel, setFullscreenLabel] = useState<string | null>(null);
+  const fullscreenLabelRef = useRef<string | null>(null);
+  const fullscreenTransition = useRef(false);
+  const commitFullscreen = useCallback((label: string | null) => {
+    fullscreenLabelRef.current = label;
+    setFullscreenLabel(label);
+  }, []);
+  const resyncViewer = useCallback(() => {
+    window.dispatchEvent(new Event("tripviewer:resync-playback"));
+  }, []);
+  const onToggleFullscreen = useCallback(
+    async (label: string) => {
+      if (fullscreenTransition.current) return;
+      fullscreenTransition.current = true;
+      try {
+        await toggleViewerFullscreen(
+          viewerRef.current,
+          label,
+          fullscreenLabelRef.current,
+          commitFullscreen,
+          resyncViewer,
+        );
+      } catch (error) {
+        console.warn("[viewer] fullscreen request failed", error);
+      } finally {
+        fullscreenTransition.current = false;
+      }
+    },
+    [commitFullscreen, resyncViewer],
+  );
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      if (viewerRef.current && document.fullscreenElement === viewerRef.current)
+        return;
+      if (fullscreenLabelRef.current === null) return;
+      commitFullscreen(null);
+      resyncViewer();
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, [commitFullscreen, resyncViewer]);
   const shouldAutoPlay = useRef(false);
   const pendingSeekRef = useRef<number | null>(null);
+  // Media failures are scoped to the current source/segment. A failed camera
+  // stays visible with its error overlay but is removed from the active
+  // SyncEngine so healthy cameras can continue. The next source gets a fresh
+  // attempt automatically.
+  const [failedChannelLabels, setFailedChannelLabels] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const failedChannelLabelsRef = useRef<Set<string>>(new Set());
+  const stickyMasterRef = useRef<string | null>(null);
+  // Once the canonical master fails, keep the promoted healthy camera as the
+  // clock for the rest of this source. A recovered Front rejoins as a slave
+  // rather than forcing another mid-segment master swap.
+  const [stickySyncMasterLabel, setStickySyncMasterLabel] = useState<
+    string | null
+  >(null);
   // True when we entered the current tier mode automatically because
   // playback (or a seek, or a trip load) crossed into a tombstone span
   // in Original mode. The flip-back effect uses this to switch back
@@ -147,6 +208,18 @@ export function PlayerShell() {
     };
   }, [sourceMode, activeSegmentForUi, trip, timelapseJobs]);
 
+  useEffect(() => {
+    const label = fullscreenLabelRef.current;
+    if (
+      label &&
+      activeSegmentForVideo &&
+      !activeSegmentForVideo.channels.some((channel) => channel.label === label)
+    ) {
+      commitFullscreen(null);
+      resyncViewer();
+    }
+  }, [activeSegmentForVideo, commitFullscreen, resyncViewer]);
+
   // Ordered list of channel labels for the current engine lineup.
   const channelLabels = useMemo(
     () => activeSegmentForVideo?.channels.map((c) => c.label) ?? [],
@@ -178,11 +251,113 @@ export function PlayerShell() {
     return m;
   }, [sourceMode, trip, timelapseJobs]);
 
+  const syncChannelLabels = useMemo(() => {
+    return healthyLineup(
+      channelLabels,
+      failedChannelLabels,
+      stickySyncMasterLabel,
+    );
+  }, [channelLabels, failedChannelLabels, stickySyncMasterLabel]);
+  const syncMasterLabel = syncChannelLabels[0] ?? null;
+
   const engine = useSyncEngine(
     channelRefs,
-    channelLabels,
+    syncChannelLabels,
     activeSegmentForVideo?.id ?? null,
     channelCurves,
+  );
+
+  // A segment/source boundary is the natural retry point. We never guess a
+  // number of seconds to skip inside a corrupt file. Background recovery can
+  // rejoin cameras sooner, while a new source resets every channel's state.
+  useEffect(() => {
+    failedChannelLabelsRef.current = new Set();
+    setFailedChannelLabels(new Set());
+    setStickySyncMasterLabel(null);
+    stickyMasterRef.current = null;
+  }, [activeSegmentForVideo?.id]);
+
+  const handleChannelMediaError = useCallback(
+    (label: string, message: string, cached: boolean) => {
+      const state = useStore.getState();
+      const failed = new Set(failedChannelLabelsRef.current);
+      if (failed.has(label)) return;
+      failed.add(label);
+      failedChannelLabelsRef.current = failed;
+
+      const healthy = healthyLineup(
+        channelLabels,
+        failed,
+        stickyMasterRef.current,
+      );
+
+      // Preserve logical position and play intent while the engine rebuilds
+      // without this camera. If the failed channel owned the clock, promote
+      // the next healthy channel and keep it sticky for this source.
+      pendingSeekRef.current = state.currentTime;
+      if (state.isPlaying && healthy.length > 0) {
+        shouldAutoPlay.current = true;
+      } else if (healthy.length === 0) {
+        shouldAutoPlay.current = false;
+        state.setIsPlaying(false);
+      }
+
+      stickyMasterRef.current = healthy[0] ?? null;
+      setStickySyncMasterLabel(stickyMasterRef.current);
+
+      setFailedChannelLabels(new Set(failed));
+
+      console.warn(
+        `[player] ${label} removed from sync for current source: ${message}`,
+      );
+
+      // GPS must not remain tied to a camera file we just proved is damaged.
+      // Rebuild the persisted trip trace once, excluding every failed camera
+      // in this segment. The backend can then select another healthy channel
+      // as the GPS provider and persists that repaired track for later runs.
+      if (!cached && state.sourceMode === "original" && state.loadedTripId) {
+        const currentTrip = state.trips.find(
+          (candidate) => candidate.id === state.loadedTripId,
+        );
+        const segmentId =
+          state.activeSegmentId ?? currentTrip?.segments[0]?.id ?? null;
+        if (currentTrip && segmentId) {
+          const excluded = {
+            [segmentId]: Array.from(failed),
+          };
+          void prepareTripGps(currentTrip, excluded, true)
+            .catch((error) => {
+              console.error("[player] GPS failover refresh failed:", error);
+            });
+        }
+      }
+    },
+    [channelLabels],
+  );
+
+  const handleChannelMediaRecovered = useCallback(
+    (label: string) => {
+      const failed = new Set(failedChannelLabelsRef.current);
+      if (!failed.delete(label)) return;
+      failedChannelLabelsRef.current = failed;
+      const healthy = healthyLineup(
+        channelLabels,
+        failed,
+        stickyMasterRef.current,
+      );
+      stickyMasterRef.current = healthy[0] ?? null;
+      setStickySyncMasterLabel(stickyMasterRef.current);
+
+      const state = useStore.getState();
+      pendingSeekRef.current = state.currentTime;
+      if (state.isPlaying) shouldAutoPlay.current = true;
+      setFailedChannelLabels(new Set(failed));
+
+      console.info(
+        `[player] ${label} recovered and will rejoin sync at ${state.currentTime.toFixed(2)}s`,
+      );
+    },
+    [channelLabels],
   );
 
   /**
@@ -348,7 +523,7 @@ export function PlayerShell() {
     if (sourceMode !== "original") {
       // Tiered mode still gets an "ended" event (the single file
       // finished). Stop playback but don't try to advance segments.
-      const masterLabel = activeSegmentForVideo.channels[0]?.label;
+      const masterLabel = syncMasterLabel;
       if (!masterLabel) return;
       const master = channelRefs.current.get(masterLabel);
       if (!master) return;
@@ -357,7 +532,7 @@ export function PlayerShell() {
       return () => master.removeEventListener("ended", onEnded);
     }
 
-    const masterLabel = activeSegmentForVideo.channels[0]?.label;
+    const masterLabel = syncMasterLabel;
     if (!masterLabel) return;
     const master = channelRefs.current.get(masterLabel);
     if (!master) return;
@@ -418,7 +593,7 @@ export function PlayerShell() {
     // deps), so adding it to the deps array doesn't churn the effect;
     // it just satisfies exhaustive-deps for the closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSegmentForVideo, sourceMode]);
+  }, [activeSegmentForVideo, sourceMode, syncMasterLabel]);
 
   // Auto-play after segment advance, cross-segment seek, or source switch.
   useEffect(() => {
@@ -611,16 +786,29 @@ export function PlayerShell() {
     archiveOnly,
     archivedGpsPointCount: tripGpsByTrip[trip.id]?.length ?? 0,
   });
-  const gridCols = showMap ? "grid-cols-[2fr_1fr_1fr]" : "grid-cols-[3fr_1fr]";
+  const gridCols = fullscreenLabel
+    ? "grid-cols-1"
+    : showMap
+      ? "grid-cols-[2fr_1fr_1fr]"
+      : "grid-cols-[3fr_1fr]";
 
   return (
-    <div className="flex h-full flex-col">
+    <div ref={viewerRef} className="flex h-full w-full flex-col bg-neutral-950">
       <div className={`relative grid min-h-0 flex-1 ${gridCols} gap-2 p-2`}>
         <VideoGrid
           channelRefs={channelRefs}
+          fullscreenLabel={fullscreenLabel}
+          onToggleFullscreen={onToggleFullscreen}
           activeSegment={activeSegmentForVideo}
+          syncMasterLabel={syncMasterLabel}
+          onMediaError={handleChannelMediaError}
+          onMediaRecovered={handleChannelMediaRecovered}
         />
-        {showMap && <MapPanel activeSegment={activeSegmentForUi} />}
+        {showMap && (
+          <div className={fullscreenLabel ? "hidden" : "relative min-h-0"}>
+            <MapPanel activeSegment={activeSegmentForUi} />
+          </div>
+        )}
         <DriftHud />
       </div>
       {!gpsSupported && activeSegmentForUi && (

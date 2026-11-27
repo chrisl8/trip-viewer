@@ -34,6 +34,11 @@
   },
   "bundle": {
     "active": true,
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
     "targets": ["nsis", "appimage", "dmg", "app"],
     "createUpdaterArtifacts": true,
     "icon": [

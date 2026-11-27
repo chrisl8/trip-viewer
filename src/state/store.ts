@@ -68,6 +68,8 @@ export interface LibrarySlice {
    *  0012's `trip_gps` table. Absent key → fall back to gpsByFile
    *  (which requires the originals to still be on disk). */
   tripGpsByTrip: Record<string, GpsPoint[]>;
+  gpsPreparationByTrip: Record<string, "loading" | "ready" | "error">;
+  gpsProgressByTrip: Record<string, { completed: number; total: number }>;
   /** Library-wide bytes used + reclaimable, refreshed after every
    *  storage-changing action. `null` until the first refresh resolves. */
   librarySummary: LibraryStorageSummary | null;
@@ -309,6 +311,8 @@ export const useStore = create<AppState>((set) => ({
   scanErrors: [],
   gpsByFile: {},
   tripGpsByTrip: {},
+  gpsPreparationByTrip: {},
+  gpsProgressByTrip: {},
   librarySummary: null,
   reclaimableFilter: false,
   libraryFirstLoadDone: false,
@@ -413,8 +417,48 @@ export const useStore = create<AppState>((set) => ({
     }),
   setVideoPort: (videoPort) => set({ videoPort }),
   setMainView: (mainView) => set({ mainView }),
-  setCurrentArchive: (currentArchive) => set({ currentArchive }),
+  setCurrentArchive: (currentArchive) =>
+    set({
+      currentArchive: currentArchive ? { ...currentArchive } : null,
+      status: currentArchive ? "loading" : "idle",
+      error: null,
+      libraryFirstLoadDone: currentArchive === null,
+      trips: [],
+      scanErrors: [],
+      selectedTripId: null,
+      loadedTripId: null,
+      activeSegmentId: null,
+      currentTime: 0,
+      isPlaying: false,
+      primaryChannel: null,
+      sourceMode: "original",
+      activeSpeedCurve: null,
+      gappedChannels: {},
+      drift: [],
+      gpsByFile: {},
+      tripGpsByTrip: {},
+      gpsPreparationByTrip: {},
+      gpsProgressByTrip: {},
+      librarySummary: null,
+      reclaimableFilter: false,
+      selectedTripIds: new Set<string>(),
+      tripSelectionAnchorId: null,
+      selectionMode: false,
+      selectedSegmentIds: new Set<string>(),
+      selectionAnchorId: null,
+      tagsBySegmentId: {},
+      tagsByTripId: {},
+      tagsLoadingTripId: null,
+      tripTagCounts: {},
+      places: [],
+      placesById: {},
+      timelapseJobs: [],
+      orphanTimelapseCount: 0,
+      scanCoverage: [],
+      mainView: "player",
+    }),
   setScanResult: ({ trips, errors }) => {
+    const archive = useStore.getState().currentArchive;
     set({
       trips,
       scanErrors: errors,
@@ -436,7 +480,11 @@ export const useStore = create<AppState>((set) => ({
     void useStore
       .getState()
       .mergeArchiveOnlyTrips()
-      .finally(() => useStore.setState({ libraryFirstLoadDone: true }));
+      .finally(() => {
+        if (useStore.getState().currentArchive === archive) {
+          useStore.setState({ libraryFirstLoadDone: true });
+        }
+      });
     // Sizes change on every scan (new segments, vanished segments,
     // backfilled sizes from migration 0009) — refresh the header
     // summary so "X GB used / Y GB reclaimable" stays honest.
@@ -606,8 +654,10 @@ export const useStore = create<AppState>((set) => ({
     return report;
   },
   mergeArchiveOnlyTrips: async () => {
+    const current = useStore.getState().currentArchive;
     try {
       const archive = await listArchiveOnlyTrips();
+      if (useStore.getState().currentArchive !== current) return;
       if (archive.length === 0) {
         // Still drop any stale archive-only entries that are no longer
         // backed by a row in the DB (e.g. after Delete trip…).

@@ -40,7 +40,8 @@ pub fn group(
     // Bucket by group_key — every parser is responsible for producing a
     // key that uniquely identifies a recording instance.
     let mut buckets: HashMap<String, Vec<GroupingInput>> = HashMap::new();
-    for item in items {
+    for mut item in items {
+        item.parsed = super::viofo::apply_path_context(item.parsed, &item.path);
         buckets
             .entry(item.parsed.group_key.clone())
             .or_default()
@@ -51,16 +52,17 @@ pub fn group(
     // group-key approach, a file either parses (and becomes a 1+ channel
     // segment) or doesn't parse at all (and is already in `errors`
     // upstream) — there is no separate "unmatched" category anymore.
-    let mut segments: Vec<Segment> = Vec::with_capacity(buckets.len());
+    let mut segments = Vec::with_capacity(buckets.len());
     for (_, bucket) in buckets {
-        segments.push(make_segment(bucket, archive_root));
+        let mode = bucket[0].parsed.event_mode;
+        segments.push((make_segment(bucket, archive_root), mode));
     }
 
     // Merge segments whose start times are within SEGMENT_FUZZY_WINDOW_S
     // and share an event_mode. This catches cases where two parsers
     // generated slightly different group_keys for what should be one segment
     // (e.g. filename clock skew pushing across a second boundary).
-    segments.sort_by_key(|s| s.start_time);
+    segments.sort_by_key(|(s, _)| s.start_time);
     let segments = merge_fuzzy_neighbors(segments);
 
     let trips = merge_into_trips(segments, trip_gap_s);
@@ -105,7 +107,7 @@ fn make_segment(bucket: Vec<GroupingInput>, archive_root: &std::path::Path) -> S
         id,
         start_time,
         duration_s: 0.0,
-        is_event: matches!(event_mode, EventMode::Event),
+        is_event: matches!(event_mode, EventMode::Event | EventMode::ParkingEvent),
         channels,
         gps_supported: camera_kind.gps_supported(),
         camera_kind,
@@ -127,38 +129,58 @@ fn make_channel(item: GroupingInput) -> Channel {
     }
 }
 
-/// Merge any adjacent segments whose start times are within
+/// Merge compatible segments whose start times are within
 /// `SEGMENT_FUZZY_WINDOW_S`, share `is_event`, **and have no overlapping
-/// channel labels**. This handles timestamp skew across channels from the
+/// channel labels**. VIOFO additionally retains recording mode throughout the
+/// window search. This handles timestamp skew across channels from the
 /// same camera (Wolf Box's per-channel timestamps can drift by 1s) while
 /// preserving independent segments from different cameras that happen to
 /// record at the same moment (mixed-format folders).
-fn merge_fuzzy_neighbors(segments: Vec<Segment>) -> Vec<Segment> {
-    let mut out: Vec<Segment> = Vec::with_capacity(segments.len());
-    for seg in segments {
-        if let Some(last) = out.last_mut() {
-            let delta = (seg.start_time - last.start_time).num_seconds().abs();
-            let within_window = delta <= SEGMENT_FUZZY_WINDOW_S;
+fn merge_fuzzy_neighbors(segments: Vec<(Segment, EventMode)>) -> Vec<Segment> {
+    let mut out: Vec<(Segment, EventMode)> = Vec::with_capacity(segments.len());
+    for (seg, mode) in segments {
+        let compatible = |(last, last_mode): &(Segment, EventMode)| {
+            let within_window =
+                (seg.start_time - last.start_time).num_seconds().abs() <= SEGMENT_FUZZY_WINDOW_S;
             let same_event_mode = last.is_event == seg.is_event;
-
+            let same_recording_mode =
+                seg.camera_kind != naming::CameraKind::Viofo || *last_mode == mode;
+            let same_camera = last.camera_kind == seg.camera_kind;
             let last_labels: HashSet<&str> =
                 last.channels.iter().map(|c| c.label.as_str()).collect();
             let disjoint = seg
                 .channels
                 .iter()
                 .all(|c| !last_labels.contains(c.label.as_str()));
-
-            if within_window && same_event_mode && disjoint {
-                let mut combined: Vec<Channel> = last.channels.drain(..).collect();
-                combined.extend(seg.channels);
-                combined.sort_by_key(|c| label_rank(&c.label));
-                last.channels = combined;
-                continue;
-            }
+            within_window && same_camera && same_event_mode && same_recording_mode && disjoint
+        };
+        // VIOFO modes may interleave within the skew window. An intervening
+        // parking/event segment must not prevent a normal F/R pair matching.
+        // Retain the existing adjacent-only policy for other camera formats.
+        let target = if seg.camera_kind == naming::CameraKind::Viofo {
+            (0..out.len())
+                .rev()
+                .take_while(|index| {
+                    (seg.start_time - out[*index].0.start_time)
+                        .num_seconds()
+                        .abs()
+                        <= SEGMENT_FUZZY_WINDOW_S
+                })
+                .find(|index| compatible(&out[*index]))
+        } else {
+            out.len()
+                .checked_sub(1)
+                .filter(|index| compatible(&out[*index]))
+        };
+        if let Some(index) = target {
+            let last = &mut out[index].0;
+            last.channels.extend(seg.channels);
+            last.channels.sort_by_key(|c| label_rank(&c.label));
+        } else {
+            out.push((seg, mode));
         }
-        out.push(seg);
     }
-    out
+    out.into_iter().map(|(segment, _)| segment).collect()
 }
 
 fn merge_into_trips(segments: Vec<Segment>, trip_gap_s: i64) -> Vec<Trip> {
@@ -200,7 +222,10 @@ fn merge_into_trips(segments: Vec<Segment>, trip_gap_s: i64) -> Vec<Trip> {
 }
 
 fn close_trip(segments: Vec<Segment>) -> Trip {
-    let start_time = segments.first().expect("close_trip on non-empty").start_time;
+    let start_time = segments
+        .first()
+        .expect("close_trip on non-empty")
+        .start_time;
     let last = segments.last().expect("close_trip on non-empty");
     let last_duration = if last.duration_s > 0.0 {
         last.duration_s
@@ -268,10 +293,10 @@ pub fn read_and_parse_listing(parent: &Path) -> Result<Vec<ListingEntry>, AppErr
     let mut out: Vec<ListingEntry> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        let Some(_name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        let Ok(parsed) = naming::parse(name) else {
+        let Ok(parsed) = naming::parse_path(&path) else {
             continue;
         };
         out.push(ListingEntry { path, parsed });
@@ -289,11 +314,11 @@ pub fn find_sibling_in_listing(
     target_channel_label: &str,
     listing: &[ListingEntry],
 ) -> Result<Option<PathBuf>, AppError> {
-    let front_name = match front_path.file_name().and_then(|s| s.to_str()) {
+    let _front_name = match front_path.file_name().and_then(|s| s.to_str()) {
         Some(s) => s,
         None => return Ok(None),
     };
-    let Ok(anchor) = naming::parse(front_name) else {
+    let Ok(anchor) = naming::parse_path(front_path) else {
         return Ok(None);
     };
 
@@ -342,13 +367,114 @@ mod tests {
     }
 
     #[test]
+    fn viofo_fuzzy_grouping_preserves_normal_parking_and_ro_events() {
+        let mut normal = input("2020_0101_120000_F.MP4");
+        normal.path = PathBuf::from("/source/DCIM/2020_0101_120000_F.MP4");
+        let mut event = input("2020_0101_120000_R.MP4");
+        event.path = PathBuf::from("/source/RO/2020_0101_120000_R.MP4");
+        let parking = input("2020_0101_120001_PI.MP4");
+        let output = group(vec![normal, event, parking], 120, Path::new("/source"));
+        let segments: Vec<_> = output.trips.iter().flat_map(|t| &t.segments).collect();
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments.iter().filter(|s| s.is_event).count(), 1);
+        assert!(segments.iter().all(|s| s.channels.len() == 1));
+    }
+
+    #[test]
+    fn viofo_same_mode_skew_merges_across_minute_boundary() {
+        for (directory, marker, is_event) in [
+            ("DCIM", "", false),
+            ("DCIM", "P", false),
+            ("RO", "", true),
+            ("RO", "P", true),
+        ] {
+            let mut front = input(&format!("2020_0101_120059_{marker}F.MP4"));
+            let mut rear = input(&format!("2020_0101_120100_{marker}R.MP4"));
+            for item in [&mut front, &mut rear] {
+                let filename = item
+                    .path
+                    .to_string_lossy()
+                    .rsplit('\\')
+                    .next()
+                    .unwrap()
+                    .to_owned();
+                item.path = PathBuf::from("/source").join(directory).join(filename);
+            }
+            let output = group(vec![front, rear], 120, Path::new("/source"));
+            let segments: Vec<_> = output.trips.iter().flat_map(|t| &t.segments).collect();
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].channels.len(), 2);
+            assert_eq!(segments[0].is_event, is_event);
+        }
+    }
+
+    #[test]
+    fn viofo_interleaved_recording_modes_do_not_hide_a_matching_channel() {
+        let output = group(
+            vec![
+                input("2020_0101_120000_F.MP4"),
+                input("2020_0101_120001_PI.MP4"),
+                input("2020_0101_120002_R.MP4"),
+            ],
+            120,
+            Path::new("/source"),
+        );
+        let segments: Vec<_> = output.trips.iter().flat_map(|t| &t.segments).collect();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].channels.len(), 2);
+        assert_eq!(segments[1].channels.len(), 1);
+    }
+
+    #[test]
+    fn viofo_sibling_lookup_keeps_protected_parking_and_driving_separate() {
+        let root = tempfile::tempdir().unwrap();
+        let ro = root.path().join("RO");
+        std::fs::create_dir(&ro).unwrap();
+        for name in [
+            "2020_0101_120000_F.MP4",
+            "2020_0101_120000_PF.MP4",
+            "2020_0101_120001_PR.MP4",
+            "2020_0101_120002_R.MP4",
+        ] {
+            std::fs::write(ro.join(name), []).unwrap();
+        }
+        assert_eq!(
+            find_sibling_file(&ro.join("2020_0101_120000_F.MP4"), LABEL_REAR).unwrap(),
+            Some(ro.join("2020_0101_120002_R.MP4"))
+        );
+        assert_eq!(
+            find_sibling_file(&ro.join("2020_0101_120000_PF.MP4"), LABEL_REAR).unwrap(),
+            Some(ro.join("2020_0101_120001_PR.MP4"))
+        );
+    }
+
+    #[test]
+    fn viofo_never_fuzzy_merges_with_another_camera_kind() {
+        let output = group(
+            vec![
+                input("2020_0101_120000_F.MP4"),
+                input("2020_01_01_120001_00_R.MP4"),
+            ],
+            120,
+            Path::new("/source"),
+        );
+        let segments: Vec<_> = output.trips.iter().flat_map(|t| &t.segments).collect();
+        assert_eq!(segments.len(), 2);
+        assert!(segments.iter().all(|s| s.channels.len() == 1));
+    }
+
+    #[test]
     fn wolf_box_triplet_makes_one_segment_and_trip() {
         let items = vec![
             input("2026_03_23_094634_00_F.MP4"),
             input("2026_03_23_094634_00_I.MP4"),
             input("2026_03_23_094634_00_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 3);
@@ -364,7 +490,11 @@ mod tests {
             input("REC_2026_03_06_07_25_52_F.MP4"),
             input("REC_2026_03_06_07_25_52_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 2);
@@ -376,7 +506,11 @@ mod tests {
     fn single_file_becomes_one_channel_segment() {
         // No more "unmatched" for partially-recorded segments.
         let items = vec![input("2026_03_23_094634_00_F.MP4")];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 1);
     }
@@ -389,7 +523,11 @@ mod tests {
             input("2026_03_06_072552_C.MP4"),
             input("2026_03_06_072552_D.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments[0].channels.len(), 4);
     }
@@ -401,7 +539,11 @@ mod tests {
             input("2026_03_15_173951_02_I.MP4"),
             input("2026_03_15_173951_02_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         assert!(out.trips[0].segments[0].is_event);
     }
 
@@ -415,7 +557,11 @@ mod tests {
             input("2026_03_23_094934_00_I.MP4"),
             input("2026_03_23_094934_00_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         assert_eq!(out.trips.len(), 1);
         assert_eq!(out.trips[0].segments.len(), 2);
     }
@@ -430,7 +576,11 @@ mod tests {
             input("2026_03_23_114634_00_I.MP4"),
             input("2026_03_23_114634_00_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         assert_eq!(out.trips.len(), 2);
     }
 
@@ -444,7 +594,11 @@ mod tests {
             input("2026_03_23_094634_00_I.MP4"),
             input("2026_03_23_094634_00_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         assert_eq!(out.trips.len(), 1);
         let segs = &out.trips[0].segments;
         assert!(segs[0].start_time < segs[1].start_time);
@@ -458,7 +612,11 @@ mod tests {
             input("2026_03_23_094635_02_I.MP4"),
             input("2026_03_23_094635_02_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         // Two segments: one 1-channel (Normal Front), one 2-channel (Event I+R).
         let total_segments: usize = out.trips.iter().map(|t| t.segments.len()).sum();
         assert_eq!(total_segments, 2);
@@ -474,7 +632,11 @@ mod tests {
             input("REC_2026_03_23_09_46_34_F.MP4"),
             input("REC_2026_03_23_09_46_34_R.MP4"),
         ];
-        let out = group(items, DEFAULT_TRIP_GAP_SECONDS, std::path::Path::new("/tmp/tripviewer-test-archive"));
+        let out = group(
+            items,
+            DEFAULT_TRIP_GAP_SECONDS,
+            std::path::Path::new("/tmp/tripviewer-test-archive"),
+        );
         let all_segments: Vec<&Segment> =
             out.trips.iter().flat_map(|t| t.segments.iter()).collect();
         assert_eq!(all_segments.len(), 2);

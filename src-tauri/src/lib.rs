@@ -5,6 +5,9 @@ mod error;
 pub mod gps;
 mod import;
 mod issues;
+#[cfg(target_os = "linux")]
+pub mod linux_media_env;
+mod media_health;
 mod metadata;
 mod migration_v2;
 mod model;
@@ -94,8 +97,8 @@ pub fn run() {
 
     // Persist window size/position across runs. Skip VISIBLE so a window
     // closed while hidden (e.g., after a crash) doesn't come back invisible.
-    let window_state_flags =
-        tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::VISIBLE;
+    let window_state_flags = tauri_plugin_window_state::StateFlags::all()
+        - tauri_plugin_window_state::StateFlags::VISIBLE;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -261,6 +264,10 @@ pub fn run() {
             metadata::probe_file,
             gps::extract_gps,
             gps::extract_gps_batch,
+            gps::ensure_trip_gps,
+            media_health::load_media_health,
+            media_health::record_media_failure,
+            media_health::record_media_recovery,
             gps::load_trip_gps,
             import::discover_sources,
             import::start_import,

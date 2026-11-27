@@ -5,6 +5,8 @@ use rusqlite::Connection;
 
 use crate::error::AppError;
 
+pub mod gps_cache;
+pub mod gps_segment_checkpoints;
 pub mod manual_trip_merges;
 mod migrations;
 pub mod places;
@@ -79,8 +81,7 @@ pub fn open_at_path(db_path: &Path, archive_root: &Path) -> Result<DbHandle, App
     // build can handle. Without this check, rusqlite_migration would
     // silently succeed (no-op when current >= target) but our code
     // would then try to read columns it doesn't know about.
-    let current_user_version: i32 =
-        conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let current_user_version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let expected = migrations::HEAD_VERSION as i32;
     if current_user_version > expected {
         return Err(AppError::ArchiveSchemaTooNew {

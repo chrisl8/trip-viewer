@@ -776,6 +776,7 @@ fn camera_kind_from_str(s: &str) -> CameraKind {
         "thinkware" => CameraKind::Thinkware,
         "miltona" => CameraKind::Miltona,
         "mai70" => CameraKind::Mai70,
+        "viofo" => CameraKind::Viofo,
         _ => CameraKind::Generic,
     }
 }
@@ -859,9 +860,11 @@ fn append_segment_points(
 pub(crate) fn stitch_trip_gps(segments: &[SegmentInfo]) -> Vec<GpsPoint> {
     let mut out = Vec::new();
     let mut cursor = 0.0;
-    for seg in segments {
-        let points = gps::extract_for_kind(Path::new(&seg.master_path), seg.camera_kind)
-            .unwrap_or_default();
+    let requests: Vec<_> = segments.iter().map(|seg| gps::GpsRequest {
+        path: seg.master_path.clone(), camera_kind: seg.camera_kind,
+    }).collect();
+    for (seg, result) in segments.iter().zip(gps::extract_batch(&requests)) {
+        let points = result.points;
         append_segment_points(&mut out, cursor, seg.duration_s, points);
         cursor += seg.duration_s;
     }

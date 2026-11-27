@@ -37,6 +37,11 @@ interface Props {
    *  Stable identity across renders so useSyncEngine doesn't re-run. */
   channelRefs: MutableRefObject<Map<string, HTMLVideoElement | null>>;
   activeSegment: Segment | null;
+  syncMasterLabel: string | null;
+  fullscreenLabel: string | null;
+  onToggleFullscreen: (label: string) => Promise<void>;
+  onMediaError: (label: string, message: string, cached: boolean) => void;
+  onMediaRecovered: (label: string) => void;
 }
 
 /**
@@ -69,7 +74,15 @@ function gridStyle(
   return { gridColumn: 2, gridRow: secondaryIndex + 1 };
 }
 
-export function VideoGrid({ channelRefs, activeSegment }: Props) {
+export function VideoGrid({
+  channelRefs,
+  activeSegment,
+  syncMasterLabel,
+  fullscreenLabel,
+  onToggleFullscreen,
+  onMediaError,
+  onMediaRecovered,
+}: Props) {
   const primaryChannel = useStore((s) => s.primaryChannel);
   const setPrimaryChannel = useStore((s) => s.setPrimaryChannel);
   const videoPort = useStore((s) => s.videoPort);
@@ -125,12 +138,12 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
   }
 
   function handleMainDoubleClick() {
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-      return;
-    }
-    const el = channelRefs.current.get(effectivePrimary);
-    el?.requestFullscreen();
+    void onToggleFullscreen(effectivePrimary);
+  }
+
+  function selectPrimary(label: string) {
+    setPrimaryChannel(label);
+    window.dispatchEvent(new Event("tripviewer:resync-playback"));
   }
 
   // Row template: if primary takes full height and there are N
@@ -142,7 +155,15 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
   return (
     <div
       className="col-span-2 grid grid-cols-[2fr_1fr] gap-2"
-      style={{ gridTemplateRows }}
+      style={
+        fullscreenLabel
+          ? {
+              gridColumn: "1 / -1",
+              gridTemplateColumns: "minmax(0, 1fr)",
+              gridTemplateRows: "minmax(0, 1fr)",
+            }
+          : { gridTemplateRows }
+      }
     >
       {channels.map((channel) => {
         const isPrimary = channel.label === effectivePrimary;
@@ -153,15 +174,41 @@ export function VideoGrid({ channelRefs, activeSegment }: Props) {
         return (
           <div
             key={channel.label}
-            style={gridStyle(isPrimary, idx, secondaries.length, rowCount)}
+            style={
+              fullscreenLabel
+                ? channel.label === fullscreenLabel
+                  ? { gridColumn: 1, gridRow: 1 }
+                  : { display: "none" }
+                : gridStyle(isPrimary, idx, secondaries.length, rowCount)
+            }
           >
             <ChannelPanel
               ref={setRef(channel.label)}
               label={channel.label}
               src={videoSrcFor(channel.filePath, videoPort)}
+              filePath={channel.filePath}
               isMaster={isPrimary}
-              onClick={isPrimary ? undefined : () => setPrimaryChannel(channel.label)}
-              onDoubleClick={isPrimary ? handleMainDoubleClick : undefined}
+              audioEnabled={channel.label === syncMasterLabel}
+              onMediaError={onMediaError}
+              onMediaRecovered={onMediaRecovered}
+              onClick={
+                isPrimary ? undefined : () => selectPrimary(channel.label)
+              }
+              onDoubleClick={
+                fullscreenLabel
+                  ? () => {
+                      void onToggleFullscreen(channel.label);
+                    }
+                  : isPrimary
+                    ? handleMainDoubleClick
+                    : undefined
+              }
+              onContextMenu={(event) => {
+                // Native media controls can pause a single camera or bypass
+                // the shared viewer with native video fullscreen.
+                event.preventDefault();
+                event.stopPropagation();
+              }}
             />
           </div>
         );

@@ -1,6 +1,7 @@
 pub mod errors;
 pub mod grouping;
 pub mod naming;
+pub mod viofo;
 pub mod walker;
 
 use crate::error::AppError;
@@ -108,15 +109,12 @@ pub fn scan_folder_sync(root: &Path, archive_root: &Path) -> Result<ScanResult, 
     let mut parsed_inputs: Vec<GroupingInput> = Vec::with_capacity(files.len());
     let mut errors: Vec<ScanError> = Vec::new();
     for file in files {
-        let name = match file.file_name().and_then(|n| n.to_str()) {
+        let _name = match file.file_name().and_then(|n| n.to_str()) {
             Some(n) => n,
             None => continue,
         };
-        match naming::parse(name) {
-            Ok(parsed) => parsed_inputs.push(GroupingInput {
-                path: file,
-                parsed,
-            }),
+        match naming::parse_path(&file) {
+            Ok(parsed) => parsed_inputs.push(GroupingInput { path: file, parsed }),
             Err(e) => errors.push(make_scan_error(&file, &e)),
         }
     }
@@ -278,7 +276,10 @@ fn remerge_trips(segments: Vec<Segment>, trip_gap_s: i64) -> Vec<Trip> {
 }
 
 fn close_trip(segments: Vec<Segment>) -> Trip {
-    let start_time = segments.first().expect("close_trip on non-empty").start_time;
+    let start_time = segments
+        .first()
+        .expect("close_trip on non-empty")
+        .start_time;
     let last = segments.last().expect("close_trip on non-empty");
     let last_duration = if last.duration_s > 0.0 {
         last.duration_s
