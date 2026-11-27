@@ -11,6 +11,7 @@
 //! field must not be allowed to move a damaged point to another part of a trip.
 
 use crate::error::AppError;
+mod parking;
 mod validation;
 use self::validation::{FieldConsistency, GpsObservation, ValidationContext};
 use crate::model::GpsPoint;
@@ -20,6 +21,8 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const KNOT_TO_MPS: f64 = 0.514_444;
+
+pub(crate) use parking::is_parking as is_parking_path;
 
 #[derive(Debug, Clone, Copy)]
 struct BoxHeader {
@@ -52,9 +55,9 @@ pub(crate) struct TimedGpsPoint {
 /// Extract VIOFO points while retaining each surviving record's UTC timestamp.
 ///
 /// `duration_s` is the measured duration of this exact MP4. When supplied, it
-/// becomes a camera-neutral temporal constraint: two UTC observations from the
-/// same clip cannot be farther apart than the clip itself. The bound is rounded
-/// up to whole seconds because the Novatek GPS clock is second-resolution.
+/// constrains recordings whose GPS clock and playback clock advance together.
+/// Parking capture may compress wall time, so its caller must pass `None`.
+/// The bound is rounded up for the second-resolution Novatek clock.
 pub(crate) fn extract_timed(
     path: &Path,
     duration_s: Option<f64>,
@@ -472,6 +475,51 @@ mod tests {
     }
 
     #[test]
+    fn parking_wall_clock_survives_without_fabricating_playback_timing() {
+        for (count, duration) in [(119u32, 119.933), (19, 19.8)] {
+            let gps_size = 16 + count * 8;
+            let first_free = 16 + gps_size;
+            let free_size = 60u32;
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&8u32.to_be_bytes());
+            bytes.extend_from_slice(b"ftyp");
+            bytes.extend_from_slice(&(8 + gps_size).to_be_bytes());
+            bytes.extend_from_slice(b"moov");
+            bytes.extend_from_slice(&gps_size.to_be_bytes());
+            bytes.extend_from_slice(b"gps ");
+            bytes.extend_from_slice(&[0; 8]);
+            for i in 0..count {
+                bytes.extend_from_slice(&(first_free + i * free_size).to_be_bytes());
+                bytes.extend_from_slice(&free_size.to_be_bytes());
+            }
+            for i in 0..count {
+                let mut packet = sample_packet();
+                let elapsed = i * 15;
+                packet[0..4].copy_from_slice(&(elapsed / 3600).to_le_bytes());
+                packet[4..8].copy_from_slice(&((elapsed / 60) % 60).to_le_bytes());
+                packet[8..12].copy_from_slice(&(elapsed % 60).to_le_bytes());
+                packet[28..32].copy_from_slice(&100.0f32.to_le_bytes());
+                packet[32..36].copy_from_slice(&100.0f32.to_le_bytes());
+                packet[36..40].copy_from_slice(&0.0f32.to_le_bytes());
+                bytes.extend_from_slice(&free_size.to_be_bytes());
+                bytes.extend_from_slice(b"freeGPS ");
+                bytes.extend_from_slice(&packet);
+            }
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("2020_0101_000000_001PF.MP4");
+            std::fs::write(&path, bytes).unwrap();
+            // Reproduce the old real-time assumption, then check the actual
+            // parking dispatch keeps valid observations before aggregation.
+            assert!(extract_timed(&path, Some(duration)).unwrap().len() < count as usize);
+            assert_eq!(extract_timed(&path, None).unwrap().len(), count as usize);
+            let parking = extract_video_timed(&path).unwrap();
+            assert_eq!(parking.len(), 1);
+            assert_eq!(parking[0].point.lat, 1.0);
+            assert_eq!(parking[0].point.t_offset_s, 0.0);
+        }
+    }
+
+    #[test]
     fn converts_south_and_west() {
         assert!((nmea_coord_to_degrees(5332.5, b'S').unwrap() + 53.5416667).abs() < 0.00001);
         assert!((nmea_coord_to_degrees(1001.5, b'W').unwrap() + 10.025).abs() < 0.00001);
@@ -633,6 +681,9 @@ mod tests {
 
 /// Decode a real clip with the accepted duration-bound validator and timing.
 pub(crate) fn extract_video_timed(path: &Path) -> Result<Vec<TimedGpsPoint>, AppError> {
+    if parking::is_parking(path) {
+        return Ok(parking::location(extract_timed(path, None)?));
+    }
     let duration_s = crate::metadata::mp4_probe::probe(path)?.duration_s;
     let mut timed = extract_timed(path, Some(duration_s))?;
     if let Some(first) = timed.first() {

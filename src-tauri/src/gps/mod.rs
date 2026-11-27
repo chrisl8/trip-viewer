@@ -764,12 +764,26 @@ fn trip_gps_sources(
             }
             files.push((stored, fingerprint, ranges));
         }
-        signature.push(serde_json::json!([
+        let mut segment_signature = serde_json::json!([
             segment.segment_id,
             segment.duration_s,
             segment.camera_kind,
             files
-        ]));
+        ]);
+        // Revisit only parking selections computed under the old real-time
+        // assumption. Ordinary driving checkpoints retain their exact keys.
+        if segment.camera_kind == CameraKind::Viofo
+            && segment
+                .channels
+                .iter()
+                .any(|channel| viofo::is_parking_path(Path::new(&channel.path)))
+        {
+            segment_signature
+                .as_array_mut()
+                .expect("segment signature is an array")
+                .push(serde_json::json!("parking-location-v1"));
+        }
+        signature.push(segment_signature);
         available.push(has_original);
         sources.push(TripGpsSegmentSource {
             duration_s: segment.duration_s,
@@ -858,6 +872,33 @@ pub fn extract_for_kind(path: &Path, kind: CameraKind) -> Result<Vec<GpsPoint>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_parking_source_keys_change_without_a_schema_or_global_cache_bump() {
+        let root = tempfile::tempdir().unwrap();
+        let (db, mut segments) = cache_fixture(root.path());
+        let conn = db.lock().unwrap();
+        let driving = trip_gps_sources(&conn, root.path(), &segments).unwrap().0;
+        let original: Vec<serde_json::Value> = serde_json::from_str(&driving).unwrap();
+        assert_eq!(original[0].as_array().unwrap().len(), 4);
+        segments[0].camera_kind = CameraKind::Viofo;
+        segments[0].channels[0].path = root
+            .path()
+            .join("2020_0101_000000_001PF.MP4")
+            .to_string_lossy()
+            .into_owned();
+        let parking = trip_gps_sources(&conn, root.path(), &segments).unwrap().0;
+        let changed: Vec<serde_json::Value> = serde_json::from_str(&parking).unwrap();
+        assert_eq!(changed[0][4], "parking-location-v1");
+        segments[0].channels[0].path = root
+            .path()
+            .join("2020_0101_000000_001F.MP4")
+            .to_string_lossy()
+            .into_owned();
+        let ordinary = trip_gps_sources(&conn, root.path(), &segments).unwrap().0;
+        let unchanged: Vec<serde_json::Value> = serde_json::from_str(&ordinary).unwrap();
+        assert_eq!(unchanged[0].as_array().unwrap().len(), 4);
+    }
 
     fn cache_fixture(root: &Path) -> (crate::db::DbHandle, Vec<TripGpsSegmentRequest>) {
         let db = crate::db::gps_cache::open_in_memory(root).unwrap();
