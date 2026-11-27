@@ -31,3 +31,20 @@ The independently reported filename differences of up to five seconds and
 camera-pair alignment remain open. This GPS correction does not claim to fix
 them. See [isolated self-build instructions](VIOFO_TESTING.md); test one existing
 parking clip if convenient. No new recording or footage upload is needed.
+
+Before this candidate is appended to PR #21, use its separate source branch:
+
+```sh
+git clone --single-branch --branch fix/viofo-parking-gps-profile https://github.com/Marcus-P/trip-viewer.git trip-viewer-parking-check
+cd trip-viewer-parking-check
+npm ci
+npm run tauri -- build --no-bundle --config src-tauri/tauri.pr21-test.conf.json
+```
+
+Install the OS-specific native prerequisites from the linked guide first.
+On Windows run `src-tauri/target/release/tripviewer.exe`; on Linux run
+`./src-tauri/target/release/tripviewer`. The override uses a separate application
+identity and settings with updater endpoints disabled. Use an existing isolated
+schema-13 test archive or a small separate archive, not a full-fork schema-17
+archive. Report the tested commit, OS and whether a parking location appears;
+do not post raw logs containing private paths or coordinates.
